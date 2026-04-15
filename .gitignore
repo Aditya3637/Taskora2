@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+.vercel/
+*.tsbuildinfo
+.env.local
+.env.production
+
+# Flutter
+.dart_tool/
+build/
+*.g.dart
+*.freezed.dart
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Supabase
+.supabase/
+
+# Misc
+.DS_Store
+*.log
+*.swp
+.idea/
+.vscode/settings.json
