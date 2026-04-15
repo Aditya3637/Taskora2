@@ -11,7 +11,8 @@ create table public.users (
   phone text,
   avatar_url text,
   settings jsonb default '{}',
-  created_at timestamptz default now()
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
 );
 
 -- Businesses
@@ -50,7 +51,33 @@ create table public.business_members (
   business_id uuid not null references public.businesses(id) on delete cascade,
   user_id uuid not null references public.users(id) on delete cascade,
   role text not null check (role in ('owner', 'member')),
+  joined_at timestamptz default now(),
   primary key (business_id, user_id)
 );
+
+-- Auto-update updated_at on modification
+create or replace function public.set_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create trigger trg_users_updated_at
+  before update on public.users
+  for each row execute procedure public.set_updated_at();
+
+create trigger trg_businesses_updated_at
+  before update on public.businesses
+  for each row execute procedure public.set_updated_at();
+
+create trigger trg_buildings_updated_at
+  before update on public.buildings
+  for each row execute procedure public.set_updated_at();
+
+create trigger trg_clients_updated_at
+  before update on public.clients
+  for each row execute procedure public.set_updated_at();
 
 commit;
