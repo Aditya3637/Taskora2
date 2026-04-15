@@ -35,13 +35,13 @@ def test_health_no_auth_required():
 
 def test_missing_token_returns_403():
     # HTTPBearer returns 403 when no Authorization header is present
-    r = client.get("/api/v1/me")
+    r = client.get("/api/v1/businesses/")
     assert r.status_code == 403
 
 
 def test_invalid_token_returns_401():
     r = client.get(
-        "/api/v1/me",
+        "/api/v1/businesses/",
         headers={"Authorization": "Bearer totally.invalid.token"},
     )
     assert r.status_code == 401
