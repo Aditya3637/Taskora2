@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from config import settings
+from config import get_settings
+
+settings = get_settings()
 
 app = FastAPI(
     title="Taskora API",
@@ -8,6 +10,7 @@ app = FastAPI(
     description="60-second decision-making backend",
 )
 
+# TODO: tighten allow_origins / allow_methods / allow_headers before production
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.frontend_url, "http://localhost:3000"],
@@ -19,4 +22,4 @@ app.add_middleware(
 
 @app.get("/health", tags=["meta"])
 def health():
-    return {"status": "ok", "version": "1.0.0"}
+    return {"status": "ok", "version": app.version}
