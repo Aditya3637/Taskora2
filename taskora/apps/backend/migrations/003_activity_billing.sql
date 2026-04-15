@@ -72,8 +72,8 @@ create table public.subscriptions (
     check (status in ('trialing','active','past_due','cancelled','archived')),
   billing_cycle text
     check (billing_cycle in ('monthly','annual')),
-  trial_start timestamptz,
-  trial_end timestamptz,
+  trial_start timestamptz not null default now(),
+  trial_end   timestamptz not null default now() + interval '60 days',
   current_period_end timestamptz,
   razorpay_subscription_id text unique,
   stripe_subscription_id text unique,
@@ -114,7 +114,8 @@ create index on public.comments (user_id);
 create index on public.decision_log (task_id);
 create index on public.decision_log (user_id);
 create index on public.attachments (task_id);
-create index on public.milestones (parent_id);
+create index on public.milestones (parent_type, parent_id);
+create index on public.invoices (status);
 create index on public.subscriptions (business_id);
 create index on public.subscriptions (status);
 create index on public.invoices (business_id);
