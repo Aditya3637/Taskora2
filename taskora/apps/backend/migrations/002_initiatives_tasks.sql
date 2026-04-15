@@ -87,7 +87,8 @@ create table public.subtask_entities (
   subtask_id uuid not null references public.subtasks(id) on delete cascade,
   entity_type text not null check (entity_type in ('building','client')),
   entity_id uuid not null,
-  per_entity_status text not null default 'backlog',
+  per_entity_status text not null default 'backlog'
+    check (per_entity_status in ('backlog','todo','in_progress','pending_decision','blocked','done')),
   per_entity_end_date date,
   primary key (subtask_id, entity_type, entity_id)
 );
