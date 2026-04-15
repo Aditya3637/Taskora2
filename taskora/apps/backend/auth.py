@@ -13,7 +13,8 @@ def get_current_user(
     """
     Validates a Supabase JWT and returns the decoded user payload.
     Returns dict with 'id' (UUID string) and 'email' (may be None).
-    Raises HTTP 401 if the token is missing, invalid, or expired.
+    Raises HTTP 403 if no Authorization header is present (HTTPBearer).
+    Raises HTTP 401 if the token is invalid, expired, or missing the sub claim.
     """
     token = credentials.credentials
     try:
@@ -28,6 +29,7 @@ def get_current_user(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Token missing subject claim",
+                headers={"WWW-Authenticate": "Bearer"},
             )
         return {
             "id": user_id,

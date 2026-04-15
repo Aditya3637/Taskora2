@@ -1,10 +1,13 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 from jose import jwt
 from datetime import datetime, timedelta, timezone
 
 from main import app
+from auth import get_current_user
 
 client = TestClient(app)
 
@@ -52,8 +55,6 @@ def test_valid_token_accepted():
         mock_settings.supabase_jwt_secret = FAKE_SECRET
         mock_get_settings.return_value = mock_settings
         # We test the function directly since /api/v1/me doesn't exist yet
-        from auth import get_current_user
-        from fastapi.security import HTTPAuthorizationCredentials
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
         result = get_current_user(creds, mock_settings)
         assert result["id"] == FAKE_USER_ID
@@ -66,9 +67,6 @@ def test_expired_token_returns_401():
         mock_settings = MagicMock()
         mock_settings.supabase_jwt_secret = FAKE_SECRET
         mock_get_settings.return_value = mock_settings
-        from auth import get_current_user
-        from fastapi.security import HTTPAuthorizationCredentials
-        from fastapi import HTTPException
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
         with pytest.raises(HTTPException) as exc:
             get_current_user(creds, mock_settings)
@@ -81,9 +79,18 @@ def test_wrong_audience_returns_401():
         mock_settings = MagicMock()
         mock_settings.supabase_jwt_secret = FAKE_SECRET
         mock_get_settings.return_value = mock_settings
-        from auth import get_current_user
-        from fastapi.security import HTTPAuthorizationCredentials
-        from fastapi import HTTPException
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+        with pytest.raises(HTTPException) as exc:
+            get_current_user(creds, mock_settings)
+        assert exc.value.status_code == 401
+
+
+def test_empty_sub_returns_401():
+    token = make_token(sub="")
+    with patch("auth.get_settings") as mock_get_settings:
+        mock_settings = MagicMock()
+        mock_settings.supabase_jwt_secret = FAKE_SECRET
+        mock_get_settings.return_value = mock_settings
         creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
         with pytest.raises(HTTPException) as exc:
             get_current_user(creds, mock_settings)
