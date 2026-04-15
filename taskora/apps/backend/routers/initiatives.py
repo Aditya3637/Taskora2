@@ -63,7 +63,12 @@ def create_initiative(
             }
             for ea in body.entities
         ]
-        sb.table("initiative_entities").insert(entity_rows).execute()
+        entities_result = sb.table("initiative_entities").insert(entity_rows).execute()
+        if not entities_result.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to assign entities to initiative",
+            )
 
     return initiative
 
@@ -103,4 +108,6 @@ def get_initiative(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Initiative not found",
         )
-    return data[0]
+    initiative = data[0]
+    require_member(sb, initiative["business_id"], user["id"])
+    return initiative
