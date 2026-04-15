@@ -9,6 +9,9 @@ from deps import get_supabase
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
+# Valid status values shared by task-level and per-entity updates
+_TASK_STATUSES = Literal["open", "in_progress", "pending_decision", "blocked", "done", "cancelled"]
+
 
 class TaskEntityCreate(BaseModel):
     entity_type: Literal["building", "client"]
@@ -29,8 +32,8 @@ class TaskCreate(BaseModel):
 
 
 class TaskStatusUpdate(BaseModel):
-    status: str
-    entity_id: Optional[str] = None
+    status: _TASK_STATUSES
+    entity_id: Optional[str] = None   # if None → update task-level status
     blocker_reason: Optional[str] = None
 
 
@@ -69,7 +72,7 @@ def create_task(
     if not stakeholder_result.data:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create task stakeholder",
+            detail="Failed to assign primary stakeholder",
         )
 
     if body.entities:
@@ -102,18 +105,25 @@ def update_task_status(
     now = datetime.now(timezone.utc).isoformat()
 
     if body.entity_id is not None:
-        sb.table("task_entities").update({
+        result = sb.table("task_entities").update({
             "per_entity_status": body.status,
             "updated_at": now,
         }).eq("task_id", task_id).eq("entity_id", body.entity_id).execute()
+        if not result.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Task entity not found",
+            )
     else:
-        update_payload = {
-            "status": body.status,
-            "updated_at": now,
-        }
+        update_payload: dict = {"status": body.status, "updated_at": now}
         if body.blocker_reason is not None:
             update_payload["blocker_reason"] = body.blocker_reason
-        sb.table("tasks").update(update_payload).eq("id", task_id).execute()
+        result = sb.table("tasks").update(update_payload).eq("id", task_id).execute()
+        if not result.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Task not found",
+            )
 
     return {"ok": True}
 
@@ -140,18 +150,13 @@ def get_task(
 
     task = data[0]
 
-    # Authorization: caller must be primary stakeholder or in task_stakeholders
+    # Authorization: caller must be primary stakeholder OR in task_stakeholders.
+    # Re-use the already-fetched embedded task_stakeholders to avoid a second DB round-trip.
     is_primary = task.get("primary_stakeholder_id") == user["id"]
     if not is_primary:
-        stakeholder_data = (
-            sb.table("task_stakeholders")
-            .select("user_id")
-            .eq("task_id", task_id)
-            .eq("user_id", user["id"])
-            .execute()
-            .data
-        )
-        if not stakeholder_data:
+        stakeholders = task.get("task_stakeholders") or []
+        is_stakeholder = any(s.get("user_id") == user["id"] for s in stakeholders)
+        if not is_stakeholder:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access denied",
