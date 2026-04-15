@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+.env
+.venv/
+dist/
+*.egg-info/
+
+# Node
+node_modules/
+.next/
+.vercel/
+*.tsbuildinfo
+
+# Flutter
+.dart_tool/
+build/
+*.g.dart
+*.freezed.dart
+
+# Misc
+.DS_Store
+*.log
+.env.local
