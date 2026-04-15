@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import get_settings
-from routers import businesses, entities
+from routers import businesses, entities, initiatives
 
 settings = get_settings()
 
@@ -23,6 +23,7 @@ app.add_middleware(
 
 app.include_router(businesses.router)
 app.include_router(entities.router)
+app.include_router(initiatives.router)
 
 
 @app.get("/health", tags=["meta"])
