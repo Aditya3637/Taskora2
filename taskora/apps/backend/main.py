@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from config import get_settings
-from routers import businesses, daily_brief, decisions, entities, initiatives, tasks
+from routers import admin, analytics, billing, businesses, daily_brief, decisions, entities, initiatives, tasks
 
 settings = get_settings()
 
@@ -21,6 +21,9 @@ app.add_middleware(
 )
 
 
+app.include_router(admin.router)
+app.include_router(analytics.router)
+app.include_router(billing.router)
 app.include_router(businesses.router)
 app.include_router(daily_brief.router)
 app.include_router(decisions.router)
