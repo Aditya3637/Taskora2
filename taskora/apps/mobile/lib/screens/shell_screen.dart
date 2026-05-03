@@ -11,8 +11,9 @@ class ShellScreen extends StatelessWidget {
     final location = GoRouterState.of(context).matchedLocation;
     if (location.startsWith('/daily-brief')) return 0;
     if (location.startsWith('/war-room')) return 1;
-    if (location.startsWith('/initiatives')) return 2;
-    if (location.startsWith('/profile')) return 3;
+    if (location.startsWith('/tasks')) return 2;
+    if (location.startsWith('/reports') || location.startsWith('/whatsapp')) return 3;
+    if (location.startsWith('/profile')) return 4;
     return 0;
   }
 
@@ -26,24 +27,29 @@ class ShellScreen extends StatelessWidget {
         backgroundColor: AppColors.white,
         selectedItemColor: AppColors.taskoraRed,
         unselectedItemColor: AppColors.steel,
-        selectedLabelStyle: AppTextStyles.labelSmall.copyWith(
-          color: AppColors.taskoraRed,
-          fontWeight: FontWeight.w600,
-        ),
+        selectedLabelStyle:
+            AppTextStyles.labelSmall.copyWith(color: AppColors.taskoraRed, fontWeight: FontWeight.w600),
         unselectedLabelStyle: AppTextStyles.labelSmall,
         onTap: (index) {
           switch (index) {
             case 0: context.go('/daily-brief'); break;
             case 1: context.go('/war-room'); break;
-            case 2: context.go('/initiatives'); break;
-            case 3: context.go('/profile'); break;
+            case 2: context.go('/tasks'); break;
+            case 3: context.go('/reports'); break;
+            case 4: context.go('/profile'); break;
           }
         },
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.today_outlined), activeIcon: Icon(Icons.today), label: 'Daily Brief'),
-          BottomNavigationBarItem(icon: Icon(Icons.bolt_outlined), activeIcon: Icon(Icons.bolt), label: 'War Room'),
-          BottomNavigationBarItem(icon: Icon(Icons.rocket_launch_outlined), activeIcon: Icon(Icons.rocket_launch), label: 'Initiatives'),
-          BottomNavigationBarItem(icon: Icon(Icons.person_outline), activeIcon: Icon(Icons.person), label: 'Profile'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.today_outlined), activeIcon: Icon(Icons.today), label: 'Daily Brief'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.bolt_outlined), activeIcon: Icon(Icons.bolt), label: 'War Room'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.check_circle_outline), activeIcon: Icon(Icons.check_circle), label: 'Tasks'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.bar_chart_outlined), activeIcon: Icon(Icons.bar_chart), label: 'Reports'),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.person_outline), activeIcon: Icon(Icons.person), label: 'Profile'),
         ],
       ),
     );

@@ -10,9 +10,12 @@ router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 PLAN_MRR: dict[str, int] = {"pro": 999, "business": 2999, "enterprise": 0}
 
 
-def require_admin(user: dict = Depends(get_current_user)) -> dict:
-    """Placeholder admin gate — TODO: check admin flag in users table."""
-    # In production: query users table for is_admin flag
+def require_admin(user: dict = Depends(get_current_user), sb: Client = Depends(get_supabase)) -> dict:
+    """Check is_admin flag in users.settings JSONB."""
+    data = sb.table("users").select("settings").eq("id", user["id"]).execute().data
+    settings = (data[0].get("settings") or {}) if data else {}
+    if not settings.get("is_admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return user
 
 

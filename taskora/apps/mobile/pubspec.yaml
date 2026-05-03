@@ -20,6 +20,7 @@ dependencies:
   flutter_slidable: ^3.0.1
   shimmer: ^3.0.0
   http: ^1.2.1
+  url_launcher: ^6.2.5
 
 dev_dependencies:
   flutter_test:
