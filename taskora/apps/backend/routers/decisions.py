@@ -71,8 +71,14 @@ def take_decision(
             "primary_stakeholder_id": body.delegate_to,
             "updated_at": now,
         }).eq("id", task_id).execute()
-        send_push_to_user(sb, body.delegate_to, "Task Delegated to You", task["title"],
-                          {"task_id": task_id})
+        # Demote old primary → secondary in task_stakeholders
+        sb.table("task_stakeholders").update({"role": "secondary"}).eq("task_id", task_id).eq("user_id", user["id"]).execute()
+        # Upsert new primary row
+        sb.table("task_stakeholders").upsert(
+            {"task_id": task_id, "user_id": body.delegate_to, "role": "primary"},
+            on_conflict="task_id,user_id",
+        ).execute()
+        send_push_to_user(sb, body.delegate_to, "Task Delegated to You", task["title"], {"task_id": task_id})
 
     elif body.action == "escalate":
         sb.table("tasks").update({"priority": "critical", "updated_at": now}).eq("id", task_id).execute()
