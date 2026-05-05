@@ -69,15 +69,26 @@ export default function OnboardingPage() {
       return;
     }
 
-    const { error: bizError } = await supabase
+    const { data: bizData, error: bizError } = await supabase
       .from("businesses")
       .insert({
         name: form.businessName.trim(),
         type: form.businessType,
         owner_id: user.id,
-      });
+      })
+      .select("id")
+      .single();
     if (bizError) {
       setError(`Could not create business: ${bizError.message}`);
+      setStatus("error");
+      return;
+    }
+
+    const { error: memberError } = await supabase
+      .from("business_members")
+      .insert({ business_id: bizData.id, user_id: user.id, role: "owner" });
+    if (memberError) {
+      setError(`Could not set up membership: ${memberError.message}`);
       setStatus("error");
       return;
     }
