@@ -139,7 +139,7 @@ export default function ProgramsPage() {
       setPrograms(Array.isArray(tree) ? tree : []);
       const myMember = (members as any[]).find((m: any) => m.user_id === user?.id);
       setCanEdit(myMember?.role === "owner" || myMember?.role === "admin" || biz.owner_id === user?.id);
-    } catch { setError("Failed to load programs."); }
+    } catch (e: any) { setError(`Failed to load programs: ${e?.message ?? e}`); }
     finally { setLoading(false); }
   }, []);
 
