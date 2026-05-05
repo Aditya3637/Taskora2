@@ -19,14 +19,22 @@ ALTER TABLE initiatives ADD COLUMN IF NOT EXISTS theme_id UUID REFERENCES themes
 ALTER TABLE initiatives ADD COLUMN IF NOT EXISTS impact_metric TEXT;
 
 ALTER TABLE themes ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "themes_select" ON themes FOR SELECT
-  USING (EXISTS (SELECT 1 FROM business_members WHERE business_id = themes.business_id AND user_id = auth.uid()));
-CREATE POLICY "themes_insert" ON themes FOR INSERT
-  WITH CHECK (EXISTS (SELECT 1 FROM business_members WHERE business_id = themes.business_id AND user_id = auth.uid()));
-CREATE POLICY "themes_update" ON themes FOR UPDATE
-  USING (EXISTS (SELECT 1 FROM business_members WHERE business_id = themes.business_id AND user_id = auth.uid()));
-CREATE POLICY "themes_delete" ON themes FOR DELETE
-  USING (EXISTS (SELECT 1 FROM business_members WHERE business_id = themes.business_id AND user_id = auth.uid()));
+DO $$ BEGIN
+  CREATE POLICY "themes_select" ON themes FOR SELECT
+    USING (EXISTS (SELECT 1 FROM business_members WHERE business_id = themes.business_id AND user_id = auth.uid()));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  CREATE POLICY "themes_insert" ON themes FOR INSERT
+    WITH CHECK (EXISTS (SELECT 1 FROM business_members WHERE business_id = themes.business_id AND user_id = auth.uid()));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  CREATE POLICY "themes_update" ON themes FOR UPDATE
+    USING (EXISTS (SELECT 1 FROM business_members WHERE business_id = themes.business_id AND user_id = auth.uid()));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+DO $$ BEGIN
+  CREATE POLICY "themes_delete" ON themes FOR DELETE
+    USING (EXISTS (SELECT 1 FROM business_members WHERE business_id = themes.business_id AND user_id = auth.uid()));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 CREATE TRIGGER themes_updated_at BEFORE UPDATE ON themes
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
