@@ -3,6 +3,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
+import PersonaSwitcher from "@/components/testing/PersonaSwitcher";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -24,9 +25,8 @@ async function apiFetch(path: string, opts?: RequestInit) {
 const coreNavItems = [
   { href: "/daily-brief",  label: "Daily Brief",  icon: "☀️" },
   { href: "/war-room",     label: "War Room",     icon: "⚡" },
-  { href: "/initiatives",  label: "Initiatives",  icon: "🏗️" },
-  { href: "/tasks",        label: "My Tasks",     icon: "✅" },
   { href: "/programs",     label: "Programs",     icon: "🗂️" },
+  { href: "/tasks",        label: "Tasks",        icon: "✅" },
   { href: "/gantt",        label: "Gantt",        icon: "📊" },
   { href: "/reports",      label: "Reports",      icon: "📄" },
   { href: "/templates",    label: "Templates",    icon: "📋" },
@@ -185,6 +185,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-mist">
       <AppNav />
       <div className="pt-14">{children}</div>
+      <PersonaSwitcher />
     </div>
   );
 }

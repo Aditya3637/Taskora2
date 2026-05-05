@@ -4,7 +4,7 @@ from config import get_settings
 from routers import (
     admin, analytics, billing, businesses, daily_brief, decisions,
     entities, initiatives, tasks, users, war_room,
-    programs, activity, invites, templates, reports, whatsapp,
+    programs, activity, invites, templates, reports, whatsapp, themes,
 )
 
 settings = get_settings()
@@ -42,6 +42,7 @@ app.include_router(invites.router)
 app.include_router(templates.router)
 app.include_router(reports.router)
 app.include_router(whatsapp.router)
+app.include_router(themes.router)
 
 
 @app.get("/health", tags=["meta"])

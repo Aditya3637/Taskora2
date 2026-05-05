@@ -69,9 +69,8 @@ def create_program(
         "business_id": body.business_id,
         "name": body.name,
         "description": body.description,
-        "lead_user_id": body.lead_user_id,
+        "lead_user_id": body.lead_user_id or user["id"],
         "color": body.color,
-        "created_by": user["id"],
         "created_at": now,
         "updated_at": now,
     }
@@ -113,14 +112,14 @@ def delete_program(
     sb: Client = Depends(get_supabase),
 ):
     """Delete a program. Only the creator or admin may delete."""
-    existing = sb.table("programs").select("business_id, created_by").eq("id", program_id).execute().data
+    existing = sb.table("programs").select("business_id, lead_user_id").eq("id", program_id).execute().data
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Program not found")
 
     program = existing[0]
     business_id = program["business_id"]
 
-    # Check admin role or owner
+    # Only owner/admin or the program lead may delete
     member = (
         sb.table("business_members")
         .select("role")
@@ -133,13 +132,96 @@ def delete_program(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a member of this business")
 
     is_admin = member[0].get("role") in ("owner", "admin")
-    is_creator = program.get("created_by") == user["id"]
+    is_lead = program.get("lead_user_id") == user["id"]
 
-    if not is_admin and not is_creator:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only owner/admin or program creator may delete")
+    if not is_admin and not is_lead:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only owner/admin or program lead may delete")
 
     sb.table("programs").delete().eq("id", program_id).execute()
     return None
+
+
+@router.get("/full-tree")
+def get_full_tree(
+    business_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Return all programs with their themes and initiatives — single call for the org hierarchy."""
+    require_member(sb, business_id, user["id"])
+
+    programs = (
+        sb.table("programs")
+        .select("*")
+        .eq("business_id", business_id)
+        .order("created_at")
+        .execute()
+        .data
+    )
+
+    # Fetch all themes for this business (table may not exist yet before migration 008)
+    try:
+        all_themes = (
+            sb.table("themes")
+            .select("*")
+            .eq("business_id", business_id)
+            .order("created_at")
+            .execute()
+            .data
+        )
+    except Exception:
+        all_themes = []
+
+    # Fetch all initiatives with owner and primary stakeholder info
+    all_initiatives = (
+        sb.table("initiatives")
+        .select("id, name, status, impact, impact_category, impact_metric, owner_id, primary_stakeholder_id, target_end_date, program_id, theme_id")
+        .eq("business_id", business_id)
+        .neq("status", "cancelled")
+        .order("created_at")
+        .execute()
+        .data
+    )
+
+    # Resolve owner and primary stakeholder names in bulk
+    user_ids = list({
+        uid
+        for i in all_initiatives
+        for uid in [i.get("owner_id"), i.get("primary_stakeholder_id")]
+        if uid
+    })
+    owner_map: dict = {}
+    if user_ids:
+        rows = sb.table("users").select("id, name").in_("id", user_ids).execute().data
+        owner_map = {r["id"]: r["name"] for r in rows}
+
+    for init in all_initiatives:
+        init["owner_name"] = owner_map.get(init.get("owner_id") or "", "")
+        init["primary_stakeholder_name"] = owner_map.get(init.get("primary_stakeholder_id") or "", "")
+
+    # Index themes and initiatives for fast grouping
+    themes_by_program: dict = {}
+    for t in all_themes:
+        themes_by_program.setdefault(t["program_id"], []).append(t)
+
+    initiatives_by_theme: dict = {}
+    initiatives_by_program_no_theme: dict = {}
+    for init in all_initiatives:
+        if init.get("theme_id"):
+            initiatives_by_theme.setdefault(init["theme_id"], []).append(init)
+        elif init.get("program_id"):
+            initiatives_by_program_no_theme.setdefault(init["program_id"], []).append(init)
+
+    # Assemble tree
+    for program in programs:
+        pid = program["id"]
+        themes = themes_by_program.get(pid, [])
+        for theme in themes:
+            theme["initiatives"] = initiatives_by_theme.get(theme["id"], [])
+        program["themes"] = themes
+        program["unthemed_initiatives"] = initiatives_by_program_no_theme.get(pid, [])
+
+    return programs
 
 
 @router.get("/{program_id}/initiatives")
