@@ -211,10 +211,12 @@ export default function ProgramsPage() {
     setLoading(true);
     setError("");
     try {
-      const [biz, { data: { user } }] = await Promise.all([
-        apiFetch("/api/v1/businesses/my"),
-        supabase.auth.getUser(),
-      ]);
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const userId = session?.user?.id ?? null;
+
+      const biz = await apiFetch("/api/v1/businesses/my");
 
       if (!biz?.id) throw new Error("No business found for your account.");
       setBusinessId(biz.id);
@@ -223,12 +225,12 @@ export default function ProgramsPage() {
       setPrograms(Array.isArray(data) ? data : []);
 
       // Owner check is immediate; member-role check is non-blocking
-      if (biz.owner_id === user?.id) {
+      if (biz.owner_id === userId) {
         setCanEdit(true);
       } else {
         apiFetch(`/api/v1/businesses/${biz.id}/members`)
           .then((members: any[]) => {
-            const me = members.find((m) => m.user_id === user?.id);
+            const me = members.find((m) => m.user_id === userId);
             if (me?.role === "owner" || me?.role === "admin") setCanEdit(true);
           })
           .catch(() => {});
