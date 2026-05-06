@@ -7,26 +7,31 @@ import { supabase } from "@/lib/supabase";
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 async function apiFetch(path: string, opts?: RequestInit) {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
+  const sessionResult = await supabase.auth.getSession();
+  const session = sessionResult?.data?.session ?? null;
   const token = session?.access_token;
-  if (!token) throw new Error("Not authenticated. Please sign in again.");
+  if (!token) throw new Error("Not authenticated — please sign in again.");
 
-  const res = await fetch(`${API}${path}`, {
-    ...opts,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      ...(opts?.headers ?? {}),
-    },
-  });
+  const url = `${API}${path}`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...opts,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        ...(opts?.headers ?? {}),
+      },
+    });
+  } catch (networkErr: any) {
+    throw new Error(`Network error calling ${path}: ${networkErr?.message ?? String(networkErr)}`);
+  }
 
   if (!res.ok) {
     const detail = await res
       .json()
-      .then((d) => d.detail ?? res.statusText)
-      .catch(() => res.statusText);
+      .then((d) => d.detail ?? d.message ?? `HTTP ${res.status}`)
+      .catch(() => `HTTP ${res.status}`);
     throw new Error(String(detail));
   }
   if (res.status === 204) return null;
@@ -211,20 +216,16 @@ export default function ProgramsPage() {
     setLoading(true);
     setError("");
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const userId = session?.user?.id ?? null;
+      const sessionResult = await supabase.auth.getSession();
+      const userId = sessionResult?.data?.session?.user?.id ?? null;
 
       const biz = await apiFetch("/api/v1/businesses/my");
-
       if (!biz?.id) throw new Error("No business found for your account.");
       setBusinessId(biz.id);
 
       const data = await apiFetch(`/api/v1/programs/?business_id=${biz.id}`);
       setPrograms(Array.isArray(data) ? data : []);
 
-      // Owner check is immediate; member-role check is non-blocking
       if (biz.owner_id === userId) {
         setCanEdit(true);
       } else {
@@ -236,7 +237,8 @@ export default function ProgramsPage() {
           .catch(() => {});
       }
     } catch (err: any) {
-      setError(err?.message ?? "Failed to load programs.");
+      const msg = err?.message ?? err?.toString?.() ?? "Unknown error";
+      setError(msg || "Unexpected error — check console.");
     } finally {
       setLoading(false);
     }

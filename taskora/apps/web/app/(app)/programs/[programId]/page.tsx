@@ -7,26 +7,29 @@ import { supabase } from "@/lib/supabase";
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 async function apiFetch(path: string, opts?: RequestInit) {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  const token = session?.access_token;
-  if (!token) throw new Error("Not authenticated. Please sign in again.");
+  const sessionResult = await supabase.auth.getSession();
+  const token = sessionResult?.data?.session?.access_token;
+  if (!token) throw new Error("Not authenticated — please sign in again.");
 
-  const res = await fetch(`${API}${path}`, {
-    ...opts,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-      ...(opts?.headers ?? {}),
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API}${path}`, {
+      ...opts,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+        ...(opts?.headers ?? {}),
+      },
+    });
+  } catch (networkErr: any) {
+    throw new Error(`Network error: ${networkErr?.message ?? String(networkErr)}`);
+  }
 
   if (!res.ok) {
     const detail = await res
       .json()
-      .then((d) => d.detail ?? res.statusText)
-      .catch(() => res.statusText);
+      .then((d) => d.detail ?? d.message ?? `HTTP ${res.status}`)
+      .catch(() => `HTTP ${res.status}`);
     throw new Error(String(detail));
   }
   if (res.status === 204) return null;
@@ -420,11 +423,10 @@ export default function ProgramDetailPage() {
     setLoading(true);
     setError("");
     try {
-      const [biz, { data: { user } }] = await Promise.all([
-        apiFetch("/api/v1/businesses/my"),
-        supabase.auth.getUser(),
-      ]);
+      const sessionResult = await supabase.auth.getSession();
+      const userId = sessionResult?.data?.session?.user?.id ?? null;
 
+      const biz = await apiFetch("/api/v1/businesses/my");
       if (!biz?.id) throw new Error("No business found.");
       setBusinessId(biz.id);
 
@@ -432,19 +434,19 @@ export default function ProgramDetailPage() {
       if (!data?.id) throw new Error("Program not found.");
       setProgram(data);
 
-      // Owner check is immediate; member-role check is non-blocking
-      if (biz.owner_id === user?.id) {
+      if (biz.owner_id === userId) {
         setCanEdit(true);
       } else {
         apiFetch(`/api/v1/businesses/${biz.id}/members`)
           .then((members: any[]) => {
-            const me = members.find((m) => m.user_id === user?.id);
+            const me = members.find((m) => m.user_id === userId);
             if (me?.role === "owner" || me?.role === "admin") setCanEdit(true);
           })
           .catch(() => {});
       }
     } catch (err: any) {
-      setError(err?.message ?? "Failed to load program.");
+      const msg = err?.message ?? err?.toString?.() ?? "Unknown error";
+      setError(msg || "Unexpected error loading program.");
     } finally {
       setLoading(false);
     }
