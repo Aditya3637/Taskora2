@@ -217,7 +217,12 @@ export default function ProgramsPage() {
     setError("");
     try {
       const sessionResult = await supabase.auth.getSession();
-      const userId = sessionResult?.data?.session?.user?.id ?? null;
+      const session = sessionResult?.data?.session ?? null;
+      if (!session) {
+        router.replace("/login?next=/programs");
+        return;
+      }
+      const userId = session.user?.id ?? null;
 
       const biz = await apiFetch("/api/v1/businesses/my");
       if (!biz?.id) throw new Error("No business found for your account.");
