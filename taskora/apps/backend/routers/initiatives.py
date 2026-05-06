@@ -25,7 +25,7 @@ class InitiativeCreate(BaseModel):
     primary_stakeholder_id: Optional[str] = None
     impact: Optional[str] = None
     impact_metric: Optional[str] = None
-    impact_category: Optional[str] = "others"
+    impact_category: Optional[str] = "other"
     start_date: Optional[date] = None
     target_end_date: Optional[date] = None
     date_mode: Literal["uniform", "per_entity"] = "uniform"
@@ -79,7 +79,7 @@ def create_initiative(
         "theme_id": body.theme_id,
         "impact": body.impact,
         "impact_metric": body.impact_metric,
-        "impact_category": body.impact_category or "others",
+        "impact_category": body.impact_category or "other",
         "start_date": body.start_date.isoformat() if body.start_date else None,
         "target_end_date": body.target_end_date.isoformat() if body.target_end_date else None,
         "date_mode": body.date_mode,

@@ -50,20 +50,20 @@ const IMPACT_CATEGORY_OPTS = [
   { value: "cost",                label: "Cost" },
   { value: "customer_experience", label: "Customer Experience" },
   { value: "process_efficiency",  label: "Process Efficiency" },
-  { value: "others",              label: "Others" },
+  { value: "other",               label: "Others" },
 ];
 
 const IMPACT_CATEGORY_COLOR: Record<string, string> = {
   cost:                 "bg-green-100 text-green-700 border-green-200",
   customer_experience:  "bg-blue-100 text-blue-700 border-blue-200",
   process_efficiency:   "bg-purple-100 text-purple-700 border-purple-200",
-  others:               "bg-gray-100 text-gray-600 border-gray-200",
+  other:                "bg-gray-100 text-gray-600 border-gray-200",
 };
 const IMPACT_CATEGORY_LABEL: Record<string, string> = {
   cost: "Cost",
   customer_experience: "Customer Exp.",
   process_efficiency:  "Process Efficiency",
-  others:              "Others",
+  other:               "Others",
 };
 
 // ── New Initiative Modal ──────────────────────────────────────────────────────
@@ -73,7 +73,7 @@ function NewInitiativeModal({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [primaryStakeholderId, setPrimaryStakeholderId] = useState("");
-  const [impactCategory, setImpactCategory] = useState("others");
+  const [impactCategory, setImpactCategory] = useState("other");
   const [impact, setImpact] = useState("");
   const [impactMetric, setImpactMetric] = useState("");
   const [targetDate, setTargetDate] = useState("");

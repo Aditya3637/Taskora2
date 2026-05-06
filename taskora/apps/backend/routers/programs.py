@@ -173,15 +173,33 @@ def get_full_tree(
         all_themes = []
 
     # Fetch all initiatives with owner and primary stakeholder info
-    all_initiatives = (
-        sb.table("initiatives")
-        .select("id, name, status, impact, impact_category, impact_metric, owner_id, primary_stakeholder_id, target_end_date, program_id, theme_id")
-        .eq("business_id", business_id)
-        .neq("status", "cancelled")
-        .order("created_at")
-        .execute()
-        .data
-    )
+    try:
+        all_initiatives = (
+            sb.table("initiatives")
+            .select("id, name, status, impact, impact_category, impact_metric, owner_id, primary_stakeholder_id, target_end_date, program_id, theme_id")
+            .eq("business_id", business_id)
+            .neq("status", "cancelled")
+            .order("created_at")
+            .execute()
+            .data
+        )
+    except Exception:
+        # Fallback: fetch without newer columns (pre-migration-008 schema)
+        try:
+            all_initiatives = (
+                sb.table("initiatives")
+                .select("id, name, status, impact, impact_category, owner_id, primary_stakeholder_id, target_end_date, program_id")
+                .eq("business_id", business_id)
+                .neq("status", "cancelled")
+                .order("created_at")
+                .execute()
+                .data
+            )
+            for init in all_initiatives:
+                init.setdefault("impact_metric", None)
+                init.setdefault("theme_id", None)
+        except Exception:
+            all_initiatives = []
 
     # Resolve owner and primary stakeholder names in bulk
     user_ids = list({

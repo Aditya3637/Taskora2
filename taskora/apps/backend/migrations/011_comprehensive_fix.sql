@@ -123,7 +123,7 @@ ALTER TABLE workspace_invites ENABLE ROW LEVEL SECURITY;
 DO $$ BEGIN
   CREATE POLICY "invites_select" ON workspace_invites FOR SELECT
     USING (
-      invited_email = (SELECT email FROM users WHERE id = auth.uid())
+      invited_email = auth.email()
       OR EXISTS (SELECT 1 FROM business_members WHERE business_id = workspace_invites.business_id AND user_id = auth.uid())
     );
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
@@ -134,7 +134,7 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN
   CREATE POLICY "invites_update" ON workspace_invites FOR UPDATE
     USING (
-      invited_email = (SELECT email FROM users WHERE id = auth.uid())
+      invited_email = auth.email()
       OR EXISTS (SELECT 1 FROM businesses WHERE id = workspace_invites.business_id AND owner_id = auth.uid())
     );
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
