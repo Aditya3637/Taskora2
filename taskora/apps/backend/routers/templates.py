@@ -153,8 +153,8 @@ def apply_template(
             "initiative_id": body.initiative_id,
             "title": task_def.get("title", "Untitled Task"),
             "priority": task_def.get("priority", "medium"),
-            "status": "not_started",
-            "created_by": user["id"],
+            "status": "backlog",
+            "primary_stakeholder_id": user["id"],
             "created_at": now,
             "updated_at": now,
         }
@@ -165,20 +165,24 @@ def apply_template(
         created_task = task_result.data[0]
         created_tasks.append(created_task)
 
-        # Create subtasks if present
-        subtasks = task_def.get("subtasks", [])
-        for sub_def in subtasks:
-            sub_row = {
-                "parent_task_id": created_task["id"],
-                "initiative_id": body.initiative_id,
+        # Add creator as primary stakeholder
+        sb.table("task_stakeholders").insert({
+            "task_id": created_task["id"],
+            "user_id": user["id"],
+            "role": "primary",
+        }).execute()
+
+        # Create subtasks in the subtasks table (not tasks)
+        subtask_defs = task_def.get("subtasks", [])
+        for sub_def in subtask_defs:
+            sb.table("subtasks").insert({
+                "task_id": created_task["id"],
                 "title": sub_def.get("title", "Untitled Subtask"),
-                "priority": sub_def.get("priority", "medium"),
-                "status": "not_started",
-                "created_by": user["id"],
+                "assignee_id": user["id"],
+                "status": "backlog",
                 "created_at": now,
                 "updated_at": now,
-            }
-            sb.table("tasks").insert(sub_row).execute()
+            }).execute()
 
     return {"initiative_id": body.initiative_id, "tasks_created": len(created_tasks)}
 
@@ -194,21 +198,26 @@ def _build_structure_from_initiative(sb: Client, initiative_id: str) -> Dict[str
     """
     tasks = (
         sb.table("tasks")
-        .select("id, title, priority, tasks!parent_task_id(id, title, priority)")
+        .select("id, title, priority")
         .eq("initiative_id", initiative_id)
-        .is_("parent_task_id", "null")
         .execute()
         .data
     )
 
     task_list = []
     for t in tasks:
-        subtasks_raw = t.pop("tasks", []) or []
+        subtasks_raw = (
+            sb.table("subtasks")
+            .select("title, status")
+            .eq("task_id", t["id"])
+            .execute()
+            .data
+        ) or []
         task_list.append({
             "title": t.get("title"),
             "priority": t.get("priority", "medium"),
             "subtasks": [
-                {"title": s.get("title"), "priority": s.get("priority", "medium")}
+                {"title": s.get("title"), "priority": "medium"}
                 for s in subtasks_raw
             ],
         })

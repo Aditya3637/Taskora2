@@ -36,7 +36,7 @@ def create_invite(
         "business_id": body.business_id,
         "invited_email": body.invited_email,
         "role": body.role,
-        "inviter_id": user["id"],
+        "invited_by": user["id"],
         "token": token,
         "status": "pending",
         "created_at": now,
@@ -63,7 +63,7 @@ def get_invite(
     """Get invite details — no auth required (public link preview)."""
     rows = (
         sb.table("workspace_invites")
-        .select("*, businesses(name), inviter:users!inviter_id(email)")
+        .select("*, businesses(name), inviter:users!invited_by(email)")
         .eq("token", token)
         .execute()
         .data
@@ -109,15 +109,27 @@ def accept_invite(
         )
 
     business_id = invite["business_id"]
-    role = invite["role"]
+    invite_role = invite["role"]
     now = datetime.now(timezone.utc).isoformat()
+
+    # Map invite role → business_members role
+    # platform_owner/admin → 'owner'/'admin'; task-scoped roles → 'member'
+    _ROLE_MAP = {
+        "platform_owner": "owner",
+        "admin": "admin",
+        "primary": "member",
+        "secondary": "member",
+        "follower": "member",
+        "member": "member",
+    }
+    biz_role = _ROLE_MAP.get(invite_role, "member")
 
     # Insert business_members (upsert to be idempotent)
     sb.table("business_members").upsert(
         {
             "business_id": business_id,
             "user_id": user["id"],
-            "role": role,
+            "role": biz_role,
             "joined_at": now,
         },
         on_conflict="business_id,user_id",
@@ -166,7 +178,7 @@ def list_invites(
 
     invites = (
         sb.table("workspace_invites")
-        .select("*, inviter:users!inviter_id(email)")
+        .select("*, inviter:users!invited_by(email)")
         .eq("business_id", business_id)
         .order("created_at", desc=True)
         .execute()

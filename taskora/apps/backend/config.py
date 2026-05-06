@@ -8,7 +8,7 @@ class Settings(BaseSettings):
 
     supabase_url: str
     supabase_service_key: str
-    supabase_jwt_secret: str
+    supabase_jwt_secret: Optional[str] = None  # unused since auth switched to Supabase /auth/v1/user
     # Payment keys are optional at startup — missing values raise errors at call time
     razorpay_key_id: Optional[str] = None
     razorpay_key_secret: Optional[str] = None

@@ -47,7 +47,7 @@ class TaskUpdate(BaseModel):
 
 class StakeholderAdd(BaseModel):
     user_id: str
-    role: Literal["primary", "secondary", "observer"] = "secondary"
+    role: Literal["primary", "secondary", "follower"] = "secondary"
 
 
 @router.get("/my")
@@ -197,9 +197,47 @@ def update_task(
     if body.description is not None: payload["description"] = body.description
     if not payload:
         raise HTTPException(status_code=422, detail="No fields to update")
-    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    payload["updated_at"] = now_iso
     result = sb.table("tasks").update(payload).eq("id", task_id).execute()
-    return result.data[0] if result.data else {}
+    updated = result.data[0] if result.data else {}
+
+    # Date change log + uniform subtask propagation
+    if body.due_date is not None:
+        old_row = sb.table("tasks").select("due_date, date_mode").eq("id", task_id).execute().data
+        old_date_str = old_row[0].get("due_date") if old_row else None
+        old_date = date.fromisoformat(old_date_str[:10]) if old_date_str else None
+        if old_date != body.due_date:
+            delay = (body.due_date - old_date).days if old_date else None
+            sb.table("task_date_change_log").insert({
+                "task_id": task_id,
+                "changed_by": user["id"],
+                "old_date": old_date.isoformat() if old_date else None,
+                "new_date": body.due_date.isoformat(),
+                "delay_days": delay,
+            }).execute()
+
+        # Propagate to subtasks when date_mode == 'uniform'
+        date_mode = (old_row[0].get("date_mode") if old_row else None) or updated.get("date_mode")
+        if date_mode == "uniform":
+            subtasks = sb.table("subtasks").select("id, due_date").eq("task_id", task_id).execute().data
+            for sub in subtasks:
+                sub_old = sub.get("due_date")
+                if sub_old != body.due_date.isoformat():
+                    sb.table("subtasks").update({
+                        "due_date": body.due_date.isoformat(),
+                        "updated_at": now_iso,
+                    }).eq("id", sub["id"]).execute()
+                    sb.table("task_date_change_log").insert({
+                        "subtask_id": sub["id"],
+                        "changed_by": user["id"],
+                        "old_date": sub_old,
+                        "new_date": body.due_date.isoformat(),
+                        "delay_days": (body.due_date - date.fromisoformat(sub_old[:10])).days if sub_old else None,
+                    }).execute()
+
+    return updated
 
 
 @router.patch("/{task_id}/status")
@@ -329,6 +367,97 @@ def bulk_update_tasks(
     return {"updated_count": len(result.data) if result.data else 0}
 
 
+# ---------------------------------------------------------------------------
+# Subtask endpoints
+# ---------------------------------------------------------------------------
+
+class SubtaskCreate(BaseModel):
+    title: str
+    assignee_id: Optional[str] = None
+
+
+class SubtaskUpdate(BaseModel):
+    title: Optional[str] = None
+    status: Optional[str] = None
+    assignee_id: Optional[str] = None
+
+
+def _assert_task_access(sb: Client, task_id: str, user_id: str):
+    rows = sb.table("tasks").select("primary_stakeholder_id").eq("id", task_id).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="Task not found")
+    is_primary = rows[0]["primary_stakeholder_id"] == user_id
+    if not is_primary:
+        s_rows = sb.table("task_stakeholders").select("user_id").eq("task_id", task_id).eq("user_id", user_id).execute().data
+        if not s_rows:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+
+@router.get("/{task_id}/subtasks")
+def list_subtasks(
+    task_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    _assert_task_access(sb, task_id, user["id"])
+    subtasks = (
+        sb.table("subtasks")
+        .select("id, title, status, assignee_id, created_at")
+        .eq("task_id", task_id)
+        .order("created_at")
+        .execute()
+        .data
+    )
+    # Resolve assignee names
+    assignee_ids = list({s["assignee_id"] for s in subtasks if s.get("assignee_id")})
+    name_map: dict = {}
+    if assignee_ids:
+        for r in sb.table("users").select("id, name").in_("id", assignee_ids).execute().data:
+            name_map[r["id"]] = r["name"]
+    for s in subtasks:
+        s["assignee_name"] = name_map.get(s.get("assignee_id") or "", "")
+    return subtasks
+
+
+@router.post("/{task_id}/subtasks", status_code=201)
+def create_subtask(
+    task_id: str,
+    body: SubtaskCreate,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    _assert_task_access(sb, task_id, user["id"])
+    now = datetime.now(timezone.utc).isoformat()
+    result = sb.table("subtasks").insert({
+        "task_id": task_id,
+        "title": body.title,
+        "status": "todo",
+        "assignee_id": body.assignee_id or user["id"],
+        "created_at": now,
+        "updated_at": now,
+    }).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create subtask")
+    return result.data[0]
+
+
+@router.patch("/{task_id}/subtasks/{subtask_id}")
+def update_subtask(
+    task_id: str,
+    subtask_id: str,
+    body: SubtaskUpdate,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    _assert_task_access(sb, task_id, user["id"])
+    payload = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not payload:
+        raise HTTPException(status_code=422, detail="No fields to update")
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    result = sb.table("subtasks").update(payload).eq("id", subtask_id).eq("task_id", task_id).execute()
+    return result.data[0] if result.data else {}
+
+
 @router.get("/follow-up-today")
 def follow_up_today(
     user: dict = Depends(get_current_user),
@@ -418,7 +547,7 @@ def recurring_mark_done(
     sb: Client = Depends(get_supabase),
 ):
     """Mark a recurring task done for this cycle and advance next_meeting_at."""
-    rows = sb.table("tasks").select("primary_stakeholder_id, recurrence, status").eq("id", task_id).execute().data
+    rows = sb.table("tasks").select("primary_stakeholder_id, recurring_type, status").eq("id", task_id).execute().data
     if not rows:
         raise HTTPException(status_code=404, detail="Task not found")
     task_row = rows[0]
@@ -432,15 +561,15 @@ def recurring_mark_done(
     if not is_member:
         raise HTTPException(status_code=403, detail="Not a stakeholder")
 
-    recurrence = task_row.get("recurrence")
-    if not recurrence or recurrence not in _RECURRENCE_DELTAS:
+    recurring_type = task_row.get("recurring_type")
+    if not recurring_type or recurring_type not in _RECURRENCE_DELTAS:
         raise HTTPException(
             status_code=422,
-            detail=f"Task recurrence must be one of {list(_RECURRENCE_DELTAS.keys())}",
+            detail=f"Task recurring_type must be one of {list(_RECURRENCE_DELTAS.keys())}",
         )
 
     now = datetime.now(timezone.utc)
-    next_meeting_at = now + _RECURRENCE_DELTAS[recurrence]
+    next_meeting_at = now + _RECURRENCE_DELTAS[recurring_type]
 
     result = sb.table("tasks").update({
         "last_meeting_at": now.isoformat(),

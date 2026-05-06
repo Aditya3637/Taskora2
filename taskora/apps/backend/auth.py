@@ -1,9 +1,11 @@
+import httpx
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import jwt, JWTError
 from config import get_settings
 
 bearer = HTTPBearer()
+
+_http = httpx.Client(timeout=10)
 
 
 def get_current_user(
@@ -11,34 +13,33 @@ def get_current_user(
     settings=Depends(get_settings),
 ) -> dict:
     """
-    Validates a Supabase JWT and returns the decoded user payload.
-    Returns dict with 'id' (UUID string) and 'email' (may be None).
-    Raises HTTP 403 if no Authorization header is present (HTTPBearer).
-    Raises HTTP 401 if the token is invalid, expired, or missing the sub claim.
+    Verifies a Supabase JWT by calling Supabase's /auth/v1/user endpoint.
+    Returns dict with 'id' and 'email'.
     """
     token = credentials.credentials
-    try:
-        payload = jwt.decode(
-            token,
-            settings.supabase_jwt_secret,
-            algorithms=["HS256"],
-            audience="authenticated",
-        )
-        user_id = payload.get("sub")
-        if not user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token missing subject claim",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        return {
-            "id": user_id,
-            "email": payload.get("email"),
-            "role": payload.get("role", "authenticated"),
-        }
-    except JWTError as exc:
+    resp = _http.get(
+        f"{settings.supabase_url}/auth/v1/user",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "apikey": settings.supabase_service_key,
+        },
+    )
+    if resp.status_code != 200:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
+        )
+    data = resp.json()
+    user_id = data.get("id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token missing subject claim",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return {
+        "id": user_id,
+        "email": data.get("email"),
+        "role": data.get("role", "authenticated"),
+    }

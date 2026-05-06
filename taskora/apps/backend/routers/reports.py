@@ -185,7 +185,7 @@ def report_initiatives(
 
     today = date.today()
 
-    init_query = sb.table("initiatives").select("id, title, status").eq("business_id", business_id)
+    init_query = sb.table("initiatives").select("id, name, status").eq("business_id", business_id)
     if start_date:
         init_query = init_query.gte("created_at", start_date.isoformat())
     if end_date:
@@ -235,7 +235,7 @@ def report_initiatives(
         pct = round(done / total * 100, 1) if total > 0 else 0.0
         result.append({
             "initiative_id": iid,
-            "title": init.get("title"),
+            "title": init.get("name"),
             "total_tasks": total,
             "done_tasks": done,
             "completion_pct": pct,
@@ -271,8 +271,8 @@ def report_buildings(
     today = date.today()
 
     entities = (
-        sb.table("entities")
-        .select("id, code, city")
+        sb.table("buildings")
+        .select("id, code, city, name")
         .eq("business_id", business_id)
         .execute()
         .data

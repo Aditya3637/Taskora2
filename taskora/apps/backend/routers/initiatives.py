@@ -20,10 +20,43 @@ class InitiativeCreate(BaseModel):
     name: str
     description: Optional[str] = None
     business_id: str
+    program_id: Optional[str] = None
+    theme_id: Optional[str] = None
+    primary_stakeholder_id: Optional[str] = None
+    impact: Optional[str] = None
+    impact_metric: Optional[str] = None
+    impact_category: Optional[str] = "other"
     start_date: Optional[date] = None
     target_end_date: Optional[date] = None
     date_mode: Literal["uniform", "per_entity"] = "uniform"
     entities: List[EntityAssignment] = []
+
+
+@router.get("/my")
+def get_my_initiatives(
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Return initiatives where the current user is the primary stakeholder or owner."""
+    uid = user["id"]
+    rows = (
+        sb.table("initiatives")
+        .select("id, name, status, impact, impact_category, primary_stakeholder_id, owner_id, program_id, target_end_date, programs(id, name, color)")
+        .or_(f"primary_stakeholder_id.eq.{uid},owner_id.eq.{uid}")
+        .neq("status", "cancelled")
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+    # Resolve primary stakeholder names
+    ps_ids = list({r["primary_stakeholder_id"] for r in rows if r.get("primary_stakeholder_id")})
+    ps_map: dict = {}
+    if ps_ids:
+        users_rows = sb.table("users").select("id, name").in_("id", ps_ids).execute().data
+        ps_map = {u["id"]: u["name"] for u in users_rows}
+    for r in rows:
+        r["primary_stakeholder_name"] = ps_map.get(r.get("primary_stakeholder_id") or "", "")
+    return rows
 
 
 @router.post("/", status_code=201)
@@ -34,11 +67,19 @@ def create_initiative(
 ):
     require_member(sb, body.business_id, user["id"])
 
+    primary_stakeholder_id = body.primary_stakeholder_id or user["id"]
+
     result = sb.table("initiatives").insert({
         "name": body.name,
         "description": body.description,
         "business_id": body.business_id,
         "owner_id": user["id"],
+        "primary_stakeholder_id": primary_stakeholder_id,
+        "program_id": body.program_id,
+        "theme_id": body.theme_id,
+        "impact": body.impact,
+        "impact_metric": body.impact_metric,
+        "impact_category": body.impact_category or "other",
         "start_date": body.start_date.isoformat() if body.start_date else None,
         "target_end_date": body.target_end_date.isoformat() if body.target_end_date else None,
         "date_mode": body.date_mode,
@@ -80,14 +121,23 @@ def list_initiatives_for_business(
     sb: Client = Depends(get_supabase),
 ):
     require_member(sb, business_id, user["id"])
-    return (
+    initiatives = (
         sb.table("initiatives")
-        .select("*, initiative_entities(*)")
+        .select("*, initiative_entities(*), programs(id, name), themes(id, name, color, program_id)")
         .eq("business_id", business_id)
         .neq("status", "cancelled")
         .execute()
         .data
     )
+    # Resolve owner names
+    owner_ids = list({i["owner_id"] for i in initiatives if i.get("owner_id")})
+    owner_map: dict = {}
+    if owner_ids:
+        rows = sb.table("users").select("id, name").in_("id", owner_ids).execute().data
+        owner_map = {r["id"]: r["name"] for r in rows}
+    for init in initiatives:
+        init["owner_name"] = owner_map.get(init.get("owner_id") or "", "")
+    return initiatives
 
 
 @router.get("/{initiative_id}")
@@ -98,7 +148,7 @@ def get_initiative(
 ):
     data = (
         sb.table("initiatives")
-        .select("*, initiative_entities(*)")
+        .select("*, initiative_entities(*), programs(id, name), themes(id, name, color, program_id)")
         .eq("id", initiative_id)
         .execute()
         .data
@@ -110,7 +160,212 @@ def get_initiative(
         )
     initiative = data[0]
     require_member(sb, initiative["business_id"], user["id"])
+    # Resolve owner name
+    if initiative.get("owner_id"):
+        owner = sb.table("users").select("id, name").eq("id", initiative["owner_id"]).execute().data
+        initiative["owner_name"] = owner[0]["name"] if owner else ""
     return initiative
+
+
+class InitiativeEntityAdd(BaseModel):
+    entity_type: Literal["building", "client"]
+    entity_id: str
+
+
+@router.get("/business/{business_id}/with-tasks")
+def list_initiatives_with_tasks(
+    business_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Return all initiatives for a business with their entities and tasks (used by Tasks page)."""
+    require_member(sb, business_id, user["id"])
+
+    # Check if user is owner or admin
+    member_row = (
+        sb.table("business_members")
+        .select("role")
+        .eq("business_id", business_id)
+        .eq("user_id", user["id"])
+        .execute()
+        .data
+    )
+    member_role = member_row[0]["role"] if member_row else "member"
+    is_privileged = member_role in ("owner", "admin")
+
+    # Fetch initiatives
+    initiatives = (
+        sb.table("initiatives")
+        .select("id, name, status, program_id, target_end_date")
+        .eq("business_id", business_id)
+        .neq("status", "cancelled")
+        .order("created_at")
+        .execute()
+        .data
+    )
+
+    if not initiatives:
+        return []
+
+    init_ids = [i["id"] for i in initiatives]
+    program_ids = list({i["program_id"] for i in initiatives if i.get("program_id")})
+
+    # Resolve program names
+    program_map: dict = {}
+    if program_ids:
+        progs = sb.table("programs").select("id, name, color").in_("id", program_ids).execute().data
+        program_map = {p["id"]: p for p in progs}
+
+    # Fetch initiative entities with names
+    entity_rows = (
+        sb.table("initiative_entities")
+        .select("initiative_id, entity_type, entity_id")
+        .in_("initiative_id", init_ids)
+        .execute()
+        .data
+    )
+    building_ids = list({e["entity_id"] for e in entity_rows if e["entity_type"] == "building"})
+    client_ids   = list({e["entity_id"] for e in entity_rows if e["entity_type"] == "client"})
+    entity_name_map: dict = {}
+    if building_ids:
+        for r in sb.table("buildings").select("id, name").in_("id", building_ids).execute().data:
+            entity_name_map[r["id"]] = r["name"]
+    if client_ids:
+        for r in sb.table("clients").select("id, name").in_("id", client_ids).execute().data:
+            entity_name_map[r["id"]] = r["name"]
+    for e in entity_rows:
+        e["entity_name"] = entity_name_map.get(e["entity_id"], e["entity_id"])
+
+    entities_by_init: dict = {}
+    for e in entity_rows:
+        entities_by_init.setdefault(e["initiative_id"], []).append(e)
+
+    # Fetch tasks
+    tasks = (
+        sb.table("tasks")
+        .select("id, title, status, due_date, description, primary_stakeholder_id, initiative_id")
+        .in_("initiative_id", init_ids)
+        .neq("status", "cancelled")
+        .order("created_at")
+        .execute()
+        .data
+    )
+
+    # Resolve task assignee names + collect stakeholder task_ids for current user
+    all_stakeholder_rows = []
+    if init_ids:
+        task_ids = [t["id"] for t in tasks]
+        if task_ids:
+            all_stakeholder_rows = (
+                sb.table("task_stakeholders")
+                .select("task_id, user_id, role")
+                .in_("task_id", task_ids)
+                .execute()
+                .data
+            )
+
+    # Tasks this user has stake in (for edit access on non-privileged users)
+    user_stakeholder_task_ids = {
+        s["task_id"] for s in all_stakeholder_rows if s["user_id"] == user["id"]
+    }
+    user_primary_task_ids = {t["id"] for t in tasks if t.get("primary_stakeholder_id") == user["id"]}
+    user_task_ids = user_primary_task_ids | user_stakeholder_task_ids
+
+    assignee_ids = list({t["primary_stakeholder_id"] for t in tasks if t.get("primary_stakeholder_id")})
+    assignee_map: dict = {}
+    if assignee_ids:
+        rows = sb.table("users").select("id, name").in_("id", assignee_ids).execute().data
+        assignee_map = {r["id"]: r["name"] for r in rows}
+
+    for t in tasks:
+        t["assignee_name"] = assignee_map.get(t.get("primary_stakeholder_id") or "", "")
+
+    tasks_by_init: dict = {}
+    for t in tasks:
+        tasks_by_init.setdefault(t["initiative_id"], []).append(t)
+
+    # Assemble result
+    result = []
+    for init in initiatives:
+        iid = init["id"]
+        init_tasks = tasks_by_init.get(iid, [])
+
+        # viewer_can_edit: owner/admin always; member if they're stakeholder on any task here
+        if is_privileged:
+            can_edit = True
+        else:
+            init_task_ids = {t["id"] for t in init_tasks}
+            can_edit = bool(init_task_ids & user_task_ids)
+
+        prog = program_map.get(init.get("program_id") or "", {})
+        result.append({
+            **init,
+            "program_name": prog.get("name", ""),
+            "program_color": prog.get("color", "#E53E3E"),
+            "entities": entities_by_init.get(iid, []),
+            "tasks": init_tasks,
+            "viewer_can_edit": can_edit,
+        })
+
+    return result
+
+
+@router.get("/{initiative_id}/initiative-entities")
+def list_initiative_entities_detail(
+    initiative_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    init = _get_initiative_or_404(sb, initiative_id)
+    require_member(sb, init["business_id"], user["id"])
+    rows = (
+        sb.table("initiative_entities")
+        .select("entity_type, entity_id")
+        .eq("initiative_id", initiative_id)
+        .execute()
+        .data
+    )
+    building_ids = [r["entity_id"] for r in rows if r["entity_type"] == "building"]
+    client_ids   = [r["entity_id"] for r in rows if r["entity_type"] == "client"]
+    name_map: dict = {}
+    if building_ids:
+        for r in sb.table("buildings").select("id, name").in_("id", building_ids).execute().data:
+            name_map[r["id"]] = r["name"]
+    if client_ids:
+        for r in sb.table("clients").select("id, name").in_("id", client_ids).execute().data:
+            name_map[r["id"]] = r["name"]
+    for r in rows:
+        r["entity_name"] = name_map.get(r["entity_id"], r["entity_id"])
+    return rows
+
+
+@router.post("/{initiative_id}/initiative-entities", status_code=201)
+def add_initiative_entity(
+    initiative_id: str,
+    body: InitiativeEntityAdd,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    init = _get_initiative_or_404(sb, initiative_id)
+    require_member(sb, init["business_id"], user["id"])
+    result = sb.table("initiative_entities").upsert(
+        {"initiative_id": initiative_id, "entity_type": body.entity_type, "entity_id": body.entity_id},
+        on_conflict="initiative_id,entity_type,entity_id",
+    ).execute()
+    return result.data[0] if result.data else {}
+
+
+@router.delete("/{initiative_id}/initiative-entities/{entity_type}/{entity_id}", status_code=204)
+def remove_initiative_entity(
+    initiative_id: str,
+    entity_type: str,
+    entity_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    init = _get_initiative_or_404(sb, initiative_id)
+    require_member(sb, init["business_id"], user["id"])
+    sb.table("initiative_entities").delete().eq("initiative_id", initiative_id).eq("entity_type", entity_type).eq("entity_id", entity_id).execute()
 
 
 class InitiativeUpdate(BaseModel):
@@ -118,6 +373,11 @@ class InitiativeUpdate(BaseModel):
     description: Optional[str] = None
     status: Optional[str] = None
     target_end_date: Optional[date] = None
+    program_id: Optional[str] = None
+    theme_id: Optional[str] = None
+    impact: Optional[str] = None
+    impact_metric: Optional[str] = None
+    impact_category: Optional[str] = None
 
 @router.patch("/{initiative_id}")
 def update_initiative(
@@ -144,7 +404,7 @@ def update_initiative(
 # ---------------------------------------------------------------------------
 
 def _get_initiative_or_404(sb: Client, initiative_id: str) -> dict:
-    rows = sb.table("initiatives").select("id, business_id, title, start_date, target_end_date").eq("id", initiative_id).execute().data
+    rows = sb.table("initiatives").select("id, business_id, name, start_date, target_end_date").eq("id", initiative_id).execute().data
     if not rows:
         raise HTTPException(status_code=404, detail="Initiative not found")
     return rows[0]
@@ -326,7 +586,7 @@ def get_initiative_gantt(
     return {
         "initiative": {
             "id": initiative["id"],
-            "title": initiative["title"],
+            "title": initiative["name"],
             "start_date": initiative.get("start_date"),
             "end_date": initiative.get("target_end_date"),
         },

@@ -1,7 +1,8 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
+import { Plus, X, ChevronRight } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import { ChevronDown, ChevronRight, Plus, X } from "lucide-react";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -16,125 +17,33 @@ async function apiFetch(path: string, opts?: RequestInit) {
     },
   });
   if (!res.ok) throw new Error(`${res.status}`);
+  if (res.status === 204) return {};
   return res.json();
 }
 
 type Program = {
-  id: string;
-  name: string;
-  description?: string;
-  status: string;
-  color?: string;
-  lead_user?: { id: string; full_name?: string; email?: string };
-  initiative_count?: number;
+  id: string; name: string; status: string; color: string; description?: string;
+  themes: { id: string; initiatives: { id: string }[] }[];
+  unthemed_initiatives: { id: string }[];
 };
 
-type Initiative = {
-  id: string;
-  name?: string;
-  title?: string;
-  status?: string;
-  completion_pct?: number;
+const STATUS_COLOR: Record<string, string> = {
+  active:    "bg-green-100 text-green-700",
+  paused:    "bg-amber-100 text-amber-700",
+  completed: "bg-blue-100 text-blue-700",
+  archived:  "bg-gray-100 text-gray-500",
 };
 
-const STATUS_BADGE: Record<string, string> = {
-  active: "bg-green-100 text-green-700 border-green-200",
-  paused: "bg-amber-100 text-amber-700 border-amber-200",
-  completed: "bg-blue-100 text-blue-700 border-blue-200",
-  archived: "bg-gray-100 text-gray-500 border-gray-200",
-};
+const PRESET_COLORS = ["#E53E3E","#3182CE","#38A169","#D69E2E","#805AD5","#DD6B20","#6366F1","#EC4899"];
 
-const PRESET_COLORS = ["#E53E3E", "#3182CE", "#38A169", "#D69E2E", "#805AD5", "#DD6B20"];
-
-function StatusBadge({ status }: { status: string }) {
-  return (
-    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${STATUS_BADGE[status] ?? "bg-gray-100 text-gray-500 border-gray-200"}`}>
-      {status.charAt(0).toUpperCase() + status.slice(1)}
-    </span>
-  );
+function initiativeCount(p: Program) {
+  return p.themes.reduce((acc, t) => acc + t.initiatives.length, 0) + p.unthemed_initiatives.length;
 }
 
-function ProgramCard({
-  program,
-  onExpand,
-  expanded,
-  initiatives,
-  loadingInits,
-}: {
-  program: Program;
-  onExpand: (id: string) => void;
-  expanded: boolean;
-  initiatives: Initiative[];
-  loadingInits: boolean;
+// ── New Program Modal ────────────────────────────────────────────────────────
+function NewProgramModal({ businessId, onClose, onCreated }: {
+  businessId: string; onClose: () => void; onCreated: () => void;
 }) {
-  const color = program.color ?? "#E53E3E";
-  return (
-    <div className="bg-white rounded-xl border border-pebble shadow-sm overflow-hidden">
-      <div
-        className="flex items-center gap-4 p-5 cursor-pointer hover:bg-mist/40 transition-colors"
-        onClick={() => onExpand(program.id)}
-      >
-        <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-3 flex-wrap">
-            <h3 className="font-semibold text-midnight text-sm">{program.name}</h3>
-            <StatusBadge status={program.status} />
-          </div>
-          {program.description && (
-            <p className="text-xs text-steel mt-1 line-clamp-1">{program.description}</p>
-          )}
-          <div className="flex items-center gap-4 mt-2 text-xs text-steel">
-            {program.lead_user && (
-              <span>Lead: <span className="text-midnight font-medium">{program.lead_user.full_name ?? program.lead_user.email}</span></span>
-            )}
-            {program.initiative_count !== undefined && (
-              <span>{program.initiative_count} initiative{program.initiative_count !== 1 ? "s" : ""}</span>
-            )}
-          </div>
-        </div>
-        <div className="text-steel flex-shrink-0">
-          {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-        </div>
-      </div>
-
-      {expanded && (
-        <div className="border-t border-pebble bg-mist/30 px-5 py-4">
-          {loadingInits ? (
-            <div className="flex items-center gap-2 text-sm text-steel">
-              <div className="w-4 h-4 border-2 border-pebble border-t-taskora-red rounded-full animate-spin" />
-              Loading initiatives…
-            </div>
-          ) : initiatives.length === 0 ? (
-            <p className="text-sm text-steel italic">No initiatives yet.</p>
-          ) : (
-            <ul className="space-y-2">
-              {initiatives.map((init) => (
-                <li key={init.id} className="flex items-center gap-3 bg-white rounded-lg px-4 py-2.5 border border-pebble text-sm">
-                  <div className="flex-1">
-                    <span className="font-medium text-midnight">{init.name ?? init.title}</span>
-                    {init.status && (
-                      <span className="ml-2 text-xs text-steel">· {init.status}</span>
-                    )}
-                  </div>
-                  {init.completion_pct !== undefined && (
-                    <div className="flex items-center gap-2">
-                      <div className="w-20 h-1.5 bg-pebble rounded-full overflow-hidden">
-                        <div className="h-full bg-taskora-red rounded-full" style={{ width: `${init.completion_pct}%` }} />
-                      </div>
-                      <span className="text-xs text-steel font-mono">{Math.round(init.completion_pct)}%</span>
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function NewProgramModal({ businessId, onClose, onCreated }: { businessId: string; onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [color, setColor] = useState(PRESET_COLORS[0]);
@@ -144,81 +53,56 @@ function NewProgramModal({ businessId, onClose, onCreated }: { businessId: strin
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
-    setSaving(true);
-    setError("");
+    setSaving(true); setError("");
     try {
       await apiFetch("/api/v1/programs/", {
         method: "POST",
-        body: JSON.stringify({ name: name.trim(), description: description.trim(), color, business_id: businessId }),
+        body: JSON.stringify({ name: name.trim(), description: description.trim() || null, color, business_id: businessId }),
       });
-      onCreated();
-      onClose();
-    } catch {
-      setError("Failed to create program. Please try again.");
-    } finally {
-      setSaving(false);
-    }
+      onCreated(); onClose();
+    } catch { setError("Failed to create program."); }
+    finally { setSaving(false); }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md mx-4 p-6" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-5">
           <h2 className="text-lg font-bold text-midnight">New Program</h2>
-          <button onClick={onClose} className="text-steel hover:text-midnight transition-colors">
-            <X className="w-5 h-5" />
-          </button>
+          <button onClick={onClose}><X className="w-5 h-5 text-steel" /></button>
         </div>
-
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1">Name *</label>
+            <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1">Program Name *</label>
             <input
-              className="w-full border border-pebble rounded-lg px-3 py-2 text-sm text-midnight focus:outline-none focus:ring-2 focus:ring-taskora-red/30 focus:border-taskora-red"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Product Launch Q3"
-              required
+              className="w-full border border-pebble rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-taskora-red"
+              value={name} onChange={e => setName(e.target.value)}
+              placeholder="e.g. Operations, HR, Accounts" required autoFocus
             />
           </div>
-
           <div>
             <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1">Description</label>
             <textarea
-              className="w-full border border-pebble rounded-lg px-3 py-2 text-sm text-midnight focus:outline-none focus:ring-2 focus:ring-taskora-red/30 focus:border-taskora-red resize-none"
-              rows={3}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="What is this program about?"
+              className="w-full border border-pebble rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-taskora-red resize-none"
+              rows={2} value={description} onChange={e => setDescription(e.target.value)}
             />
           </div>
-
           <div>
             <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-2">Color</label>
-            <div className="flex gap-2">
-              {PRESET_COLORS.map((c) => (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setColor(c)}
-                  className={`w-8 h-8 rounded-full border-2 transition-transform ${color === c ? "border-midnight scale-110" : "border-transparent"}`}
-                  style={{ backgroundColor: c }}
-                />
+            <div className="flex gap-2 flex-wrap">
+              {PRESET_COLORS.map(c => (
+                <button key={c} type="button" onClick={() => setColor(c)}
+                  className={`w-7 h-7 rounded-full border-2 transition-transform ${color === c ? "border-midnight scale-110" : "border-transparent"}`}
+                  style={{ backgroundColor: c }} />
               ))}
             </div>
           </div>
-
           {error && <p className="text-xs text-red-600">{error}</p>}
-
-          <div className="flex gap-3 pt-2">
-            <button type="button" onClick={onClose} className="flex-1 px-4 py-2 rounded-lg border border-pebble text-sm font-medium text-steel hover:bg-mist transition-colors">
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={saving || !name.trim()}
-              className="flex-1 px-4 py-2 rounded-lg bg-taskora-red text-white text-sm font-semibold hover:bg-red-700 transition-colors disabled:opacity-50"
-            >
+          <div className="flex gap-3 pt-1">
+            <button type="button" onClick={onClose}
+              className="flex-1 px-4 py-2 rounded-lg border border-pebble text-sm text-steel hover:bg-mist">Cancel</button>
+            <button type="submit" disabled={saving || !name.trim()}
+              className="flex-1 px-4 py-2 rounded-lg bg-taskora-red text-white text-sm font-semibold hover:opacity-90 disabled:opacity-50">
               {saving ? "Creating…" : "Create Program"}
             </button>
           </div>
@@ -228,114 +112,110 @@ function NewProgramModal({ businessId, onClose, onCreated }: { businessId: strin
   );
 }
 
+// ── Page ─────────────────────────────────────────────────────────────────────
 export default function ProgramsPage() {
+  const router = useRouter();
   const [programs, setPrograms] = useState<Program[]>([]);
   const [businessId, setBusinessId] = useState<string | null>(null);
+  const [canEdit, setCanEdit] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [initiativesMap, setInitiativesMap] = useState<Record<string, Initiative[]>>({});
-  const [loadingInitsFor, setLoadingInitsFor] = useState<string | null>(null);
-  const [showModal, setShowModal] = useState(false);
+  const [showNew, setShowNew] = useState(false);
 
   const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
+    setLoading(true); setError("");
     try {
-      const businesses = await apiFetch("/api/v1/businesses/my");
-      const biz = Array.isArray(businesses) ? businesses[0] : businesses;
-      if (!biz?.id) throw new Error("No business found");
+      const [biz, { data: { user } }] = await Promise.all([
+        apiFetch("/api/v1/businesses/my"),
+        supabase.auth.getUser(),
+      ]);
+      if (!biz?.id) throw new Error("No business");
       setBusinessId(biz.id);
-      const data = await apiFetch(`/api/v1/programs/?business_id=${biz.id}`);
-      setPrograms(Array.isArray(data) ? data : data.results ?? []);
-    } catch {
-      setError("Failed to load programs.");
-    } finally {
-      setLoading(false);
-    }
+
+      const [tree, members] = await Promise.all([
+        apiFetch(`/api/v1/programs/full-tree?business_id=${biz.id}`),
+        apiFetch(`/api/v1/businesses/${biz.id}/members`),
+      ]);
+      setPrograms(Array.isArray(tree) ? tree : []);
+      const myMember = (members as any[]).find((m: any) => m.user_id === user?.id);
+      setCanEdit(myMember?.role === "owner" || myMember?.role === "admin" || biz.owner_id === user?.id);
+    } catch (e: any) { setError(`Failed to load programs: ${e?.message ?? e}`); }
+    finally { setLoading(false); }
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  async function handleExpand(id: string) {
-    if (expandedId === id) { setExpandedId(null); return; }
-    setExpandedId(id);
-    if (!initiativesMap[id]) {
-      setLoadingInitsFor(id);
-      try {
-        const data = await apiFetch(`/api/v1/programs/${id}/initiatives`);
-        setInitiativesMap((prev) => ({ ...prev, [id]: Array.isArray(data) ? data : data.results ?? [] }));
-      } catch {
-        setInitiativesMap((prev) => ({ ...prev, [id]: [] }));
-      } finally {
-        setLoadingInitsFor(null);
-      }
-    }
-  }
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="w-8 h-8 border-4 border-pebble border-t-taskora-red rounded-full animate-spin" />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="p-8 text-red-600">
-        {error} <button onClick={load} className="ml-2 underline">Retry</button>
-      </div>
-    );
-  }
+  if (loading) return (
+    <div className="flex items-center justify-center h-64">
+      <div className="w-8 h-8 border-4 border-pebble border-t-taskora-red rounded-full animate-spin" />
+    </div>
+  );
+  if (error) return (
+    <div className="p-8 text-red-600">{error} <button onClick={load} className="ml-2 underline">Retry</button></div>
+  );
 
   return (
-    <div className="max-w-4xl mx-auto px-6 py-8">
-      <div className="flex items-center justify-between mb-8">
+    <div className="max-w-5xl mx-auto px-6 py-8">
+      <div className="flex items-start justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold text-midnight">Programs</h1>
-          <p className="text-steel text-sm mt-1">Organize your work into programs and initiatives</p>
+          <p className="text-steel text-sm mt-1">Click a program to view and manage its initiatives.</p>
         </div>
-        <button
-          onClick={() => setShowModal(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-taskora-red text-white rounded-lg text-sm font-semibold hover:bg-red-700 transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          New Program
-        </button>
+        {canEdit && (
+          <button onClick={() => setShowNew(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-taskora-red text-white rounded-lg text-sm font-semibold hover:opacity-90">
+            <Plus className="w-4 h-4" /> New Program
+          </button>
+        )}
       </div>
 
       {programs.length === 0 ? (
         <div className="text-center py-16 bg-white rounded-xl border border-pebble">
-          <p className="text-steel mb-4">No programs yet. Create your first program to get started.</p>
-          <button
-            onClick={() => setShowModal(true)}
-            className="px-4 py-2 bg-taskora-red text-white rounded-lg text-sm font-semibold hover:bg-red-700 transition-colors"
-          >
-            New Program
-          </button>
+          <p className="text-steel mb-2 font-medium">No programs yet.</p>
+          <p className="text-sm text-steel/70 mb-4">Create a program like HR, Operations, or Accounts to get started.</p>
+          {canEdit && (
+            <button onClick={() => setShowNew(true)}
+              className="px-4 py-2 bg-taskora-red text-white rounded-lg text-sm font-semibold hover:opacity-90">
+              Create First Program
+            </button>
+          )}
         </div>
       ) : (
-        <div className="space-y-3">
-          {programs.map((p) => (
-            <ProgramCard
-              key={p.id}
-              program={p}
-              onExpand={handleExpand}
-              expanded={expandedId === p.id}
-              initiatives={initiativesMap[p.id] ?? []}
-              loadingInits={loadingInitsFor === p.id}
-            />
-          ))}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {programs.map(p => {
+            const count = initiativeCount(p);
+            return (
+              <button
+                key={p.id}
+                onClick={() => router.push(`/programs/${p.id}`)}
+                className="text-left bg-white rounded-xl border border-pebble shadow-sm hover:shadow-md hover:border-ocean/30 transition-all p-5 group"
+              >
+                <div className="flex items-start justify-between mb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-4 h-4 rounded-full flex-shrink-0" style={{ backgroundColor: p.color }} />
+                    <h3 className="font-bold text-midnight group-hover:text-ocean transition-colors">{p.name}</h3>
+                  </div>
+                  <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${STATUS_COLOR[p.status] ?? "bg-gray-100 text-gray-500"}`}>
+                    {p.status}
+                  </span>
+                </div>
+                {p.description && (
+                  <p className="text-xs text-steel line-clamp-2 mb-3">{p.description}</p>
+                )}
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-steel/70 font-medium">
+                    {count} initiative{count !== 1 ? "s" : ""}
+                  </span>
+                  <ChevronRight className="w-4 h-4 text-steel/40 group-hover:text-ocean transition-colors" />
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
 
-      {showModal && businessId && (
-        <NewProgramModal
-          businessId={businessId}
-          onClose={() => setShowModal(false)}
-          onCreated={load}
-        />
+      {showNew && businessId && (
+        <NewProgramModal businessId={businessId} onClose={() => setShowNew(false)} onCreated={load} />
       )}
     </div>
   );
