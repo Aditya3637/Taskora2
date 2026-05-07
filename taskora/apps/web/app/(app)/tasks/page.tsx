@@ -7,15 +7,20 @@ import { supabase } from "@/lib/supabase";
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 async function apiFetch(path: string, opts?: RequestInit) {
   const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  if (!token) throw new Error("Not authenticated — please sign in again.");
   const res = await fetch(`${API}${path}`, {
     ...opts,
     headers: {
-      Authorization: `Bearer ${session?.access_token ?? ""}`,
+      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
       ...(opts?.headers ?? {}),
     },
   });
-  if (!res.ok) throw new Error(`${res.status}`);
+  if (!res.ok) {
+    const detail = await res.json().then((d) => d.detail ?? d.message ?? `HTTP ${res.status}`).catch(() => `HTTP ${res.status}`);
+    throw new Error(String(detail));
+  }
   if (res.status === 204) return {};
   return res.json();
 }
@@ -593,7 +598,7 @@ export default function TasksPage() {
       }
     } catch (err: any) {
       const msg = err?.message ?? "";
-      if (msg.toLowerCase().includes("not authenticated")) {
+      if (msg.toLowerCase().includes("not authenticated") || msg.toLowerCase().includes("invalid or expired token")) {
         router.replace("/login?next=/tasks");
         return;
       }
