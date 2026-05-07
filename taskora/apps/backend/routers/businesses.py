@@ -127,10 +127,9 @@ def list_business_members(
     user_ids = [m["user_id"] for m in members]
     if not user_ids:
         return []
-    users_rows = sb.table("users").select("id, name, email").in_("id", user_ids).execute().data
+    users_rows = sb.table("users").select("id, name").in_("id", user_ids).execute().data
     user_map = {u["id"]: u for u in users_rows}
     for m in members:
         u = user_map.get(m["user_id"], {})
         m["name"] = u.get("name", "")
-        m["email"] = u.get("email", "")
     return members
