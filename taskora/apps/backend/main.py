@@ -1,5 +1,7 @@
-from fastapi import FastAPI
+import traceback
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from config import get_settings
 from routers import (
     admin, analytics, billing, businesses, daily_brief, decisions,
@@ -45,6 +47,30 @@ app.include_router(whatsapp.router)
 app.include_router(themes.router)
 
 
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    tb = traceback.format_exc()
+    print(f"UNHANDLED 500: {request.method} {request.url}\n{tb}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc), "traceback": tb},
+    )
+
+
 @app.get("/health", tags=["meta"])
 def health():
     return {"status": "ok", "version": app.version}
+
+
+@app.get("/debug/db", tags=["meta"])
+def debug_db():
+    from supabase import create_client
+    from config import get_settings as _gs
+    s = _gs()
+    try:
+        sb = create_client(s.supabase_url, s.supabase_service_key)
+        result = sb.table("businesses").select("id").limit(1).execute()
+        return {"ok": True, "data": result.data, "key_prefix": s.supabase_service_key[:15]}
+    except Exception as e:
+        import traceback as _tb
+        return {"ok": False, "error": str(e), "traceback": _tb.format_exc(), "key_prefix": s.supabase_service_key[:15]}
