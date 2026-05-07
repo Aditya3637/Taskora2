@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { ChevronDown, ChevronRight, Plus, X, User } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
@@ -558,6 +559,7 @@ function NewTaskModal({ businessId, currentUserId, initiatives, onClose, onCreat
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function TasksPage() {
+  const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [initiatives, setInitiatives] = useState<MyInitiative[]>([]);
   const [businessId, setBusinessId] = useState("");
@@ -589,7 +591,14 @@ export default function TasksPage() {
       } else {
         setTasks(await apiFetch("/api/v1/tasks/my"));
       }
-    } catch { setError("Failed to load tasks."); }
+    } catch (err: any) {
+      const msg = err?.message ?? "";
+      if (msg.toLowerCase().includes("not authenticated")) {
+        router.replace("/login?next=/tasks");
+        return;
+      }
+      setError("Failed to load tasks.");
+    }
     finally { setLoading(false); }
   }, []);
 

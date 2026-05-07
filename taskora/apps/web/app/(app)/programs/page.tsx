@@ -243,6 +243,10 @@ export default function ProgramsPage() {
       }
     } catch (err: any) {
       const msg = err?.message ?? err?.toString?.() ?? "Unknown error";
+      if (msg.toLowerCase().includes("not authenticated")) {
+        router.replace("/login?next=/programs");
+        return;
+      }
       setError(msg || "Unexpected error — check console.");
     } finally {
       setLoading(false);

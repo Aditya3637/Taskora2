@@ -446,6 +446,10 @@ export default function ProgramDetailPage() {
       }
     } catch (err: any) {
       const msg = err?.message ?? err?.toString?.() ?? "Unknown error";
+      if (msg.toLowerCase().includes("not authenticated")) {
+        router.replace("/login");
+        return;
+      }
       setError(msg || "Unexpected error loading program.");
     } finally {
       setLoading(false);
