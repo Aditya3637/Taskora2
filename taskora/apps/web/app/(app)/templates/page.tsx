@@ -97,19 +97,19 @@ export default function TemplatesPage() {
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-midnight">Initiative Templates</h1>
           <p className="text-steel text-sm mt-1">Save and reuse task structures across initiatives</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-shrink-0">
           <button onClick={() => setShowSaveFrom(true)}
-            className="h-9 px-4 border border-pebble text-steel text-sm font-medium rounded-lg hover:text-midnight hover:border-midnight transition-colors">
-            💾 Save from Initiative
+            className="h-9 px-3 sm:px-4 border border-pebble text-steel text-sm font-medium rounded-lg hover:text-midnight hover:border-midnight transition-colors">
+            💾 <span className="hidden sm:inline">Save from Initiative</span><span className="sm:hidden">Save</span>
           </button>
           <button onClick={() => setShowCreate(true)}
-            className="h-9 px-4 bg-midnight text-white text-sm font-semibold rounded-lg hover:opacity-90">
-            + New Template
+            className="h-9 px-3 sm:px-4 bg-midnight text-white text-sm font-semibold rounded-lg hover:opacity-90">
+            + <span className="hidden sm:inline">New Template</span><span className="sm:hidden">New</span>
           </button>
         </div>
       </div>

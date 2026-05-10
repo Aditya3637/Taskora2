@@ -485,7 +485,7 @@ export default function ProgramDetailPage() {
   const initiatives = program.initiatives ?? [];
 
   return (
-    <div className="max-w-5xl mx-auto px-6 py-8">
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
       <button
         onClick={() => router.push("/programs")}
         className="flex items-center gap-1.5 text-sm text-steel hover:text-midnight mb-6 transition-colors"
@@ -493,7 +493,7 @@ export default function ProgramDetailPage() {
         <ArrowLeft className="w-4 h-4" /> All Programs
       </button>
 
-      <div className="flex items-start justify-between gap-4 mb-8">
+      <div className="flex flex-wrap items-start justify-between gap-4 mb-8">
         <div className="flex items-start gap-3">
           <div
             className="w-5 h-5 rounded-full flex-shrink-0 mt-1"

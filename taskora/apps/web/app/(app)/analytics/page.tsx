@@ -76,10 +76,10 @@ export default function AnalyticsPage() {
   const fmt = (v: number | undefined) => v == null ? "—" : String(v);
 
   return (
-    <div className="max-w-[1100px] mx-auto px-6 py-8">
+    <div className="max-w-[1100px] mx-auto px-4 sm:px-6 py-6 sm:py-8">
       <h1 className="text-2xl font-bold text-midnight mb-6">Analytics</h1>
 
-      <div className="flex gap-6 border-b border-pebble mb-8">
+      <div className="flex gap-4 sm:gap-6 border-b border-pebble mb-8">
         {(["my", "business"] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`pb-3 px-1 text-sm font-semibold border-b-2 transition-colors ${
@@ -145,8 +145,8 @@ export default function AnalyticsPage() {
               {bizData.entity_progress && bizData.entity_progress.length > 0 && (
                 <div>
                   <h2 className="text-base font-semibold text-midnight mb-4">Entity Progress</h2>
-                  <div className="bg-white border border-pebble rounded-xl overflow-hidden">
-                    <table className="w-full text-sm">
+                  <div className="bg-white border border-pebble rounded-xl overflow-x-auto">
+                    <table className="w-full text-sm min-w-[400px]">
                       <thead className="bg-mist border-b border-pebble">
                         <tr>
                           <th className="text-left px-5 py-3 text-xs font-semibold text-steel uppercase tracking-wider">Entity</th>

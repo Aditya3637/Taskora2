@@ -119,7 +119,7 @@ export default function ReportsPage() {
 
       {/* Summary cards */}
       {tab === "tasks" && taskRows.length > 0 && (
-        <div className="grid grid-cols-3 gap-4 mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
           <div className="bg-white rounded-xl border border-pebble p-4 text-center">
             <p className="text-3xl font-bold text-midnight">{totalTasks}</p>
             <p className="text-xs text-steel mt-1">Total Tasks</p>
@@ -137,8 +137,8 @@ export default function ReportsPage() {
 
       {/* Task Report Table */}
       {tab === "tasks" && taskRows.length > 0 && (
-        <div className="bg-white rounded-xl border border-pebble overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="bg-white rounded-xl border border-pebble overflow-x-auto">
+          <table className="w-full text-sm min-w-[540px]">
             <thead className="bg-mist">
               <tr>
                 {["Stakeholder", "Tasks Owned", "Completed", "Overdue", "Blocked", "Avg Days"].map(h => (
@@ -172,8 +172,8 @@ export default function ReportsPage() {
 
       {/* Initiative Report Table */}
       {tab === "initiatives" && initRows.length > 0 && (
-        <div className="bg-white rounded-xl border border-pebble overflow-hidden">
-          <table className="w-full text-sm">
+        <div className="bg-white rounded-xl border border-pebble overflow-x-auto">
+          <table className="w-full text-sm min-w-[540px]">
             <thead className="bg-mist">
               <tr>
                 {["Initiative", "Total Tasks", "Done", "Completion %", "Overdue", "Blocked"].map(h => (

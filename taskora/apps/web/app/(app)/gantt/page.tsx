@@ -345,7 +345,7 @@ export default function GanttPage() {
   });
 
   return (
-    <div className="max-w-7xl mx-auto px-6 py-8">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
       <div className="flex items-center justify-between mb-8 flex-wrap gap-4">
         <div>
           <h1 className="text-2xl font-bold text-midnight">Gantt Chart</h1>
@@ -370,12 +370,12 @@ export default function GanttPage() {
       ) : (
         <>
           {/* Initiative selector */}
-          <div className="mb-6 flex items-center gap-3">
-            <div className="relative">
+          <div className="mb-6 flex flex-wrap items-start gap-3">
+            <div className="relative w-full sm:w-auto">
               <select
                 value={selectedId}
                 onChange={(e) => { setSelectedId(e.target.value); setFullPortfolio(false); }}
-                className="appearance-none bg-white border border-pebble text-midnight text-sm rounded-lg pl-4 pr-10 py-2.5 focus:outline-none focus:ring-2 focus:ring-taskora-red/30 focus:border-taskora-red min-w-[260px]"
+                className="appearance-none bg-white border border-pebble text-midnight text-sm rounded-lg pl-4 pr-10 py-2.5 focus:outline-none focus:ring-2 focus:ring-taskora-red/30 focus:border-taskora-red w-full sm:min-w-[260px]"
               >
                 <option value="">Select an initiative…</option>
                 {initiatives.map((i) => (
@@ -386,7 +386,7 @@ export default function GanttPage() {
             </div>
 
             {/* Legend */}
-            <div className="flex items-center gap-3 text-xs text-steel ml-4">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-steel">
               {[
                 { label: "Done", color: "#38A169" },
                 { label: "In Progress", color: "#3182CE" },
@@ -404,7 +404,7 @@ export default function GanttPage() {
 
           {/* Full portfolio view */}
           {fullPortfolio && (
-            <div className="bg-white rounded-xl border border-pebble shadow-sm overflow-hidden">
+            <div className="bg-white rounded-xl border border-pebble shadow-sm overflow-x-auto">
               <div className="px-5 py-3 border-b border-pebble bg-mist/30">
                 <h2 className="font-semibold text-midnight text-sm">Full Portfolio Timeline</h2>
               </div>
@@ -422,7 +422,7 @@ export default function GanttPage() {
 
           {/* Single initiative view */}
           {!fullPortfolio && (
-            <div className="bg-white rounded-xl border border-pebble shadow-sm overflow-hidden">
+            <div className="bg-white rounded-xl border border-pebble shadow-sm overflow-x-auto">
               {!selectedId ? (
                 <div className="flex flex-col items-center justify-center py-24 text-steel">
                   <Layers className="w-12 h-12 opacity-20 mb-4" />

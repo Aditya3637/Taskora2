@@ -99,7 +99,7 @@ export default function DailyBriefPage() {
   const empty = <p className="text-sm text-steel italic bg-white rounded-lg p-3 border border-pebble">All clear ✓</p>;
 
   return (
-    <div className="max-w-3xl mx-auto px-6 py-8">
+    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-midnight">
           {new Date().getHours() < 12 ? "Good morning" : new Date().getHours() < 17 ? "Good afternoon" : "Good evening"} 👋
@@ -108,7 +108,7 @@ export default function DailyBriefPage() {
       </div>
 
       {brief.quick_stats && (
-        <div className="grid grid-cols-3 gap-4 mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
           {[
             { label: "Open Tasks", value: brief.quick_stats.open_tasks, warn: false },
             { label: "Done This Week", value: `${brief.quick_stats.completion_rate_this_week}%`, warn: false },
