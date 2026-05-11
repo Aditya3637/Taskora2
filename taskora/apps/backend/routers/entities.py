@@ -100,6 +100,8 @@ class BuildingUpdate(BaseModel):
     serial_number: Optional[str] = None
     city: Optional[str] = None
     code: Optional[str] = None
+    zone: Optional[str] = None
+    area: Optional[str] = None
     btype: Optional[str] = None
     soft_handover_date: Optional[date] = None
     hard_handover_date: Optional[date] = None
@@ -174,6 +176,8 @@ class BulkBuildingItem(BaseModel):
     address: Optional[str] = None
     city: Optional[str] = None
     code: Optional[str] = None
+    zone: Optional[str] = None
+    area: Optional[str] = None
     serial_number: Optional[str] = None
     btype: Optional[str] = None
     soft_handover_date: Optional[str] = None
@@ -208,7 +212,7 @@ def bulk_add_buildings(
         if not item.name.strip():
             continue
         row: dict = {"name": item.name.strip(), "business_id": business_id}
-        for field in ("address", "city", "code", "serial_number", "btype",
+        for field in ("address", "city", "code", "zone", "area", "serial_number", "btype",
                       "soft_handover_date", "hard_handover_date"):
             val = getattr(item, field)
             if val is not None and str(val).strip():

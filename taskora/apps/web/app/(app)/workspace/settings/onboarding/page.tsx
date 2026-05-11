@@ -27,7 +27,7 @@ async function apiFetch(path: string, opts?: RequestInit) {
   return res.json();
 }
 
-const BUILDINGS_CSV = `Name,Address,City,Code,Serial Number,Type,Soft Handover Date,Hard Handover Date,Completion %\nTower A,123 Main Street,Mumbai,BLD001,SN001,Residential,2026-06-01,2026-12-01,45\nTower B,456 Park Avenue,Delhi,BLD002,SN002,Commercial,2026-09-01,2027-03-01,20\n`;
+const BUILDINGS_CSV = `Building Name,Zone,City,Building Code,Area\nTower A,North Zone,Mumbai,BLD001,1200 sqft\nTower B,South Zone,Delhi,BLD002,800 sqft\n`;
 const CLIENTS_CSV   = `Name,Contact Email,Contact Phone\nAcme Corp,contact@acme.com,+91 98765 43210\nTech Solutions,info@techsol.com,+91 87654 32109\n`;
 
 function downloadCSV(content: string, filename: string) {
@@ -347,50 +347,67 @@ function TeamInvitesSection({ status, onStepDone }: { status: OnboardingStatus; 
   );
 }
 
-type ManualBuilding = {
-  name: string; address: string; city: string; code: string;
-  serial_number: string; btype: string;
-  soft_handover_date: string; hard_handover_date: string; completion_pct: string;
-};
+type ManualBuilding = { name: string; zone: string; city: string; code: string; area: string };
 type ManualClient = { name: string; contact_email: string; contact_phone: string };
 
-const EMPTY_BUILDING: ManualBuilding = { name: "", address: "", city: "", code: "", serial_number: "", btype: "", soft_handover_date: "", hard_handover_date: "", completion_pct: "" };
+const EMPTY_BUILDING: ManualBuilding = { name: "", zone: "", city: "", code: "", area: "" };
 const EMPTY_CLIENT: ManualClient = { name: "", contact_email: "", contact_phone: "" };
 
 // ── Section: Entity import ────────────────────────────────────────────────────
 function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus; onStepDone: () => void }) {
-  const label      = status.business_type === "client" ? "Clients" : "Buildings";
-  const csvContent = status.business_type === "client" ? CLIENTS_CSV : BUILDINGS_CSV;
-  const csvFile    = status.business_type === "client" ? "clients_template.csv" : "buildings_template.csv";
+  const [activeTab, setActiveTab] = useState<"buildings" | "clients">("buildings");
 
   const [buildingForm, setBuildingForm] = useState<ManualBuilding>(EMPTY_BUILDING);
   const [manualBuildings, setManualBuildings] = useState<ManualBuilding[]>([]);
+  const [bUploadStatus, setBUploadStatus] = useState<"idle" | "parsed" | "error">("idle");
+  const [bUploadCount, setBUploadCount] = useState(0);
+  const [bUploadError, setBUploadError] = useState("");
+  const bFileRef = useRef<HTMLInputElement>(null);
+
   const [clientForm, setClientForm] = useState<ManualClient>(EMPTY_CLIENT);
   const [manualClients, setManualClients] = useState<ManualClient[]>([]);
+  const [cUploadStatus, setCUploadStatus] = useState<"idle" | "parsed" | "error">("idle");
+  const [cUploadCount, setCUploadCount] = useState(0);
+  const [cUploadError, setCUploadError] = useState("");
+  const cFileRef = useRef<HTMLInputElement>(null);
 
-  const [uploadStatus, setUploadStatus] = useState<"idle" | "parsed" | "error">("idle");
-  const [uploadCount, setUploadCount]   = useState(0);
-  const [uploadError, setUploadError]   = useState("");
-  const [importing, setImporting]       = useState(false);
-  const [msg, setMsg]                   = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+  const [msg, setMsg]             = useState("");
 
   const badgeOk = status.step3_done && !status.step3_skipped;
 
-  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleBuildingFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    setUploadError("");
+    setBUploadError("");
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const rows = parseCSV(ev.target?.result as string);
+        const valid = rows.filter((r) => r["building name"] || r["name"]);
+        if (!valid.length) { setBUploadError("No valid rows found. Check the template."); setBUploadStatus("error"); return; }
+        setBUploadCount(valid.length);
+        setBUploadStatus("parsed");
+        (bFileRef as any)._parsed = rows;
+      } catch { setBUploadError("Could not parse file."); setBUploadStatus("error"); }
+    };
+    reader.readAsText(file);
+  }
+
+  function handleClientFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCUploadError("");
     const reader = new FileReader();
     reader.onload = (ev) => {
       try {
         const rows = parseCSV(ev.target?.result as string);
         const valid = rows.filter((r) => r.name);
-        if (!valid.length) { setUploadError("No valid rows found. Check the template."); setUploadStatus("error"); return; }
-        setUploadCount(valid.length);
-        setUploadStatus("parsed");
-        (fileRef as any)._parsed = rows;
-      } catch { setUploadError("Could not parse file."); setUploadStatus("error"); }
+        if (!valid.length) { setCUploadError("No valid rows found. Check the template."); setCUploadStatus("error"); return; }
+        setCUploadCount(valid.length);
+        setCUploadStatus("parsed");
+        (cFileRef as any)._parsed = rows;
+      } catch { setCUploadError("Could not parse file."); setCUploadStatus("error"); }
     };
     reader.readAsText(file);
   }
@@ -409,209 +426,223 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
 
   async function handleImport() {
     setImporting(true); setMsg("");
+    const msgs: string[] = [];
     try {
       const biz = status.business_id;
-      const parsed: Record<string, string>[] = (fileRef as any)._parsed ?? [];
 
-      if (status.business_type === "building") {
-        const items = [
-          ...parsed.map((r) => ({
-            name: r.name ?? "",
-            address: r.address || undefined,
-            city: r.city || undefined,
-            code: r.code || undefined,
-            serial_number: r["serial number"] || undefined,
-            btype: r["type"] || undefined,
-            soft_handover_date: r["soft handover date"] || undefined,
-            hard_handover_date: r["hard handover date"] || undefined,
-            completion_pct: r["completion %"] ? (parseFloat(r["completion %"]) || undefined) : undefined,
-          })),
-          ...manualBuildings.map((b) => ({
-            name: b.name,
-            address: b.address || undefined,
-            city: b.city || undefined,
-            code: b.code || undefined,
-            serial_number: b.serial_number || undefined,
-            btype: b.btype || undefined,
-            soft_handover_date: b.soft_handover_date || undefined,
-            hard_handover_date: b.hard_handover_date || undefined,
-            completion_pct: b.completion_pct ? (parseFloat(b.completion_pct) || undefined) : undefined,
-          })),
-        ].filter((r) => r.name.trim());
-        if (items.length) {
-          const res = await apiFetch(`/api/v1/businesses/${biz}/buildings/bulk`, {
-            method: "POST", body: JSON.stringify({ items }),
-          });
-          setMsg(`${res.inserted} ${res.inserted === 1 ? "building" : "buildings"} imported.`);
-        }
-      } else {
-        const items = [
-          ...parsed.map((r) => ({
-            name: r.name ?? "",
-            contact_email: r["contact email"] || r.contact_email || undefined,
-            contact_phone: r["contact phone"] || r.contact_phone || undefined,
-          })),
-          ...manualClients.map((c) => ({
-            name: c.name,
-            contact_email: c.contact_email || undefined,
-            contact_phone: c.contact_phone || undefined,
-          })),
-        ].filter((r) => r.name.trim());
-        if (items.length) {
-          const res = await apiFetch(`/api/v1/businesses/${biz}/clients/bulk`, {
-            method: "POST", body: JSON.stringify({ items }),
-          });
-          setMsg(`${res.inserted} ${res.inserted === 1 ? "client" : "clients"} imported.`);
-        }
+      const bParsed: Record<string, string>[] = (bFileRef as any)._parsed ?? [];
+      const buildingItems = [
+        ...bParsed.map((r) => ({
+          name: r["building name"] || r["name"] || "",
+          zone: r["zone"] || undefined,
+          city: r["city"] || undefined,
+          code: r["building code"] || r["code"] || undefined,
+          area: r["area"] || undefined,
+        })),
+        ...manualBuildings.map((b) => ({
+          name: b.name,
+          zone: b.zone || undefined,
+          city: b.city || undefined,
+          code: b.code || undefined,
+          area: b.area || undefined,
+        })),
+      ].filter((r) => r.name.trim());
+
+      if (buildingItems.length) {
+        const res = await apiFetch(`/api/v1/businesses/${biz}/buildings/bulk`, {
+          method: "POST", body: JSON.stringify({ items: buildingItems }),
+        });
+        msgs.push(`${res.inserted} ${res.inserted === 1 ? "building" : "buildings"} imported`);
+      }
+
+      const cParsed: Record<string, string>[] = (cFileRef as any)._parsed ?? [];
+      const clientItems = [
+        ...cParsed.map((r) => ({
+          name: r.name ?? "",
+          contact_email: r["contact email"] || r.contact_email || undefined,
+          contact_phone: r["contact phone"] || r.contact_phone || undefined,
+        })),
+        ...manualClients.map((c) => ({
+          name: c.name,
+          contact_email: c.contact_email || undefined,
+          contact_phone: c.contact_phone || undefined,
+        })),
+      ].filter((r) => r.name.trim());
+
+      if (clientItems.length) {
+        const res = await apiFetch(`/api/v1/businesses/${biz}/clients/bulk`, {
+          method: "POST", body: JSON.stringify({ items: clientItems }),
+        });
+        msgs.push(`${res.inserted} ${res.inserted === 1 ? "client" : "clients"} imported`);
       }
 
       await apiFetch("/api/v1/onboarding/step3/done", { method: "POST", body: JSON.stringify({ skipped: false, business_id: biz }) });
       onStepDone();
       setManualBuildings([]); setManualClients([]);
-      setUploadStatus("idle"); setUploadCount(0);
+      setBUploadStatus("idle"); setBUploadCount(0);
+      setCUploadStatus("idle"); setCUploadCount(0);
+      setMsg(msgs.length > 0 ? msgs.join(" · ") + "." : "Done!");
     } catch (e: any) { setMsg(`Error: ${e.message}`); }
     finally { setImporting(false); }
   }
 
-  const hasData = uploadStatus === "parsed" || manualBuildings.length > 0 || manualClients.length > 0;
+  const hasData = bUploadStatus === "parsed" || manualBuildings.length > 0 || cUploadStatus === "parsed" || manualClients.length > 0;
 
   return (
-    <Section title={`${label} list`} badge={badgeOk ? "Complete" : status.step3_skipped ? "Skipped" : "Not started"} badgeOk={badgeOk}>
-      <p className="text-sm text-steel mb-4">Import your {label.toLowerCase()} list via CSV or add them manually. Importing again will add to the existing list.</p>
+    <Section title="Buildings & Clients" badge={badgeOk ? "Complete" : status.step3_skipped ? "Skipped" : "Not started"} badgeOk={badgeOk}>
+      <p className="text-sm text-steel mb-4">Import your buildings and clients via CSV or add manually. Importing again adds to the existing list.</p>
 
-      {/* CSV */}
-      <div className="border border-pebble rounded-xl p-4 space-y-3 mb-4">
-        <p className="text-sm font-medium text-midnight">Import from CSV / Excel</p>
-        <div className="flex gap-3 flex-wrap">
-          <button type="button" onClick={() => downloadCSV(csvContent, csvFile)}
-            className="h-9 px-3 text-xs border border-pebble rounded-lg text-steel hover:bg-mist flex items-center gap-1.5">
-            ↓ Download template
+      {/* Tabs */}
+      <div className="flex border-b border-pebble mb-4">
+        {(["buildings", "clients"] as const).map((tab) => (
+          <button key={tab} type="button" onClick={() => setActiveTab(tab)}
+            className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${
+              activeTab === tab
+                ? "border-taskora-red text-taskora-red"
+                : "border-transparent text-steel hover:text-midnight"
+            }`}>
+            {tab}
+            {tab === "buildings" && (manualBuildings.length > 0 || bUploadStatus === "parsed") && (
+              <span className="ml-1.5 text-xs bg-taskora-red/10 text-taskora-red rounded-full px-1.5 py-0.5">
+                {manualBuildings.length + (bUploadStatus === "parsed" ? bUploadCount : 0)}
+              </span>
+            )}
+            {tab === "clients" && (manualClients.length > 0 || cUploadStatus === "parsed") && (
+              <span className="ml-1.5 text-xs bg-taskora-red/10 text-taskora-red rounded-full px-1.5 py-0.5">
+                {manualClients.length + (cUploadStatus === "parsed" ? cUploadCount : 0)}
+              </span>
+            )}
           </button>
-          <label className={`h-9 px-3 text-xs rounded-lg flex items-center gap-1.5 cursor-pointer transition-colors ${
-            uploadStatus === "parsed"
-              ? "bg-green-50 border border-green-200 text-green-700"
-              : uploadStatus === "error"
-              ? "bg-red-50 border border-red-200 text-red-600"
-              : "border border-taskora-red/60 text-taskora-red hover:bg-red-50"
-          }`}>
-            {uploadStatus === "parsed"
-              ? `✓ ${uploadCount} ${label.toLowerCase()} ready`
-              : uploadStatus === "error" ? "✕ Parse error" : "↑ Upload CSV"}
-            <input ref={fileRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleFile} />
-          </label>
-        </div>
-        {uploadError && <p className="text-xs text-red-600">{uploadError}</p>}
+        ))}
       </div>
 
-      {/* Manual */}
-      <p className="text-sm font-medium text-midnight mb-3">Or add manually</p>
-
-      {status.business_type === "building" ? (
-        <div className="border border-pebble rounded-xl p-4 space-y-2 mb-3">
-          <div className="grid grid-cols-2 gap-2">
-            <input type="text" placeholder="Name *" value={buildingForm.name}
+      {activeTab === "buildings" && (
+        <div className="space-y-3">
+          <div className="border border-pebble rounded-xl p-4 space-y-3">
+            <p className="text-sm font-medium text-midnight">Import from CSV / Excel</p>
+            <div className="flex gap-3 flex-wrap">
+              <button type="button" onClick={() => downloadCSV(BUILDINGS_CSV, "buildings_template.csv")}
+                className="h-9 px-3 text-xs border border-pebble rounded-lg text-steel hover:bg-mist flex items-center gap-1.5">
+                ↓ Download template
+              </button>
+              <label className={`h-9 px-3 text-xs rounded-lg flex items-center gap-1.5 cursor-pointer transition-colors ${
+                bUploadStatus === "parsed" ? "bg-green-50 border border-green-200 text-green-700"
+                  : bUploadStatus === "error" ? "bg-red-50 border border-red-200 text-red-600"
+                  : "border border-taskora-red/60 text-taskora-red hover:bg-red-50"
+              }`}>
+                {bUploadStatus === "parsed" ? `✓ ${bUploadCount} buildings ready`
+                  : bUploadStatus === "error" ? "✕ Parse error" : "↑ Upload CSV"}
+                <input ref={bFileRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleBuildingFile} />
+              </label>
+            </div>
+            {bUploadError && <p className="text-xs text-red-600">{bUploadError}</p>}
+          </div>
+          <div className="border border-pebble rounded-xl p-4 space-y-2">
+            <p className="text-sm font-medium text-midnight">Add manually</p>
+            <input type="text" placeholder="Building Name *" value={buildingForm.name}
               onChange={(e) => setBuildingForm((f) => ({ ...f, name: e.target.value }))}
-              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" maxLength={200} />
-            <input type="text" placeholder="Address" value={buildingForm.address}
-              onChange={(e) => setBuildingForm((f) => ({ ...f, address: e.target.value }))}
-              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <input type="text" placeholder="City" value={buildingForm.city}
-              onChange={(e) => setBuildingForm((f) => ({ ...f, city: e.target.value }))}
-              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
-            <input type="text" placeholder="Code" value={buildingForm.code}
-              onChange={(e) => setBuildingForm((f) => ({ ...f, code: e.target.value }))}
-              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
-            <input type="text" placeholder="Serial Number" value={buildingForm.serial_number}
-              onChange={(e) => setBuildingForm((f) => ({ ...f, serial_number: e.target.value }))}
-              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <input type="text" placeholder="Type (e.g. Residential)" value={buildingForm.btype}
-              onChange={(e) => setBuildingForm((f) => ({ ...f, btype: e.target.value }))}
-              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
-            <input type="number" placeholder="Completion %" value={buildingForm.completion_pct}
-              onChange={(e) => setBuildingForm((f) => ({ ...f, completion_pct: e.target.value }))}
-              min={0} max={100} step={0.1}
-              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="block text-xs text-steel mb-1">Soft Handover Date</label>
-              <input type="date" value={buildingForm.soft_handover_date}
-                onChange={(e) => setBuildingForm((f) => ({ ...f, soft_handover_date: e.target.value }))}
-                className="w-full h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+              className="w-full h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" maxLength={200} />
+            <div className="grid grid-cols-2 gap-2">
+              <input type="text" placeholder="Zone" value={buildingForm.zone}
+                onChange={(e) => setBuildingForm((f) => ({ ...f, zone: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+              <input type="text" placeholder="City" value={buildingForm.city}
+                onChange={(e) => setBuildingForm((f) => ({ ...f, city: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
             </div>
-            <div>
-              <label className="block text-xs text-steel mb-1">Hard Handover Date</label>
-              <input type="date" value={buildingForm.hard_handover_date}
-                onChange={(e) => setBuildingForm((f) => ({ ...f, hard_handover_date: e.target.value }))}
-                className="w-full h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+            <div className="grid grid-cols-2 gap-2">
+              <input type="text" placeholder="Building Code" value={buildingForm.code}
+                onChange={(e) => setBuildingForm((f) => ({ ...f, code: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+              <input type="text" placeholder="Area (e.g. 1200 sqft)" value={buildingForm.area}
+                onChange={(e) => setBuildingForm((f) => ({ ...f, area: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
             </div>
+            <button onClick={addBuilding} disabled={!buildingForm.name.trim()}
+              className="w-full h-9 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
+              + Add Building
+            </button>
           </div>
-          <button onClick={addBuilding} disabled={!buildingForm.name.trim()}
-            className="w-full h-9 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
-            + Add Building
-          </button>
-        </div>
-      ) : (
-        <div className="border border-pebble rounded-xl p-4 space-y-2 mb-3">
-          <input type="text" placeholder="Client name *" value={clientForm.name}
-            onChange={(e) => setClientForm((f) => ({ ...f, name: e.target.value }))}
-            className="w-full h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" maxLength={200} />
-          <div className="grid grid-cols-2 gap-2">
-            <input type="email" placeholder="Contact email" value={clientForm.contact_email}
-              onChange={(e) => setClientForm((f) => ({ ...f, contact_email: e.target.value }))}
-              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
-            <input type="text" placeholder="Contact phone" value={clientForm.contact_phone}
-              onChange={(e) => setClientForm((f) => ({ ...f, contact_phone: e.target.value }))}
-              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
-          </div>
-          <button onClick={addClient} disabled={!clientForm.name.trim()}
-            className="w-full h-9 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
-            + Add Client
-          </button>
+          {manualBuildings.length > 0 && (
+            <div className="space-y-1 max-h-36 overflow-y-auto">
+              {manualBuildings.map((b, i) => (
+                <div key={i} className="flex items-center justify-between bg-mist rounded-lg px-3 py-1.5">
+                  <div className="min-w-0">
+                    <span className="text-sm text-midnight font-medium">{b.name}</span>
+                    {(b.zone || b.city || b.code) && (
+                      <span className="text-xs text-steel ml-2">{[b.zone, b.city, b.code].filter(Boolean).join(" · ")}</span>
+                    )}
+                  </div>
+                  <button onClick={() => setManualBuildings((p) => p.filter((_, j) => j !== i))}
+                    className="text-steel hover:text-red-500 text-lg leading-none ml-2 flex-shrink-0">&times;</button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      {status.business_type === "building" && manualBuildings.length > 0 && (
-        <div className="space-y-1 mb-4 max-h-36 overflow-y-auto">
-          {manualBuildings.map((b, i) => (
-            <div key={i} className="flex items-center justify-between bg-mist rounded-lg px-3 py-1.5">
-              <div className="min-w-0">
-                <span className="text-sm text-midnight font-medium">{b.name}</span>
-                {(b.city || b.code) && (
-                  <span className="text-xs text-steel ml-2">{[b.city, b.code].filter(Boolean).join(" · ")}</span>
-                )}
-              </div>
-              <button onClick={() => setManualBuildings((p) => p.filter((_, j) => j !== i))}
-                className="text-steel hover:text-red-500 text-lg leading-none ml-2 flex-shrink-0">&times;</button>
+      {activeTab === "clients" && (
+        <div className="space-y-3">
+          <div className="border border-pebble rounded-xl p-4 space-y-3">
+            <p className="text-sm font-medium text-midnight">Import from CSV / Excel</p>
+            <div className="flex gap-3 flex-wrap">
+              <button type="button" onClick={() => downloadCSV(CLIENTS_CSV, "clients_template.csv")}
+                className="h-9 px-3 text-xs border border-pebble rounded-lg text-steel hover:bg-mist flex items-center gap-1.5">
+                ↓ Download template
+              </button>
+              <label className={`h-9 px-3 text-xs rounded-lg flex items-center gap-1.5 cursor-pointer transition-colors ${
+                cUploadStatus === "parsed" ? "bg-green-50 border border-green-200 text-green-700"
+                  : cUploadStatus === "error" ? "bg-red-50 border border-red-200 text-red-600"
+                  : "border border-taskora-red/60 text-taskora-red hover:bg-red-50"
+              }`}>
+                {cUploadStatus === "parsed" ? `✓ ${cUploadCount} clients ready`
+                  : cUploadStatus === "error" ? "✕ Parse error" : "↑ Upload CSV"}
+                <input ref={cFileRef} type="file" accept=".csv,.txt" className="hidden" onChange={handleClientFile} />
+              </label>
             </div>
-          ))}
+            {cUploadError && <p className="text-xs text-red-600">{cUploadError}</p>}
+          </div>
+          <div className="border border-pebble rounded-xl p-4 space-y-2">
+            <p className="text-sm font-medium text-midnight">Add manually</p>
+            <input type="text" placeholder="Client name *" value={clientForm.name}
+              onChange={(e) => setClientForm((f) => ({ ...f, name: e.target.value }))}
+              className="w-full h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" maxLength={200} />
+            <div className="grid grid-cols-2 gap-2">
+              <input type="email" placeholder="Contact email" value={clientForm.contact_email}
+                onChange={(e) => setClientForm((f) => ({ ...f, contact_email: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+              <input type="text" placeholder="Contact phone" value={clientForm.contact_phone}
+                onChange={(e) => setClientForm((f) => ({ ...f, contact_phone: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+            </div>
+            <button onClick={addClient} disabled={!clientForm.name.trim()}
+              className="w-full h-9 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
+              + Add Client
+            </button>
+          </div>
+          {manualClients.length > 0 && (
+            <div className="space-y-1 max-h-36 overflow-y-auto">
+              {manualClients.map((c, i) => (
+                <div key={i} className="flex items-center justify-between bg-mist rounded-lg px-3 py-1.5">
+                  <div className="min-w-0">
+                    <span className="text-sm text-midnight font-medium">{c.name}</span>
+                    {c.contact_email && <span className="text-xs text-steel ml-2">{c.contact_email}</span>}
+                  </div>
+                  <button onClick={() => setManualClients((p) => p.filter((_, j) => j !== i))}
+                    className="text-steel hover:text-red-500 text-lg leading-none ml-2 flex-shrink-0">&times;</button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      {status.business_type === "client" && manualClients.length > 0 && (
-        <div className="space-y-1 mb-4 max-h-36 overflow-y-auto">
-          {manualClients.map((c, i) => (
-            <div key={i} className="flex items-center justify-between bg-mist rounded-lg px-3 py-1.5">
-              <div className="min-w-0">
-                <span className="text-sm text-midnight font-medium">{c.name}</span>
-                {c.contact_email && <span className="text-xs text-steel ml-2">{c.contact_email}</span>}
-              </div>
-              <button onClick={() => setManualClients((p) => p.filter((_, j) => j !== i))}
-                className="text-steel hover:text-red-500 text-lg leading-none ml-2 flex-shrink-0">&times;</button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {msg && <p className={`text-sm mb-3 ${msg.startsWith("Error") ? "text-red-600" : "text-green-600"}`}>{msg}</p>}
+      {msg && <p className={`text-sm mt-3 ${msg.startsWith("Error") ? "text-red-600" : "text-green-600"}`}>{msg}</p>}
 
       <button onClick={handleImport} disabled={importing || !hasData}
-        className="h-9 px-4 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
-        {importing ? "Importing…" : `Import ${label}`}
+        className="mt-4 h-9 px-4 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
+        {importing ? "Importing…" : "Import"}
       </button>
     </Section>
   );
