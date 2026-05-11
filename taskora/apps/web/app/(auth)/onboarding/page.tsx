@@ -26,7 +26,7 @@ async function apiFetch(path: string, opts?: RequestInit) {
 
 // CSV template content
 const BUILDINGS_CSV = `Building Name,Zone,City,Building Code,Area\nTower A,North Zone,Mumbai,BLD001,1200 sqft\nTower B,South Zone,Delhi,BLD002,800 sqft\n`;
-const CLIENTS_CSV   = `Name,Contact Email,Contact Phone\nAcme Corp,contact@acme.com,+91 98765 43210\nTech Solutions,info@techsol.com,+91 87654 32109\n`;
+const CLIENTS_CSV   = `Name,Client Code,Contact Email,Contact Phone\nAcme Corp,CLI001,contact@acme.com,+91 98765 43210\nTech Solutions,CLI002,info@techsol.com,+91 87654 32109\n`;
 
 function downloadCSV(content: string, filename: string) {
   const blob = new Blob([content], { type: "text/csv" });
@@ -406,10 +406,10 @@ function Step2Org({
 }
 
 type ManualBuilding = { name: string; zone: string; city: string; code: string; area: string };
-type ManualClient = { name: string; contact_email: string; contact_phone: string };
+type ManualClient = { name: string; code: string; contact_email: string; contact_phone: string };
 
 const EMPTY_BUILDING: ManualBuilding = { name: "", zone: "", city: "", code: "", area: "" };
-const EMPTY_CLIENT: ManualClient = { name: "", contact_email: "", contact_phone: "" };
+const EMPTY_CLIENT: ManualClient = { name: "", code: "", contact_email: "", contact_phone: "" };
 
 // ── Step 3: Import entities ──────────────────────────────────────────────────
 function Step3({
@@ -528,11 +528,13 @@ function Step3({
       const clientItems = [
         ...cParsed.map((r) => ({
           name: r.name ?? "",
+          code: r["client code"] || r["code"] || undefined,
           contact_email: r["contact email"] || r["contact_email"] || undefined,
           contact_phone: r["contact phone"] || r["contact_phone"] || undefined,
         })),
         ...manualClients.map((c) => ({
           name: c.name,
+          code: c.code || undefined,
           contact_email: c.contact_email || undefined,
           contact_phone: c.contact_phone || undefined,
         })),
@@ -687,9 +689,14 @@ function Step3({
           {/* Manual form */}
           <div className="border border-pebble rounded-xl p-4 space-y-2">
             <p className="text-sm font-medium text-midnight">Add manually</p>
-            <input type="text" placeholder="Client name *" value={clientForm.name}
-              onChange={(e) => setClientForm((f) => ({ ...f, name: e.target.value }))}
-              className="w-full h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" maxLength={200} />
+            <div className="grid grid-cols-2 gap-2">
+              <input type="text" placeholder="Client Name *" value={clientForm.name}
+                onChange={(e) => setClientForm((f) => ({ ...f, name: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" maxLength={200} />
+              <input type="text" placeholder="Client Code" value={clientForm.code}
+                onChange={(e) => setClientForm((f) => ({ ...f, code: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+            </div>
             <div className="grid grid-cols-2 gap-2">
               <input type="email" placeholder="Contact email" value={clientForm.contact_email}
                 onChange={(e) => setClientForm((f) => ({ ...f, contact_email: e.target.value }))}

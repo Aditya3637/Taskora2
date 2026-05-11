@@ -14,6 +14,7 @@ class EntityCreate(BaseModel):
     name: str
     address: Optional[str] = None
     contact_info: Optional[dict] = None
+    code: Optional[str] = None
 
 
 @router.post("/buildings", status_code=201)
@@ -62,11 +63,10 @@ def add_client(
     sb: Client = Depends(get_supabase),
 ):
     require_member(sb, business_id, user["id"])
-    result = sb.table("clients").insert({
-        "name": body.name,
-        "contact_info": body.contact_info or {},
-        "business_id": business_id,
-    }).execute()
+    payload: dict = {"name": body.name, "contact_info": body.contact_info or {}, "business_id": business_id}
+    if body.code:
+        payload["code"] = body.code
+    result = sb.table("clients").insert(payload).execute()
     if not result.data:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail="Failed to create client")
@@ -187,6 +187,7 @@ class BulkBuildingItem(BaseModel):
 
 class BulkClientItem(BaseModel):
     name: str
+    code: Optional[str] = None
     contact_email: Optional[str] = None
     contact_phone: Optional[str] = None
 
@@ -245,7 +246,10 @@ def bulk_add_clients(
             contact["email"] = item.contact_email
         if item.contact_phone:
             contact["phone"] = item.contact_phone
-        rows.append({"name": item.name.strip(), "contact_info": contact, "business_id": business_id})
+        row: dict = {"name": item.name.strip(), "contact_info": contact, "business_id": business_id}
+        if item.code and item.code.strip():
+            row["code"] = item.code.strip()
+        rows.append(row)
     if not rows:
         raise HTTPException(status_code=422, detail="No valid items provided")
     if len(rows) > 500:
