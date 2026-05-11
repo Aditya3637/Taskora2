@@ -40,7 +40,8 @@ export default function ReportsPage() {
       try {
         let bid = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
         if (!bid) {
-          const biz = await apiFetch("/api/v1/businesses/my");
+          const res = await apiFetch("/api/v1/businesses/my");
+          const biz = await res.json();
           bid = biz?.id ?? "";
           if (bid) localStorage.setItem("business_id", bid);
         }
@@ -55,11 +56,11 @@ export default function ReportsPage() {
     try {
       const qs = `business_id=${businessId}&start_date=${startDate}&end_date=${endDate}&format=json`;
       if (tab === "tasks") {
-        const rows = await apiFetch(`/api/v1/reports/tasks?${qs}`);
-        setTaskRows(Array.isArray(rows) ? rows : []);
+        const r = await apiFetch(`/api/v1/reports/tasks?${qs}`);
+        setTaskRows(await r.json());
       } else {
-        const rows = await apiFetch(`/api/v1/reports/initiatives?${qs}`);
-        setInitRows(Array.isArray(rows) ? rows : []);
+        const r = await apiFetch(`/api/v1/reports/initiatives?${qs}`);
+        setInitRows(await r.json());
       }
     } catch (e: any) { setError(e.message); }
     setLoading(false);
