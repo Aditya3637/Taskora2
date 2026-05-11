@@ -172,6 +172,13 @@ def update_building(
 class BulkBuildingItem(BaseModel):
     name: str
     address: Optional[str] = None
+    city: Optional[str] = None
+    code: Optional[str] = None
+    serial_number: Optional[str] = None
+    btype: Optional[str] = None
+    soft_handover_date: Optional[str] = None
+    hard_handover_date: Optional[str] = None
+    completion_pct: Optional[float] = None
 
 
 class BulkClientItem(BaseModel):
@@ -196,11 +203,19 @@ def bulk_add_buildings(
     sb: Client = Depends(get_supabase),
 ):
     require_member(sb, business_id, user["id"])
-    rows = [
-        {"name": item.name.strip(), "address": item.address, "business_id": business_id}
-        for item in body.items
-        if item.name.strip()
-    ]
+    rows = []
+    for item in body.items:
+        if not item.name.strip():
+            continue
+        row: dict = {"name": item.name.strip(), "business_id": business_id}
+        for field in ("address", "city", "code", "serial_number", "btype",
+                      "soft_handover_date", "hard_handover_date"):
+            val = getattr(item, field)
+            if val is not None and str(val).strip():
+                row[field] = str(val).strip()
+        if item.completion_pct is not None:
+            row["completion_pct"] = item.completion_pct
+        rows.append(row)
     if not rows:
         raise HTTPException(status_code=422, detail="No valid items provided")
     if len(rows) > 500:

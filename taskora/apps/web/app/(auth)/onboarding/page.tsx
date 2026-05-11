@@ -25,7 +25,7 @@ async function apiFetch(path: string, opts?: RequestInit) {
 }
 
 // CSV template content
-const BUILDINGS_CSV = `Name,Address\nExample Tower A,123 Main Street Mumbai\nExample Complex B,456 Park Avenue Delhi\n`;
+const BUILDINGS_CSV = `Name,Address,City,Code,Serial Number,Type,Soft Handover Date,Hard Handover Date,Completion %\nTower A,123 Main Street,Mumbai,BLD001,SN001,Residential,2026-06-01,2026-12-01,45\nTower B,456 Park Avenue,Delhi,BLD002,SN002,Commercial,2026-09-01,2027-03-01,20\n`;
 const CLIENTS_CSV   = `Name,Contact Email,Contact Phone\nAcme Corp,contact@acme.com,+91 98765 43210\nTech Solutions,info@techsol.com,+91 87654 32109\n`;
 
 function downloadCSV(content: string, filename: string) {
@@ -384,6 +384,16 @@ function Step2Org({
   );
 }
 
+type ManualBuilding = {
+  name: string; address: string; city: string; code: string;
+  serial_number: string; btype: string;
+  soft_handover_date: string; hard_handover_date: string; completion_pct: string;
+};
+type ManualClient = { name: string; contact_email: string; contact_phone: string };
+
+const EMPTY_BUILDING: ManualBuilding = { name: "", address: "", city: "", code: "", serial_number: "", btype: "", soft_handover_date: "", hard_handover_date: "", completion_pct: "" };
+const EMPTY_CLIENT: ManualClient = { name: "", contact_email: "", contact_phone: "" };
+
 // ── Step 3: Import entities ──────────────────────────────────────────────────
 function Step3({
   businessId,
@@ -400,8 +410,11 @@ function Step3({
   const csvTemplate = businessType === "building" ? BUILDINGS_CSV : CLIENTS_CSV;
   const csvFilename = businessType === "building" ? "buildings_template.csv" : "clients_template.csv";
 
-  const [manualInput, setManualInput] = useState("");
-  const [manualList, setManualList] = useState<string[]>([]);
+  const [buildingForm, setBuildingForm] = useState<ManualBuilding>(EMPTY_BUILDING);
+  const [manualBuildings, setManualBuildings] = useState<ManualBuilding[]>([]);
+  const [clientForm, setClientForm] = useState<ManualClient>(EMPTY_CLIENT);
+  const [manualClients, setManualClients] = useState<ManualClient[]>([]);
+
   const [uploadStatus, setUploadStatus] = useState<"idle" | "parsed" | "error">("idle");
   const [uploadCount, setUploadCount] = useState(0);
   const [uploadError, setUploadError] = useState("");
@@ -409,11 +422,16 @@ function Step3({
   const [importMsg, setImportMsg] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
 
-  function addManual() {
-    const name = manualInput.trim();
-    if (!name || manualList.includes(name)) return;
-    setManualList((prev) => [...prev, name]);
-    setManualInput("");
+  function addBuilding() {
+    if (!buildingForm.name.trim()) return;
+    setManualBuildings((p) => [...p, { ...buildingForm }]);
+    setBuildingForm(EMPTY_BUILDING);
+  }
+
+  function addClient() {
+    if (!clientForm.name.trim()) return;
+    setManualClients((p) => [...p, { ...clientForm }]);
+    setClientForm(EMPTY_CLIENT);
   }
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -424,11 +442,10 @@ function Step3({
     reader.onload = (ev) => {
       try {
         const rows = parseCSV(ev.target?.result as string);
-        const valid = rows.filter((r) => r.name || r["name"]);
+        const valid = rows.filter((r) => r.name);
         if (valid.length === 0) { setUploadError("No valid rows found. Check the template format."); setUploadStatus("error"); return; }
         setUploadCount(valid.length);
         setUploadStatus("parsed");
-        // Store rows in a ref for later submission
         (fileRef as any)._parsed = rows;
       } catch {
         setUploadError("Could not parse file. Please use the downloaded template.");
@@ -442,12 +459,31 @@ function Step3({
     setImporting(true); setImportMsg("");
     try {
       const parsedRows: Record<string, string>[] = (fileRef as any)._parsed ?? [];
-      const manualRows = manualList.map((name) => ({ name }));
 
       if (businessType === "building") {
         const items = [
-          ...parsedRows.map((r) => ({ name: r.name ?? r["name"] ?? "", address: r.address ?? r["address"] ?? undefined })),
-          ...manualRows,
+          ...parsedRows.map((r) => ({
+            name: r.name ?? "",
+            address: r.address || undefined,
+            city: r.city || undefined,
+            code: r.code || undefined,
+            serial_number: r["serial number"] || undefined,
+            btype: r["type"] || undefined,
+            soft_handover_date: r["soft handover date"] || undefined,
+            hard_handover_date: r["hard handover date"] || undefined,
+            completion_pct: r["completion %"] ? (parseFloat(r["completion %"]) || undefined) : undefined,
+          })),
+          ...manualBuildings.map((b) => ({
+            name: b.name,
+            address: b.address || undefined,
+            city: b.city || undefined,
+            code: b.code || undefined,
+            serial_number: b.serial_number || undefined,
+            btype: b.btype || undefined,
+            soft_handover_date: b.soft_handover_date || undefined,
+            hard_handover_date: b.hard_handover_date || undefined,
+            completion_pct: b.completion_pct ? (parseFloat(b.completion_pct) || undefined) : undefined,
+          })),
         ].filter((r) => r.name.trim());
         if (items.length > 0) {
           const res = await apiFetch(`/api/v1/businesses/${businessId}/buildings/bulk`, {
@@ -459,11 +495,15 @@ function Step3({
       } else {
         const items = [
           ...parsedRows.map((r) => ({
-            name: r.name ?? r["name"] ?? "",
+            name: r.name ?? "",
             contact_email: r["contact email"] || r["contact_email"] || undefined,
             contact_phone: r["contact phone"] || r["contact_phone"] || undefined,
           })),
-          ...manualRows,
+          ...manualClients.map((c) => ({
+            name: c.name,
+            contact_email: c.contact_email || undefined,
+            contact_phone: c.contact_phone || undefined,
+          })),
         ].filter((r) => r.name.trim());
         if (items.length > 0) {
           const res = await apiFetch(`/api/v1/businesses/${businessId}/clients/bulk`, {
@@ -488,7 +528,7 @@ function Step3({
     onSkip();
   }
 
-  const hasData = uploadStatus === "parsed" || manualList.length > 0;
+  const hasData = uploadStatus === "parsed" || manualBuildings.length > 0 || manualClients.length > 0;
 
   return (
     <div className="space-y-5">
@@ -527,29 +567,104 @@ function Step3({
 
       {/* Manual add */}
       <div>
-        <p className="text-sm font-medium text-midnight mb-2">Or add manually</p>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            placeholder={`${label.slice(0, -1)} name…`}
-            value={manualInput}
-            onChange={(e) => setManualInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addManual(); } }}
-            className="flex-1 h-10 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red"
-            maxLength={100}
-          />
-          <button onClick={addManual} disabled={!manualInput.trim()}
-            className="h-10 px-4 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
-            + Add
-          </button>
-        </div>
-        {manualList.length > 0 && (
+        <p className="text-sm font-medium text-midnight mb-3">Or add manually</p>
+
+        {businessType === "building" ? (
+          <div className="border border-pebble rounded-xl p-4 space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <input type="text" placeholder="Name *" value={buildingForm.name}
+                onChange={(e) => setBuildingForm((f) => ({ ...f, name: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" maxLength={200} />
+              <input type="text" placeholder="Address" value={buildingForm.address}
+                onChange={(e) => setBuildingForm((f) => ({ ...f, address: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <input type="text" placeholder="City" value={buildingForm.city}
+                onChange={(e) => setBuildingForm((f) => ({ ...f, city: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+              <input type="text" placeholder="Code" value={buildingForm.code}
+                onChange={(e) => setBuildingForm((f) => ({ ...f, code: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+              <input type="text" placeholder="Serial Number" value={buildingForm.serial_number}
+                onChange={(e) => setBuildingForm((f) => ({ ...f, serial_number: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <input type="text" placeholder="Type (e.g. Residential)" value={buildingForm.btype}
+                onChange={(e) => setBuildingForm((f) => ({ ...f, btype: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+              <input type="number" placeholder="Completion %" value={buildingForm.completion_pct}
+                onChange={(e) => setBuildingForm((f) => ({ ...f, completion_pct: e.target.value }))}
+                min={0} max={100} step={0.1}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-xs text-steel mb-1">Soft Handover Date</label>
+                <input type="date" value={buildingForm.soft_handover_date}
+                  onChange={(e) => setBuildingForm((f) => ({ ...f, soft_handover_date: e.target.value }))}
+                  className="w-full h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+              </div>
+              <div>
+                <label className="block text-xs text-steel mb-1">Hard Handover Date</label>
+                <input type="date" value={buildingForm.hard_handover_date}
+                  onChange={(e) => setBuildingForm((f) => ({ ...f, hard_handover_date: e.target.value }))}
+                  className="w-full h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+              </div>
+            </div>
+            <button onClick={addBuilding} disabled={!buildingForm.name.trim()}
+              className="w-full h-9 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
+              + Add Building
+            </button>
+          </div>
+        ) : (
+          <div className="border border-pebble rounded-xl p-4 space-y-2">
+            <input type="text" placeholder="Client name *" value={clientForm.name}
+              onChange={(e) => setClientForm((f) => ({ ...f, name: e.target.value }))}
+              className="w-full h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" maxLength={200} />
+            <div className="grid grid-cols-2 gap-2">
+              <input type="email" placeholder="Contact email" value={clientForm.contact_email}
+                onChange={(e) => setClientForm((f) => ({ ...f, contact_email: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+              <input type="text" placeholder="Contact phone" value={clientForm.contact_phone}
+                onChange={(e) => setClientForm((f) => ({ ...f, contact_phone: e.target.value }))}
+                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+            </div>
+            <button onClick={addClient} disabled={!clientForm.name.trim()}
+              className="w-full h-9 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
+              + Add Client
+            </button>
+          </div>
+        )}
+
+        {businessType === "building" && manualBuildings.length > 0 && (
           <div className="mt-2 space-y-1.5 max-h-36 overflow-y-auto">
-            {manualList.map((name) => (
-              <div key={name} className="flex items-center justify-between bg-mist rounded-lg px-3 py-1.5">
-                <span className="text-sm text-midnight">{name}</span>
-                <button onClick={() => setManualList((p) => p.filter((n) => n !== name))}
-                  className="text-steel hover:text-red-500 text-lg leading-none ml-2">&times;</button>
+            {manualBuildings.map((b, i) => (
+              <div key={i} className="flex items-center justify-between bg-mist rounded-lg px-3 py-1.5">
+                <div className="min-w-0">
+                  <span className="text-sm text-midnight font-medium">{b.name}</span>
+                  {(b.city || b.code) && (
+                    <span className="text-xs text-steel ml-2">{[b.city, b.code].filter(Boolean).join(" · ")}</span>
+                  )}
+                </div>
+                <button onClick={() => setManualBuildings((p) => p.filter((_, j) => j !== i))}
+                  className="text-steel hover:text-red-500 text-lg leading-none ml-2 flex-shrink-0">&times;</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {businessType === "client" && manualClients.length > 0 && (
+          <div className="mt-2 space-y-1.5 max-h-36 overflow-y-auto">
+            {manualClients.map((c, i) => (
+              <div key={i} className="flex items-center justify-between bg-mist rounded-lg px-3 py-1.5">
+                <div className="min-w-0">
+                  <span className="text-sm text-midnight font-medium">{c.name}</span>
+                  {c.contact_email && <span className="text-xs text-steel ml-2">{c.contact_email}</span>}
+                </div>
+                <button onClick={() => setManualClients((p) => p.filter((_, j) => j !== i))}
+                  className="text-steel hover:text-red-500 text-lg leading-none ml-2 flex-shrink-0">&times;</button>
               </div>
             ))}
           </div>

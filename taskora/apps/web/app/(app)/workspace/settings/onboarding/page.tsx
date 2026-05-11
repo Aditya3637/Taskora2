@@ -27,7 +27,7 @@ async function apiFetch(path: string, opts?: RequestInit) {
   return res.json();
 }
 
-const BUILDINGS_CSV = `Name,Address\nExample Tower A,123 Main Street Mumbai\nExample Complex B,456 Park Avenue Delhi\n`;
+const BUILDINGS_CSV = `Name,Address,City,Code,Serial Number,Type,Soft Handover Date,Hard Handover Date,Completion %\nTower A,123 Main Street,Mumbai,BLD001,SN001,Residential,2026-06-01,2026-12-01,45\nTower B,456 Park Avenue,Delhi,BLD002,SN002,Commercial,2026-09-01,2027-03-01,20\n`;
 const CLIENTS_CSV   = `Name,Contact Email,Contact Phone\nAcme Corp,contact@acme.com,+91 98765 43210\nTech Solutions,info@techsol.com,+91 87654 32109\n`;
 
 function downloadCSV(content: string, filename: string) {
@@ -250,14 +250,27 @@ function TeamInvitesSection({ status, onStepDone }: { status: OnboardingStatus; 
   );
 }
 
+type ManualBuilding = {
+  name: string; address: string; city: string; code: string;
+  serial_number: string; btype: string;
+  soft_handover_date: string; hard_handover_date: string; completion_pct: string;
+};
+type ManualClient = { name: string; contact_email: string; contact_phone: string };
+
+const EMPTY_BUILDING: ManualBuilding = { name: "", address: "", city: "", code: "", serial_number: "", btype: "", soft_handover_date: "", hard_handover_date: "", completion_pct: "" };
+const EMPTY_CLIENT: ManualClient = { name: "", contact_email: "", contact_phone: "" };
+
 // ── Section: Entity import ────────────────────────────────────────────────────
 function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus; onStepDone: () => void }) {
   const label      = status.business_type === "client" ? "Clients" : "Buildings";
   const csvContent = status.business_type === "client" ? CLIENTS_CSV : BUILDINGS_CSV;
   const csvFile    = status.business_type === "client" ? "clients_template.csv" : "buildings_template.csv";
 
-  const [manualInput, setManualInput]   = useState("");
-  const [manualList, setManualList]     = useState<string[]>([]);
+  const [buildingForm, setBuildingForm] = useState<ManualBuilding>(EMPTY_BUILDING);
+  const [manualBuildings, setManualBuildings] = useState<ManualBuilding[]>([]);
+  const [clientForm, setClientForm] = useState<ManualClient>(EMPTY_CLIENT);
+  const [manualClients, setManualClients] = useState<ManualClient[]>([]);
+
   const [uploadStatus, setUploadStatus] = useState<"idle" | "parsed" | "error">("idle");
   const [uploadCount, setUploadCount]   = useState(0);
   const [uploadError, setUploadError]   = useState("");
@@ -285,17 +298,48 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
     reader.readAsText(file);
   }
 
+  function addBuilding() {
+    if (!buildingForm.name.trim()) return;
+    setManualBuildings((p) => [...p, { ...buildingForm }]);
+    setBuildingForm(EMPTY_BUILDING);
+  }
+
+  function addClient() {
+    if (!clientForm.name.trim()) return;
+    setManualClients((p) => [...p, { ...clientForm }]);
+    setClientForm(EMPTY_CLIENT);
+  }
+
   async function handleImport() {
     setImporting(true); setMsg("");
     try {
       const biz = status.business_id;
       const parsed: Record<string, string>[] = (fileRef as any)._parsed ?? [];
-      const manual = manualList.map((name) => ({ name }));
 
       if (status.business_type === "building") {
         const items = [
-          ...parsed.map((r) => ({ name: r.name ?? "", address: r.address ?? undefined })),
-          ...manual,
+          ...parsed.map((r) => ({
+            name: r.name ?? "",
+            address: r.address || undefined,
+            city: r.city || undefined,
+            code: r.code || undefined,
+            serial_number: r["serial number"] || undefined,
+            btype: r["type"] || undefined,
+            soft_handover_date: r["soft handover date"] || undefined,
+            hard_handover_date: r["hard handover date"] || undefined,
+            completion_pct: r["completion %"] ? (parseFloat(r["completion %"]) || undefined) : undefined,
+          })),
+          ...manualBuildings.map((b) => ({
+            name: b.name,
+            address: b.address || undefined,
+            city: b.city || undefined,
+            code: b.code || undefined,
+            serial_number: b.serial_number || undefined,
+            btype: b.btype || undefined,
+            soft_handover_date: b.soft_handover_date || undefined,
+            hard_handover_date: b.hard_handover_date || undefined,
+            completion_pct: b.completion_pct ? (parseFloat(b.completion_pct) || undefined) : undefined,
+          })),
         ].filter((r) => r.name.trim());
         if (items.length) {
           const res = await apiFetch(`/api/v1/businesses/${biz}/buildings/bulk`, {
@@ -310,7 +354,11 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
             contact_email: r["contact email"] || r.contact_email || undefined,
             contact_phone: r["contact phone"] || r.contact_phone || undefined,
           })),
-          ...manual,
+          ...manualClients.map((c) => ({
+            name: c.name,
+            contact_email: c.contact_email || undefined,
+            contact_phone: c.contact_phone || undefined,
+          })),
         ].filter((r) => r.name.trim());
         if (items.length) {
           const res = await apiFetch(`/api/v1/businesses/${biz}/clients/bulk`, {
@@ -322,14 +370,13 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
 
       await apiFetch("/api/v1/onboarding/step3/done", { method: "POST", body: JSON.stringify({ skipped: false }) });
       onStepDone();
-      setManualList([]);
-      setUploadStatus("idle");
-      setUploadCount(0);
+      setManualBuildings([]); setManualClients([]);
+      setUploadStatus("idle"); setUploadCount(0);
     } catch (e: any) { setMsg(`Error: ${e.message}`); }
     finally { setImporting(false); }
   }
 
-  const hasData = uploadStatus === "parsed" || manualList.length > 0;
+  const hasData = uploadStatus === "parsed" || manualBuildings.length > 0 || manualClients.length > 0;
 
   return (
     <Section title={`${label} list`} badge={badgeOk ? "Complete" : status.step3_skipped ? "Skipped" : "Not started"} badgeOk={badgeOk}>
@@ -360,25 +407,104 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
       </div>
 
       {/* Manual */}
-      <p className="text-sm font-medium text-midnight mb-2">Or add manually</p>
-      <div className="flex gap-2 mb-2">
-        <input type="text" placeholder={`${label.slice(0, -1)} name…`}
-          value={manualInput} onChange={(e) => setManualInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); if (manualInput.trim()) { setManualList((p) => p.includes(manualInput.trim()) ? p : [...p, manualInput.trim()]); setManualInput(""); } } }}
-          className="flex-1 h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red"
-          maxLength={100} />
-        <button disabled={!manualInput.trim()}
-          onClick={() => { const n = manualInput.trim(); if (n) { setManualList((p) => p.includes(n) ? p : [...p, n]); setManualInput(""); } }}
-          className="h-9 px-4 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
-          + Add
-        </button>
-      </div>
-      {manualList.length > 0 && (
+      <p className="text-sm font-medium text-midnight mb-3">Or add manually</p>
+
+      {status.business_type === "building" ? (
+        <div className="border border-pebble rounded-xl p-4 space-y-2 mb-3">
+          <div className="grid grid-cols-2 gap-2">
+            <input type="text" placeholder="Name *" value={buildingForm.name}
+              onChange={(e) => setBuildingForm((f) => ({ ...f, name: e.target.value }))}
+              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" maxLength={200} />
+            <input type="text" placeholder="Address" value={buildingForm.address}
+              onChange={(e) => setBuildingForm((f) => ({ ...f, address: e.target.value }))}
+              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <input type="text" placeholder="City" value={buildingForm.city}
+              onChange={(e) => setBuildingForm((f) => ({ ...f, city: e.target.value }))}
+              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+            <input type="text" placeholder="Code" value={buildingForm.code}
+              onChange={(e) => setBuildingForm((f) => ({ ...f, code: e.target.value }))}
+              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+            <input type="text" placeholder="Serial Number" value={buildingForm.serial_number}
+              onChange={(e) => setBuildingForm((f) => ({ ...f, serial_number: e.target.value }))}
+              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <input type="text" placeholder="Type (e.g. Residential)" value={buildingForm.btype}
+              onChange={(e) => setBuildingForm((f) => ({ ...f, btype: e.target.value }))}
+              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+            <input type="number" placeholder="Completion %" value={buildingForm.completion_pct}
+              onChange={(e) => setBuildingForm((f) => ({ ...f, completion_pct: e.target.value }))}
+              min={0} max={100} step={0.1}
+              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-xs text-steel mb-1">Soft Handover Date</label>
+              <input type="date" value={buildingForm.soft_handover_date}
+                onChange={(e) => setBuildingForm((f) => ({ ...f, soft_handover_date: e.target.value }))}
+                className="w-full h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+            </div>
+            <div>
+              <label className="block text-xs text-steel mb-1">Hard Handover Date</label>
+              <input type="date" value={buildingForm.hard_handover_date}
+                onChange={(e) => setBuildingForm((f) => ({ ...f, hard_handover_date: e.target.value }))}
+                className="w-full h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+            </div>
+          </div>
+          <button onClick={addBuilding} disabled={!buildingForm.name.trim()}
+            className="w-full h-9 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
+            + Add Building
+          </button>
+        </div>
+      ) : (
+        <div className="border border-pebble rounded-xl p-4 space-y-2 mb-3">
+          <input type="text" placeholder="Client name *" value={clientForm.name}
+            onChange={(e) => setClientForm((f) => ({ ...f, name: e.target.value }))}
+            className="w-full h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" maxLength={200} />
+          <div className="grid grid-cols-2 gap-2">
+            <input type="email" placeholder="Contact email" value={clientForm.contact_email}
+              onChange={(e) => setClientForm((f) => ({ ...f, contact_email: e.target.value }))}
+              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+            <input type="text" placeholder="Contact phone" value={clientForm.contact_phone}
+              onChange={(e) => setClientForm((f) => ({ ...f, contact_phone: e.target.value }))}
+              className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
+          </div>
+          <button onClick={addClient} disabled={!clientForm.name.trim()}
+            className="w-full h-9 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
+            + Add Client
+          </button>
+        </div>
+      )}
+
+      {status.business_type === "building" && manualBuildings.length > 0 && (
         <div className="space-y-1 mb-4 max-h-36 overflow-y-auto">
-          {manualList.map((n) => (
-            <div key={n} className="flex items-center justify-between bg-mist rounded-lg px-3 py-1.5">
-              <span className="text-sm text-midnight">{n}</span>
-              <button onClick={() => setManualList((p) => p.filter((x) => x !== n))} className="text-steel hover:text-red-500 text-lg leading-none">&times;</button>
+          {manualBuildings.map((b, i) => (
+            <div key={i} className="flex items-center justify-between bg-mist rounded-lg px-3 py-1.5">
+              <div className="min-w-0">
+                <span className="text-sm text-midnight font-medium">{b.name}</span>
+                {(b.city || b.code) && (
+                  <span className="text-xs text-steel ml-2">{[b.city, b.code].filter(Boolean).join(" · ")}</span>
+                )}
+              </div>
+              <button onClick={() => setManualBuildings((p) => p.filter((_, j) => j !== i))}
+                className="text-steel hover:text-red-500 text-lg leading-none ml-2 flex-shrink-0">&times;</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {status.business_type === "client" && manualClients.length > 0 && (
+        <div className="space-y-1 mb-4 max-h-36 overflow-y-auto">
+          {manualClients.map((c, i) => (
+            <div key={i} className="flex items-center justify-between bg-mist rounded-lg px-3 py-1.5">
+              <div className="min-w-0">
+                <span className="text-sm text-midnight font-medium">{c.name}</span>
+                {c.contact_email && <span className="text-xs text-steel ml-2">{c.contact_email}</span>}
+              </div>
+              <button onClick={() => setManualClients((p) => p.filter((_, j) => j !== i))}
+                className="text-steel hover:text-red-500 text-lg leading-none ml-2 flex-shrink-0">&times;</button>
             </div>
           ))}
         </div>
