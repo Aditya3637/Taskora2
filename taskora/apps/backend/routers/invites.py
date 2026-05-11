@@ -40,7 +40,6 @@ def create_invite(
         "token": token,
         "status": "pending",
         "created_at": now,
-        "updated_at": now,
     }
     result = sb.table("workspace_invites").insert(row).execute()
     if not result.data:
@@ -63,7 +62,7 @@ def get_invite(
     """Get invite details — no auth required (public link preview)."""
     rows = (
         sb.table("workspace_invites")
-        .select("*, businesses(name), inviter:users!invited_by(email)")
+        .select("*, businesses(name), inviter:users!invited_by(name)")
         .eq("token", token)
         .execute()
         .data
@@ -136,7 +135,7 @@ def accept_invite(
     ).execute()
 
     # Mark invite accepted
-    sb.table("workspace_invites").update({"status": "accepted", "updated_at": now}).eq("token", token).execute()
+    sb.table("workspace_invites").update({"status": "accepted"}).eq("token", token).execute()
 
     business = invite.get("businesses") or {}
     return {
@@ -162,8 +161,7 @@ def decline_invite(
             detail=f"Invite is already {rows[0]['status']}",
         )
 
-    now = datetime.now(timezone.utc).isoformat()
-    sb.table("workspace_invites").update({"status": "declined", "updated_at": now}).eq("token", token).execute()
+    sb.table("workspace_invites").update({"status": "declined"}).eq("token", token).execute()
     return {"ok": True}
 
 
@@ -184,8 +182,7 @@ def revoke_invite(
 
     require_admin_or_owner(sb, invite["business_id"], user["id"])
 
-    now = datetime.now(timezone.utc).isoformat()
-    sb.table("workspace_invites").update({"status": "revoked", "updated_at": now}).eq("id", invite_id).execute()
+    sb.table("workspace_invites").update({"status": "revoked"}).eq("id", invite_id).execute()
 
 
 @router.get("/")
@@ -199,7 +196,7 @@ def list_invites(
 
     invites = (
         sb.table("workspace_invites")
-        .select("*, inviter:users!invited_by(email)")
+        .select("*, inviter:users!invited_by(name)")
         .eq("business_id", business_id)
         .order("created_at", desc=True)
         .execute()
@@ -208,6 +205,6 @@ def list_invites(
 
     for invite in invites:
         inviter = invite.pop("inviter", None) or {}
-        invite["inviter_email"] = inviter.get("email") if isinstance(inviter, dict) else None
+        invite["inviter_email"] = inviter.get("name") if isinstance(inviter, dict) else None
 
     return invites
