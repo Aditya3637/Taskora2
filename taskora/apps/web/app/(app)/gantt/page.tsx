@@ -272,11 +272,15 @@ export default function GanttPage() {
     setLoading(true);
     setError("");
     try {
-      const businesses = await apiFetch("/api/v1/businesses/my");
-      const biz = Array.isArray(businesses) ? businesses[0] : businesses;
-      if (!biz?.id) throw new Error("No business");
-      setBusinessId(biz.id);
-      const data = await apiFetch(`/api/v1/initiatives/?business_id=${biz.id}`);
+      let bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
+      if (!bizId) {
+        const biz = await apiFetch("/api/v1/businesses/my");
+        if (!biz?.id) throw new Error("No business");
+        bizId = biz.id;
+        localStorage.setItem("business_id", bizId);
+      }
+      setBusinessId(bizId);
+      const data = await apiFetch(`/api/v1/initiatives/?business_id=${bizId}`);
       setInitiatives(Array.isArray(data) ? data : data.results ?? []);
     } catch {
       setError("Failed to load initiatives.");

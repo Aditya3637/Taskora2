@@ -36,9 +36,17 @@ export default function ReportsPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    apiFetch("/api/v1/businesses/my").then(r => r.json()).then((data: any[]) => {
-      if (data?.[0]?.id) setBusinessId(data[0].id);
-    }).catch(() => {});
+    (async () => {
+      try {
+        let bid = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
+        if (!bid) {
+          const biz = await apiFetch("/api/v1/businesses/my");
+          bid = biz?.id ?? "";
+          if (bid) localStorage.setItem("business_id", bid);
+        }
+        if (bid) setBusinessId(bid);
+      } catch { /* ignore */ }
+    })();
   }, []);
 
   async function generate() {
@@ -47,11 +55,11 @@ export default function ReportsPage() {
     try {
       const qs = `business_id=${businessId}&start_date=${startDate}&end_date=${endDate}&format=json`;
       if (tab === "tasks") {
-        const r = await apiFetch(`/api/v1/reports/tasks?${qs}`);
-        setTaskRows(await r.json());
+        const rows = await apiFetch(`/api/v1/reports/tasks?${qs}`);
+        setTaskRows(Array.isArray(rows) ? rows : []);
       } else {
-        const r = await apiFetch(`/api/v1/reports/initiatives?${qs}`);
-        setInitRows(await r.json());
+        const rows = await apiFetch(`/api/v1/reports/initiatives?${qs}`);
+        setInitRows(Array.isArray(rows) ? rows : []);
       }
     } catch (e: any) { setError(e.message); }
     setLoading(false);

@@ -127,6 +127,7 @@ function SidebarContent({
   const router = useRouter();
   const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
   const [isWorkspaceAdmin, setIsWorkspaceAdmin] = useState(false);
+  const [trialDaysLeft, setTrialDaysLeft] = useState<number | null>(null);
 
   useEffect(() => {
     async function loadRoles() {
@@ -155,14 +156,27 @@ function SidebarContent({
         }
 
         if (businessId) {
-          const res = await fetch(
-            `${API}/api/v1/businesses/${businessId}/my-role`,
-            { headers: { Authorization: `Bearer ${session.access_token}` } }
-          );
-          if (res.ok) {
-            const data = await res.json();
-            if (data.role === "owner" || data.role === "admin") {
-              setIsWorkspaceAdmin(true);
+          const [roleRes, subRes] = await Promise.all([
+            fetch(`${API}/api/v1/businesses/${businessId}/my-role`, {
+              headers: { Authorization: `Bearer ${session.access_token}` },
+            }),
+            fetch(`${API}/api/v1/billing/status/${businessId}`, {
+              headers: { Authorization: `Bearer ${session.access_token}` },
+            }),
+          ]);
+
+          if (roleRes.ok) {
+            const data = await roleRes.json();
+            if (data.role === "owner" || data.role === "admin") setIsWorkspaceAdmin(true);
+          }
+
+          if (subRes.ok) {
+            const sub = await subRes.json();
+            if (sub?.status === "trialing" && sub?.trial_end) {
+              const daysLeft = Math.ceil(
+                (new Date(sub.trial_end).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+              );
+              setTrialDaysLeft(Math.max(0, daysLeft));
             }
           }
         }
@@ -236,6 +250,23 @@ function SidebarContent({
           );
         })}
       </nav>
+
+      {/* Trial indicator */}
+      {trialDaysLeft !== null && (
+        <div className={`mx-2 mb-1 rounded-lg px-3 py-2 text-xs ${
+          trialDaysLeft <= 7 ? "bg-red-900/60 text-red-200" : "bg-white/10 text-white/70"
+        }`}>
+          {expanded ? (
+            trialDaysLeft > 0
+              ? <span><span className="font-bold text-white">{trialDaysLeft}d</span> left in free trial</span>
+              : <span className="text-red-300 font-medium">Trial expired — upgrade to continue</span>
+          ) : (
+            <span className="font-bold text-center block" title={`${trialDaysLeft} days left in trial`}>
+              {trialDaysLeft}d
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Footer actions */}
       <div className="border-t border-white/10 py-2 flex-shrink-0 space-y-0.5">

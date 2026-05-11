@@ -35,20 +35,26 @@ export default function TemplatesPage() {
   const [newTemplate, setNewTemplate] = useState({ name: "", description: "", tasks: [""] });
 
   useEffect(() => {
-    apiFetch("/api/v1/businesses/my").then((data: any[]) => {
-      const bid = data?.[0]?.id ?? "";
-      setBusinessId(bid);
-      if (bid) {
-        Promise.all([
-          apiFetch(`/api/v1/templates/?business_id=${bid}`),
-          apiFetch(`/api/v1/initiatives/business/${bid}`),
-        ]).then(([tmpl, init]) => {
+    (async () => {
+      try {
+        let bid = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
+        if (!bid) {
+          const biz = await apiFetch("/api/v1/businesses/my");
+          bid = biz?.id ?? "";
+          if (bid) localStorage.setItem("business_id", bid);
+        }
+        setBusinessId(bid);
+        if (bid) {
+          const [tmpl, init] = await Promise.all([
+            apiFetch(`/api/v1/templates/?business_id=${bid}`),
+            apiFetch(`/api/v1/initiatives/business/${bid}`),
+          ]);
           setTemplates(tmpl as Template[]);
           setInitiatives(init as Initiative[]);
-          setLoading(false);
-        });
-      }
-    }).catch(() => setLoading(false));
+        }
+      } catch { /* ignore */ }
+      setLoading(false);
+    })();
   }, []);
 
   async function createBlank(e: React.FormEvent) {

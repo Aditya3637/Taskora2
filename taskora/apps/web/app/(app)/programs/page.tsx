@@ -714,23 +714,20 @@ export default function ProgramsPage() {
       }
       const userId = session.user?.id ?? null;
 
-      const biz = await apiFetch("/api/v1/businesses/my");
-      if (!biz?.id) throw new Error("No business found for your account.");
-      setBusinessId(biz.id);
+      let bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
+      if (!bizId) {
+        const biz = await apiFetch("/api/v1/businesses/my");
+        if (!biz?.id) throw new Error("No business found for your account.");
+        bizId = biz.id;
+        localStorage.setItem("business_id", bizId);
+      }
+      setBusinessId(bizId);
 
-      const data = await apiFetch(`/api/v1/programs/?business_id=${biz.id}`);
+      const data = await apiFetch(`/api/v1/programs/?business_id=${bizId}`);
       setPrograms(Array.isArray(data) ? data : []);
 
-      if (biz.owner_id === userId) {
-        setCanEdit(true);
-      } else {
-        apiFetch(`/api/v1/businesses/${biz.id}/members`)
-          .then((members: any[]) => {
-            const me = members.find((m) => m.user_id === userId);
-            if (me?.role === "owner" || me?.role === "admin") setCanEdit(true);
-          })
-          .catch(() => {});
-      }
+      const roleData = await apiFetch(`/api/v1/businesses/${bizId}/my-role`).catch(() => null);
+      if (roleData?.role === "owner" || roleData?.role === "admin") setCanEdit(true);
     } catch (err: any) {
       const msg = err?.message ?? err?.toString?.() ?? "Unknown error";
       if (msg.toLowerCase().includes("not authenticated")) {
