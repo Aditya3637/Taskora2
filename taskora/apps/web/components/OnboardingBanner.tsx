@@ -18,7 +18,9 @@ async function apiFetch(path: string) {
 }
 
 type Status = {
+  step2_done: boolean;
   step2_skipped: boolean;
+  step3_done: boolean;
   step3_skipped: boolean;
   onboarding_completed: boolean;
   workspace_mode: "personal" | "organisation" | null;
@@ -47,14 +49,16 @@ export default function OnboardingBanner() {
   }
 
   if (dismissed || !status) return null;
+  // Hide only if fully completed with nothing skipped
   if (status.onboarding_completed && !status.step2_skipped && !status.step3_skipped) return null;
 
   const entityLabel = status.business_type === "client" ? "clients" : "buildings";
-  const peopleLabel = status.workspace_mode === "personal" ? "assignees" : "team members";
+  const peopleLabel = status.workspace_mode === "organisation" ? "team members" : "assignees";
 
+  // Show reminder for steps that were skipped OR never started
   const items: string[] = [];
-  if (status.step2_skipped) items.push(`Add your ${peopleLabel}`);
-  if (status.step3_skipped) items.push(`Import your ${entityLabel} list`);
+  if (!status.step2_done || status.step2_skipped) items.push(`Add your ${peopleLabel}`);
+  if (!status.step3_done || status.step3_skipped) items.push(`Import your ${entityLabel} list`);
 
   if (items.length === 0) return null;
 

@@ -237,7 +237,7 @@ function SidebarContent({
         </button>
 
         <Link
-          href="/settings"
+          href="/workspace/settings"
           title={!expanded ? "Settings" : undefined}
           className={`flex items-center gap-3 mx-2 rounded-lg py-2.5 text-white/60 hover:text-white hover:bg-white/10 transition-colors ${
             expanded ? "px-3" : "justify-center"
