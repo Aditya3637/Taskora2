@@ -50,6 +50,7 @@ function parseCSV(text: string): Record<string, string>[] {
 
 type OnboardingStatus = {
   business_id: string;
+  business_name: string | null;
   business_type: "building" | "client";
   workspace_mode: "personal" | "organisation" | null;
   onboarding_completed: boolean;
@@ -60,6 +61,100 @@ type OnboardingStatus = {
 };
 
 type Assignee = { id: string; name: string };
+
+// ── Section: Workspace identity (name + type) ───────────────────────────────
+function WorkspaceInfoSection({ status, onChanged }: { status: OnboardingStatus; onChanged: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName]       = useState(status.business_name ?? "");
+  const [type, setType]       = useState<"building" | "client">(status.business_type ?? "building");
+  const [saving, setSaving]   = useState(false);
+  const [msg, setMsg]         = useState("");
+
+  async function save() {
+    if (!name.trim()) return;
+    setSaving(true); setMsg("");
+    const bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
+    try {
+      await apiFetch(`/api/v1/businesses/${bizId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: name.trim(), type }),
+      });
+      setMsg("Saved.");
+      setEditing(false);
+      onChanged();
+    } catch (e: any) {
+      setMsg(`Error: ${e.message}`);
+    } finally {
+      setSaving(false);
+      setTimeout(() => setMsg(""), 2500);
+    }
+  }
+
+  function cancel() {
+    setName(status.business_name ?? "");
+    setType(status.business_type ?? "building");
+    setEditing(false);
+    setMsg("");
+  }
+
+  return (
+    <Section title="Workspace" badge="Configured" badgeOk={true}>
+      {!editing ? (
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="font-semibold text-midnight text-base">{status.business_name ?? "—"}</p>
+            <p className="text-xs text-steel mt-0.5">
+              {status.business_type === "client" ? "Client workspace" : "Building workspace"}
+            </p>
+          </div>
+          <button onClick={() => setEditing(true)}
+            className="h-8 px-3 text-xs border border-pebble rounded-lg text-steel hover:bg-mist transition-colors">
+            Edit
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs text-steel font-medium mb-1">Workspace name</label>
+            <input type="text" value={name} onChange={(e) => setName(e.target.value)}
+              className="w-full h-10 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red"
+              maxLength={100} />
+          </div>
+          <div>
+            <label className="block text-xs text-steel font-medium mb-2">What do you manage?</label>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { value: "building" as const, label: "Buildings", desc: "Real estate, construction, facilities" },
+                { value: "client"   as const, label: "Clients",   desc: "Agencies, services, consultancies" },
+              ].map((opt) => (
+                <button key={opt.value} type="button" onClick={() => setType(opt.value)}
+                  className={`text-left p-3 border rounded-xl transition-all ${
+                    type === opt.value
+                      ? "border-taskora-red bg-red-50 ring-1 ring-taskora-red/20"
+                      : "border-pebble hover:border-taskora-red/50"
+                  }`}>
+                  <div className="font-semibold text-midnight text-sm">{opt.label}</div>
+                  <div className="text-xs text-steel mt-0.5">{opt.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={save} disabled={saving || !name.trim()}
+              className="h-9 px-4 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
+              {saving ? "Saving…" : "Save changes"}
+            </button>
+            <button onClick={cancel}
+              className="h-9 px-3 border border-pebble text-steel text-sm rounded-lg hover:bg-mist">
+              Cancel
+            </button>
+            {msg && <span className={`text-sm ${msg.startsWith("Error") ? "text-red-600" : "text-green-600"}`}>{msg}</span>}
+          </div>
+        </div>
+      )}
+    </Section>
+  );
+}
 
 // ── Section: Workspace mode ──────────────────────────────────────────────────
 function WorkspaceModeSection({
@@ -601,6 +696,7 @@ export default function SettingsOnboardingPage() {
 
       {status && (
         <>
+          <WorkspaceInfoSection status={status} onChanged={reload} />
           <WorkspaceModeSection status={status} onChanged={reload} />
 
           {status.workspace_mode === "personal" && (

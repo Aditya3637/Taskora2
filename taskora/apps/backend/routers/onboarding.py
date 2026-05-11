@@ -69,6 +69,7 @@ def get_status(
     biz = _get_business(sb, user["id"], business_id)
     return {
         "business_id": biz["id"],
+        "business_name": biz.get("name"),
         "business_type": biz.get("type"),
         "workspace_mode": biz.get("workspace_mode"),
         "onboarding_completed": biz.get("onboarding_completed", False),

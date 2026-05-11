@@ -16,6 +16,12 @@ class BusinessCreate(BaseModel):
     workspace_mode: Optional[Literal["personal", "organisation"]] = None
 
 
+class BusinessUpdate(BaseModel):
+    name: Optional[str] = None
+    type: Optional[Literal["building", "client"]] = None
+    workspace_mode: Optional[Literal["personal", "organisation"]] = None
+
+
 class MemberRoleUpdate(BaseModel):
     role: Literal["member", "admin"]
 
@@ -26,6 +32,22 @@ def create_business(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
+    # Enforce one business per user — return the existing one if present
+    existing = (
+        sb.table("businesses")
+        .select("*")
+        .eq("owner_id", user["id"])
+        .order("created_at")
+        .limit(1)
+        .execute()
+        .data
+    )
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="You already have a workspace. Edit it instead of creating a new one.",
+        )
+
     insert_payload: dict = {"name": body.name, "type": body.type, "owner_id": user["id"]}
     if body.workspace_mode:
         insert_payload["workspace_mode"] = body.workspace_mode
@@ -94,6 +116,22 @@ def get_my_business(
     if not biz:
         raise HTTPException(status_code=404, detail="Business not found")
     return biz[0]
+
+
+@router.patch("/{business_id}")
+def update_business(
+    business_id: str,
+    body: BusinessUpdate,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Update workspace name, type, or workspace_mode. Owner or admin only."""
+    require_admin_or_owner(sb, business_id, user["id"])
+    payload = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not payload:
+        raise HTTPException(status_code=422, detail="No fields to update")
+    result = sb.table("businesses").update(payload).eq("id", business_id).execute()
+    return result.data[0] if result.data else {}
 
 
 @router.get("/")

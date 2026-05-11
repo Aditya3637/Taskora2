@@ -68,15 +68,25 @@ function StepDots({ current, total }: { current: number; total: number }) {
 
 // ── Step 1: Business info + workspace mode ───────────────────────────────────
 function Step1({
+  existingBizId,
+  existingBizName,
+  existingBizType,
   onDone,
 }: {
+  existingBizId?: string;
+  existingBizName?: string;
+  existingBizType?: "building" | "client";
   onDone: (data: { businessName: string; businessType: "building" | "client"; workspaceMode: "personal" | "organisation"; businessId: string }) => void;
 }) {
   const [form, setForm] = useState<{
     businessName: string;
     businessType: "building" | "client";
     workspaceMode: "personal" | "organisation";
-  }>({ businessName: "", businessType: "building", workspaceMode: "personal" });
+  }>({
+    businessName: existingBizName ?? "",
+    businessType: existingBizType ?? "building",
+    workspaceMode: "personal",
+  });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -93,19 +103,30 @@ function Step1({
         { id: user.id, name: meta.name || user.email?.split("@")[0] || "User" },
         { onConflict: "id" }
       );
-      // Create business
-      const biz = await apiFetch("/api/v1/businesses/", {
-        method: "POST",
-        body: JSON.stringify({ name: form.businessName.trim(), type: form.businessType }),
-      });
+
+      let bizId: string;
+      if (existingBizId) {
+        // Update the existing business — never create a second one
+        await apiFetch(`/api/v1/businesses/${existingBizId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ name: form.businessName.trim(), type: form.businessType }),
+        });
+        bizId = existingBizId;
+      } else {
+        const biz = await apiFetch("/api/v1/businesses/", {
+          method: "POST",
+          body: JSON.stringify({ name: form.businessName.trim(), type: form.businessType }),
+        });
+        bizId = biz.id;
+      }
+
       // Save workspace mode
       await apiFetch("/api/v1/onboarding/step1", {
         method: "POST",
-        body: JSON.stringify({ workspace_mode: form.workspaceMode }),
+        body: JSON.stringify({ workspace_mode: form.workspaceMode, business_id: bizId }),
       });
-      // Persist business_id for the session
-      localStorage.setItem("business_id", biz.id);
-      onDone({ businessName: form.businessName, businessType: form.businessType, workspaceMode: form.workspaceMode, businessId: biz.id });
+      localStorage.setItem("business_id", bizId);
+      onDone({ businessName: form.businessName, businessType: form.businessType, workspaceMode: form.workspaceMode, businessId: bizId });
     } catch (err: any) {
       setError(err.message ?? "Something went wrong");
     } finally {
@@ -722,7 +743,10 @@ export default function OnboardingPage() {
       try {
         const { data: { session } } = await supabase.auth.getSession();
         if (!session) { router.replace("/login"); return; }
-        const res = await apiFetch("/api/v1/onboarding/status");
+        // Always pass the active business_id from localStorage so we target the right workspace
+        const storedBizId = typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
+        const params = storedBizId ? `?business_id=${storedBizId}` : "";
+        const res = await apiFetch(`/api/v1/onboarding/status${params}`);
         if (res?.onboarding_completed) {
           router.replace("/war-room");
           return;
@@ -731,7 +755,7 @@ export default function OnboardingPage() {
         if (res?.business_id) {
           localStorage.setItem("business_id", res.business_id);
           setBizData({
-            businessName: "",
+            businessName: res.business_name ?? "",
             businessType: res.business_type ?? "building",
             workspaceMode: res.workspace_mode ?? "personal",
             businessId: res.business_id,
@@ -759,8 +783,18 @@ export default function OnboardingPage() {
       <div className="bg-white rounded-2xl shadow-lg w-full max-w-lg p-8">
         {step !== "done" && <StepDots current={step as number} total={3} />}
 
+        {bizData?.businessName && step !== 1 && step !== "done" && (
+          <div className="mb-5 px-3 py-2 bg-mist rounded-lg flex items-center gap-2">
+            <span className="text-xs text-steel">Workspace:</span>
+            <span className="text-sm font-semibold text-midnight">{bizData.businessName}</span>
+          </div>
+        )}
+
         {step === 1 && (
           <Step1
+            existingBizId={bizData?.businessId}
+            existingBizName={bizData?.businessName}
+            existingBizType={bizData?.businessType}
             onDone={(data) => {
               setBizData(data);
               setStep(2);
