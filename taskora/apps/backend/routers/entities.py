@@ -165,3 +165,71 @@ def update_building(
 
     result = sb.table("buildings").update(payload).eq("id", building_id).execute()
     return result.data[0] if result.data else {}
+
+
+# Bulk import ────────────────────────────────────────────────────────────────
+
+class BulkBuildingItem(BaseModel):
+    name: str
+    address: Optional[str] = None
+
+
+class BulkClientItem(BaseModel):
+    name: str
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+
+
+class BulkBuildingsBody(BaseModel):
+    items: list[BulkBuildingItem]
+
+
+class BulkClientsBody(BaseModel):
+    items: list[BulkClientItem]
+
+
+@router.post("/buildings/bulk", status_code=201)
+def bulk_add_buildings(
+    business_id: str,
+    body: BulkBuildingsBody,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    require_member(sb, business_id, user["id"])
+    rows = [
+        {"name": item.name.strip(), "address": item.address, "business_id": business_id}
+        for item in body.items
+        if item.name.strip()
+    ]
+    if not rows:
+        raise HTTPException(status_code=422, detail="No valid items provided")
+    if len(rows) > 500:
+        raise HTTPException(status_code=422, detail="Maximum 500 items per import")
+    result = sb.table("buildings").insert(rows).execute()
+    return {"inserted": len(result.data or [])}
+
+
+@router.post("/clients/bulk", status_code=201)
+def bulk_add_clients(
+    business_id: str,
+    body: BulkClientsBody,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    require_member(sb, business_id, user["id"])
+    rows = []
+    for item in body.items:
+        if not item.name.strip():
+            continue
+        contact: dict = {}
+        if item.contact_email:
+            contact["email"] = item.contact_email
+        if item.contact_phone:
+            contact["phone"] = item.contact_phone
+        rows.append({"name": item.name.strip(), "contact_info": contact, "business_id": business_id})
+    if not rows:
+        raise HTTPException(status_code=422, detail="No valid items provided")
+    if len(rows) > 500:
+        raise HTTPException(status_code=422, detail="Maximum 500 items per import")
+    result = sb.table("clients").insert(rows).execute()
+    return {"inserted": len(result.data or [])}

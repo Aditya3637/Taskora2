@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
+import OnboardingBanner from "@/components/OnboardingBanner";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -100,6 +101,7 @@ export default function DailyBriefPage() {
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+      <OnboardingBanner />
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-midnight">
           {new Date().getHours() < 12 ? "Good morning" : new Date().getHours() < 17 ? "Good afternoon" : "Good evening"} 👋

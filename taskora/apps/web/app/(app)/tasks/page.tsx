@@ -324,18 +324,41 @@ function TaskCard({
   task,
   members,
   currentUserId,
+  myRole,
   onStatusChange,
+  onDelete,
 }: {
   task: Task;
   members: Member[];
   currentUserId: string;
+  myRole: string;
   onStatusChange: (taskId: string, newStatus: string) => void;
+  onDelete: (taskId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [subtasks, setSubtasks] = useState<Subtask[]>([]);
   const [loadingSubtasks, setLoadingSubtasks] = useState(false);
   const [showAddSubtask, setShowAddSubtask] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const ents = task.task_entities ?? [];
+
+  const canDelete =
+    task.primary_stakeholder_id === currentUserId ||
+    myRole === "owner" ||
+    myRole === "admin";
+
+  async function handleDelete(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (!confirm(`Delete "${task.title}"? This cannot be undone.`)) return;
+    setDeleting(true);
+    try {
+      await apiFetch(`/api/v1/tasks/${task.id}`, { method: "DELETE" });
+      onDelete(task.id);
+    } catch (err: any) {
+      alert("Failed to delete: " + (err?.message ?? "Unknown error"));
+      setDeleting(false);
+    }
+  }
 
   async function loadSubtasks() {
     if (loadingSubtasks) return;
@@ -401,21 +424,33 @@ function TaskCard({
             )}
           </div>
 
-          <button
-            onClick={toggleExpand}
-            className="flex items-center gap-1 text-xs text-steel hover:text-midnight flex-shrink-0 mt-0.5"
-          >
-            <span className="font-medium">
-              {subtasks.length > 0
-                ? `${doneCount}/${subtasks.length}`
-                : "Subtasks"}
-            </span>
-            {expanded ? (
-              <ChevronDown className="w-3.5 h-3.5" />
-            ) : (
-              <ChevronRight className="w-3.5 h-3.5" />
+          <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
+            {canDelete && (
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="text-xs px-2 py-1 rounded border border-red-200 text-red-400 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50 font-medium"
+                title="Delete task"
+              >
+                {deleting ? "…" : "Delete"}
+              </button>
             )}
-          </button>
+            <button
+              onClick={toggleExpand}
+              className="flex items-center gap-1 text-xs text-steel hover:text-midnight"
+            >
+              <span className="font-medium">
+                {subtasks.length > 0
+                  ? `${doneCount}/${subtasks.length}`
+                  : "Subtasks"}
+              </span>
+              {expanded ? (
+                <ChevronDown className="w-3.5 h-3.5" />
+              ) : (
+                <ChevronRight className="w-3.5 h-3.5" />
+              )}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -744,15 +779,37 @@ function InitiativeBanner({
   initiative,
   businessId,
   currentUserId,
+  myRole,
   onTaskCreated,
+  onDeleted,
 }: {
   initiative: MyInitiative;
   businessId: string;
   currentUserId: string;
+  myRole: string;
   onTaskCreated: () => void;
+  onDeleted: (id: string) => void;
 }) {
   const [showBreakdown, setShowBreakdown] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const cat = initiative.impact_category ?? "others";
+
+  const canDelete =
+    initiative.primary_stakeholder_id === currentUserId ||
+    myRole === "owner" ||
+    myRole === "admin";
+
+  async function handleDelete() {
+    if (!confirm(`Delete initiative "${initiative.name}" and all its tasks? This cannot be undone.`)) return;
+    setDeleting(true);
+    try {
+      await apiFetch(`/api/v1/initiatives/${initiative.id}`, { method: "DELETE" });
+      onDeleted(initiative.id);
+    } catch (err: any) {
+      alert("Failed to delete: " + (err?.message ?? "Unknown error"));
+      setDeleting(false);
+    }
+  }
 
   return (
     <div className="bg-white rounded-xl border border-pebble shadow-sm p-4">
@@ -792,12 +849,23 @@ function InitiativeBanner({
             </div>
           )}
         </div>
-        <button
-          onClick={() => setShowBreakdown(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-taskora-red text-white text-xs font-semibold rounded-lg hover:opacity-90 flex-shrink-0"
-        >
-          <Plus className="w-3.5 h-3.5" /> Break Down
-        </button>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {canDelete && (
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-red-200 text-red-500 hover:bg-red-50 disabled:opacity-50 transition-colors"
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </button>
+          )}
+          <button
+            onClick={() => setShowBreakdown(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-taskora-red text-white text-xs font-semibold rounded-lg hover:opacity-90"
+          >
+            <Plus className="w-3.5 h-3.5" /> Break Down
+          </button>
+        </div>
       </div>
 
       {showBreakdown && (
@@ -967,15 +1035,19 @@ function InitiativeGroup({
   tasks,
   members,
   currentUserId,
+  myRole,
   highlighted,
   onStatusChange,
+  onTaskDeleted,
 }: {
   initiative: MyInitiative | null; // null = "Unlinked"
   tasks: Task[];
   members: Member[];
   currentUserId: string;
+  myRole: string;
   highlighted: boolean;
   onStatusChange: (taskId: string, newStatus: string) => void;
+  onTaskDeleted: (taskId: string) => void;
 }) {
   const groupRef = useRef<HTMLDivElement>(null);
   const [collapsed, setCollapsed] = useState(!highlighted);
@@ -1069,7 +1141,9 @@ function InitiativeGroup({
                 task={task}
                 members={members}
                 currentUserId={currentUserId}
+                myRole={myRole}
                 onStatusChange={onStatusChange}
+                onDelete={onTaskDeleted}
               />
             ))
           )}
@@ -1085,12 +1159,16 @@ function MyInitiativesSection({
   initiatives,
   businessId,
   currentUserId,
+  myRole,
   onTaskCreated,
+  onInitiativeDeleted,
 }: {
   initiatives: MyInitiative[];
   businessId: string;
   currentUserId: string;
+  myRole: string;
   onTaskCreated: () => void;
+  onInitiativeDeleted: (id: string) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -1121,7 +1199,9 @@ function MyInitiativesSection({
               initiative={init}
               businessId={businessId}
               currentUserId={currentUserId}
+              myRole={myRole}
               onTaskCreated={onTaskCreated}
+              onDeleted={onInitiativeDeleted}
             />
           ))}
         </div>
@@ -1141,6 +1221,7 @@ function TasksPageInner() {
   const [initiatives, setInitiatives] = useState<MyInitiative[]>([]);
   const [businessId, setBusinessId] = useState("");
   const [currentUserId, setCurrentUserId] = useState("");
+  const [myRole, setMyRole] = useState("member");
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -1170,14 +1251,18 @@ function TasksPageInner() {
       setInitiatives(Array.isArray(initData) ? initData : []);
       if (biz?.id) {
         setBusinessId(biz.id);
-        // Members are non-blocking — not needed to render task list
-        apiFetch(`/api/v1/businesses/${biz.id}/members`)
-          .then((memberData: any) => {
+        // Members and role are non-blocking
+        Promise.all([
+          apiFetch(`/api/v1/businesses/${biz.id}/members`),
+          apiFetch(`/api/v1/businesses/${biz.id}/my-role`),
+        ])
+          .then(([memberData, roleData]: any[]) => {
             setMembers(
               Array.isArray(memberData)
                 ? memberData.filter((m: Member) => m.user_id !== userId)
                 : []
             );
+            if (roleData?.role) setMyRole(roleData.role);
           })
           .catch(() => {});
       }
@@ -1205,6 +1290,17 @@ function TasksPageInner() {
     setTasks((prev) =>
       prev.map((t) => (t.id === taskId ? { ...t, status: newStatus } : t))
     );
+  }
+
+  // Optimistic delete
+  function handleTaskDelete(taskId: string) {
+    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+  }
+
+  function handleInitiativeDelete(initiativeId: string) {
+    setInitiatives((prev) => prev.filter((i) => i.id !== initiativeId));
+    // Also remove tasks that belonged to this initiative
+    setTasks((prev) => prev.filter((t) => t.initiative_id !== initiativeId));
   }
 
   // Filter tasks
@@ -1245,7 +1341,9 @@ function TasksPageInner() {
         initiatives={initiatives}
         businessId={businessId}
         currentUserId={currentUserId}
+        myRole={myRole}
         onTaskCreated={load}
+        onInitiativeDeleted={handleInitiativeDelete}
       />
 
       {/* Tasks Section */}
@@ -1326,8 +1424,10 @@ function TasksPageInner() {
                 tasks={tasksByInitiative[initId]}
                 members={members}
                 currentUserId={currentUserId}
+                myRole={myRole}
                 highlighted={highlightInitiativeId === initId}
                 onStatusChange={handleStatusChange}
+                onTaskDeleted={handleTaskDelete}
               />
             ))}
 
@@ -1339,8 +1439,10 @@ function TasksPageInner() {
                 tasks={unlinkedTasks}
                 members={members}
                 currentUserId={currentUserId}
+                myRole={myRole}
                 highlighted={false}
                 onStatusChange={handleStatusChange}
+                onTaskDeleted={handleTaskDelete}
               />
             )}
           </div>

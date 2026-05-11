@@ -7,7 +7,7 @@ from supabase import Client
 from pydantic import BaseModel, EmailStr
 
 from auth import get_current_user
-from deps import get_supabase, require_member
+from deps import get_supabase, require_member, require_admin_or_owner
 from config import get_settings
 
 router = APIRouter(prefix="/api/v1/invites", tags=["invites"])
@@ -165,6 +165,27 @@ def decline_invite(
     now = datetime.now(timezone.utc).isoformat()
     sb.table("workspace_invites").update({"status": "declined", "updated_at": now}).eq("token", token).execute()
     return {"ok": True}
+
+
+@router.delete("/revoke/{invite_id}", status_code=204)
+def revoke_invite(
+    invite_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Revoke a pending invite. Caller must be admin or owner of the business."""
+    rows = sb.table("workspace_invites").select("id, business_id, status").eq("id", invite_id).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="Invite not found")
+
+    invite = rows[0]
+    if invite["status"] != "pending":
+        raise HTTPException(status_code=409, detail=f"Invite is already {invite['status']}")
+
+    require_admin_or_owner(sb, invite["business_id"], user["id"])
+
+    now = datetime.now(timezone.utc).isoformat()
+    sb.table("workspace_invites").update({"status": "revoked", "updated_at": now}).eq("id", invite_id).execute()
 
 
 @router.get("/")

@@ -125,12 +125,38 @@ function SidebarContent({
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
+  const [isWorkspaceAdmin, setIsWorkspaceAdmin] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (user?.user_metadata?.is_admin) setIsAdmin(true);
-    });
+    async function loadRoles() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user?.user_metadata?.is_admin) setIsPlatformAdmin(true);
+
+      // Load workspace role
+      try {
+        const businessId =
+          typeof window !== "undefined"
+            ? localStorage.getItem("business_id") ?? ""
+            : "";
+        if (businessId) {
+          const { data: { session } } = await supabase.auth.getSession();
+          const res = await fetch(
+            `${API}/api/v1/businesses/${businessId}/my-role`,
+            { headers: { Authorization: `Bearer ${session?.access_token ?? ""}` } }
+          );
+          if (res.ok) {
+            const data = await res.json();
+            if (data.role === "owner" || data.role === "admin") {
+              setIsWorkspaceAdmin(true);
+            }
+          }
+        }
+      } catch {
+        /* non-critical */
+      }
+    }
+    loadRoles();
   }, []);
 
   async function handleSignOut() {
@@ -138,9 +164,15 @@ function SidebarContent({
     router.push("/login");
   }
 
-  const navItems = isAdmin
-    ? [...coreNavItems, { href: "/admin", label: "Admin", icon: "🛡️" }]
-    : coreNavItems;
+  const navItems = [
+    ...coreNavItems,
+    ...(isWorkspaceAdmin
+      ? [{ href: "/workspace/settings", label: "Workspace", icon: "⚙️" }]
+      : []),
+    ...(isPlatformAdmin
+      ? [{ href: "/admin", label: "Admin", icon: "🛡️" }]
+      : []),
+  ];
 
   return (
     <div className="flex flex-col h-full bg-midnight overflow-hidden">

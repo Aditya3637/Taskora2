@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
-from deps import get_supabase
+from deps import get_supabase, get_member_role
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
@@ -172,6 +172,48 @@ def get_task(
         e["entity_name"] = name_map.get(e["entity_id"], e["entity_id"])
     task["task_entities"] = entities
     return task
+
+
+@router.delete("/{task_id}", status_code=204)
+def delete_task(
+    task_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    rows = sb.table("tasks").select("primary_stakeholder_id, initiative_id").eq("id", task_id).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task = rows[0]
+    uid = user["id"]
+
+    is_primary = task["primary_stakeholder_id"] == uid
+    if not is_primary:
+        allowed = False
+        if task.get("initiative_id"):
+            init_row = sb.table("initiatives").select("business_id").eq("id", task["initiative_id"]).execute().data
+            if init_row:
+                role = get_member_role(sb, init_row[0]["business_id"], uid)
+                allowed = role in ("owner", "admin")
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Only the primary stakeholder or a workspace admin can delete this task")
+
+    # Delete task milestones (polymorphic parent_id — no DB cascade from tasks)
+    milestone_rows = (
+        sb.table("milestones")
+        .select("id")
+        .eq("parent_type", "task")
+        .eq("parent_id", task_id)
+        .execute()
+        .data
+    )
+    if milestone_rows:
+        milestone_ids = [m["id"] for m in milestone_rows]
+        sb.table("milestone_entities").delete().in_("milestone_id", milestone_ids).execute()
+        sb.table("milestones").delete().in_("id", milestone_ids).execute()
+
+    # Delete the task — DB cascades to task_stakeholders, task_entities,
+    # subtasks, task_date_change_log, comments, attachments
+    sb.table("tasks").delete().eq("id", task_id).execute()
 
 
 @router.patch("/{task_id}")

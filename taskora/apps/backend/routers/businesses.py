@@ -1,10 +1,10 @@
 from datetime import datetime, timezone, timedelta
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
 from auth import get_current_user
-from deps import get_supabase, require_member
+from deps import get_supabase, require_member, require_admin_or_owner
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/v1/businesses", tags=["businesses"])
@@ -13,6 +13,11 @@ router = APIRouter(prefix="/api/v1/businesses", tags=["businesses"])
 class BusinessCreate(BaseModel):
     name: str
     type: Literal["building", "client"]
+    workspace_mode: Optional[Literal["personal", "organisation"]] = None
+
+
+class MemberRoleUpdate(BaseModel):
+    role: Literal["member", "admin"]
 
 
 @router.post("/", status_code=201)
@@ -21,11 +26,10 @@ def create_business(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    biz_result = sb.table("businesses").insert({
-        "name": body.name,
-        "type": body.type,
-        "owner_id": user["id"],
-    }).execute()
+    insert_payload: dict = {"name": body.name, "type": body.type, "owner_id": user["id"]}
+    if body.workspace_mode:
+        insert_payload["workspace_mode"] = body.workspace_mode
+    biz_result = sb.table("businesses").insert(insert_payload).execute()
     if not biz_result.data:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail="Failed to create business")
@@ -133,3 +137,103 @@ def list_business_members(
         u = user_map.get(m["user_id"], {})
         m["name"] = u.get("name", "")
     return members
+
+
+@router.patch("/{business_id}/members/{target_user_id}")
+def update_member_role(
+    business_id: str,
+    target_user_id: str,
+    body: MemberRoleUpdate,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    caller_role = require_admin_or_owner(sb, business_id, user["id"])
+
+    # Can't modify yourself
+    if target_user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="Cannot change your own role")
+
+    # Fetch target's current role
+    target_rows = (
+        sb.table("business_members")
+        .select("role")
+        .eq("business_id", business_id)
+        .eq("user_id", target_user_id)
+        .execute()
+        .data
+    )
+    if not target_rows:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    target_role = target_rows[0]["role"]
+
+    # Protect the owner — never reassignable via this endpoint
+    if target_role == "owner":
+        raise HTTPException(status_code=403, detail="Cannot change the workspace owner's role")
+
+    # Admins can only manage members, not other admins
+    if caller_role == "admin" and target_role == "admin":
+        raise HTTPException(status_code=403, detail="Admins cannot change another admin's role")
+
+    result = (
+        sb.table("business_members")
+        .update({"role": body.role})
+        .eq("business_id", business_id)
+        .eq("user_id", target_user_id)
+        .execute()
+    )
+    return result.data[0] if result.data else {}
+
+
+@router.delete("/{business_id}/members/{target_user_id}", status_code=204)
+def remove_member(
+    business_id: str,
+    target_user_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    caller_role = require_admin_or_owner(sb, business_id, user["id"])
+
+    if target_user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="Cannot remove yourself from the workspace")
+
+    target_rows = (
+        sb.table("business_members")
+        .select("role")
+        .eq("business_id", business_id)
+        .eq("user_id", target_user_id)
+        .execute()
+        .data
+    )
+    if not target_rows:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    target_role = target_rows[0]["role"]
+
+    if target_role == "owner":
+        raise HTTPException(status_code=403, detail="Cannot remove the workspace owner")
+
+    if caller_role == "admin" and target_role == "admin":
+        raise HTTPException(status_code=403, detail="Admins cannot remove other admins")
+
+    sb.table("business_members").delete().eq("business_id", business_id).eq("user_id", target_user_id).execute()
+
+
+@router.get("/{business_id}/my-role")
+def get_my_role(
+    business_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Return the current user's role in this business."""
+    rows = (
+        sb.table("business_members")
+        .select("role")
+        .eq("business_id", business_id)
+        .eq("user_id", user["id"])
+        .execute()
+        .data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Not a member of this business")
+    return {"role": rows[0]["role"]}

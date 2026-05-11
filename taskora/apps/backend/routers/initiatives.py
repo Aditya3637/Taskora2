@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
-from deps import get_supabase, require_member
+from deps import get_supabase, require_member, get_member_role
 
 router = APIRouter(prefix="/api/v1/initiatives", tags=["initiatives"])
 
@@ -378,6 +378,44 @@ class InitiativeUpdate(BaseModel):
     impact: Optional[str] = None
     impact_metric: Optional[str] = None
     impact_category: Optional[str] = None
+
+@router.delete("/{initiative_id}", status_code=204)
+def delete_initiative(
+    initiative_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    data = sb.table("initiatives").select("business_id, primary_stakeholder_id, owner_id").eq("id", initiative_id).execute().data
+    if not data:
+        raise HTTPException(status_code=404, detail="Initiative not found")
+    init = data[0]
+    uid = user["id"]
+
+    is_primary = init.get("primary_stakeholder_id") == uid or init.get("owner_id") == uid
+    if not is_primary:
+        role = get_member_role(sb, init["business_id"], uid)
+        if role not in ("owner", "admin"):
+            raise HTTPException(status_code=403, detail="Only the primary stakeholder or a workspace admin can delete this initiative")
+
+    # Delete milestones (polymorphic parent_id — no DB cascade from initiatives)
+    milestone_rows = (
+        sb.table("milestones")
+        .select("id")
+        .eq("parent_type", "initiative")
+        .eq("parent_id", initiative_id)
+        .execute()
+        .data
+    )
+    if milestone_rows:
+        milestone_ids = [m["id"] for m in milestone_rows]
+        # milestone_entities cascade from milestones, but delete explicitly to be safe
+        sb.table("milestone_entities").delete().in_("milestone_id", milestone_ids).execute()
+        sb.table("milestones").delete().in_("id", milestone_ids).execute()
+
+    # Delete the initiative — DB cascades to tasks, task_stakeholders, task_entities,
+    # subtasks, task_date_change_log, comments, attachments, initiative_entities
+    sb.table("initiatives").delete().eq("id", initiative_id).execute()
+
 
 @router.patch("/{initiative_id}")
 def update_initiative(
