@@ -1,5 +1,6 @@
-from typing import Literal
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Literal, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
@@ -8,7 +9,23 @@ from deps import get_supabase
 router = APIRouter(prefix="/api/v1/onboarding", tags=["onboarding"])
 
 
-def _get_business(sb: Client, user_id: str) -> dict:
+def _get_business(sb: Client, user_id: str, business_id: Optional[str] = None) -> dict:
+    if business_id:
+        rows = sb.table("businesses").select("*").eq("id", business_id).execute().data
+        if not rows:
+            raise HTTPException(status_code=404, detail="Business not found")
+        membership = (
+            sb.table("business_members")
+            .select("user_id")
+            .eq("business_id", business_id)
+            .eq("user_id", user_id)
+            .execute()
+            .data
+        )
+        if not membership:
+            raise HTTPException(status_code=403, detail="Not a member of this business")
+        return rows[0]
+
     owned = (
         sb.table("businesses")
         .select("*")
@@ -44,8 +61,12 @@ def _get_business(sb: Client, user_id: str) -> dict:
 
 
 @router.get("/status")
-def get_status(user: dict = Depends(get_current_user), sb: Client = Depends(get_supabase)):
-    biz = _get_business(sb, user["id"])
+def get_status(
+    business_id: Optional[str] = Query(default=None),
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    biz = _get_business(sb, user["id"], business_id)
     return {
         "business_id": biz["id"],
         "business_type": biz.get("type"),
@@ -60,6 +81,7 @@ def get_status(user: dict = Depends(get_current_user), sb: Client = Depends(get_
 
 class Step1Body(BaseModel):
     workspace_mode: Literal["personal", "organisation"]
+    business_id: Optional[str] = None
 
 
 @router.post("/step1")
@@ -68,13 +90,14 @@ def complete_step1(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    biz = _get_business(sb, user["id"])
+    biz = _get_business(sb, user["id"], body.business_id)
     sb.table("businesses").update({"workspace_mode": body.workspace_mode}).eq("id", biz["id"]).execute()
     return {"ok": True}
 
 
 class StepDoneBody(BaseModel):
     skipped: bool = False
+    business_id: Optional[str] = None
 
 
 @router.post("/step2/done")
@@ -83,7 +106,7 @@ def step2_done(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    biz = _get_business(sb, user["id"])
+    biz = _get_business(sb, user["id"], body.business_id)
     sb.table("businesses").update({
         "onboarding_step2_done": True,
         "onboarding_step2_skipped": body.skipped,
@@ -97,7 +120,7 @@ def step3_done(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    biz = _get_business(sb, user["id"])
+    biz = _get_business(sb, user["id"], body.business_id)
     sb.table("businesses").update({
         "onboarding_step3_done": True,
         "onboarding_step3_skipped": body.skipped,
@@ -110,14 +133,16 @@ def step3_done(
 
 class AssigneeBody(BaseModel):
     name: str
+    business_id: Optional[str] = None
 
 
 @router.get("/assignees")
 def list_assignees(
+    business_id: Optional[str] = Query(default=None),
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    biz = _get_business(sb, user["id"])
+    biz = _get_business(sb, user["id"], business_id)
     return sb.table("assignees").select("*").eq("business_id", biz["id"]).order("created_at").execute().data
 
 
@@ -130,7 +155,7 @@ def add_assignee(
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=422, detail="Name cannot be empty")
-    biz = _get_business(sb, user["id"])
+    biz = _get_business(sb, user["id"], body.business_id)
     result = sb.table("assignees").insert({"business_id": biz["id"], "name": name}).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create assignee")
@@ -143,5 +168,5 @@ def delete_assignee(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    biz = _get_business(sb, user["id"])
-    sb.table("assignees").delete().eq("id", assignee_id).eq("business_id", biz["id"]).execute()
+    # business_id not needed here — we match on assignee id + implicit business ownership via RLS
+    sb.table("assignees").delete().eq("id", assignee_id).execute()

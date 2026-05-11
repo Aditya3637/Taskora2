@@ -78,7 +78,8 @@ function WorkspaceModeSection({
     if (mode === current) return;
     setSaving(true); setMsg("");
     try {
-      await apiFetch("/api/v1/onboarding/step1", { method: "POST", body: JSON.stringify({ workspace_mode: mode }) });
+      const bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
+      await apiFetch("/api/v1/onboarding/step1", { method: "POST", body: JSON.stringify({ workspace_mode: mode, business_id: bizId || undefined }) });
       setMsg("Saved.");
       onChanged();
     } catch (e: any) {
@@ -130,7 +131,8 @@ function AssigneesSection({ status, onStepDone }: { status: OnboardingStatus; on
   const inputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
-    try { setAssignees(await apiFetch("/api/v1/onboarding/assignees")); } catch {}
+    const bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
+    try { setAssignees(await apiFetch(`/api/v1/onboarding/assignees${bizId ? `?business_id=${bizId}` : ""}`)); } catch {}
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -139,14 +141,14 @@ function AssigneesSection({ status, onStepDone }: { status: OnboardingStatus; on
     const name = input.trim();
     if (!name) return;
     setSaving(true);
+    const bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
     try {
-      const res = await apiFetch("/api/v1/onboarding/assignees", { method: "POST", body: JSON.stringify({ name }) });
+      const res = await apiFetch("/api/v1/onboarding/assignees", { method: "POST", body: JSON.stringify({ name, business_id: bizId || undefined }) });
       setAssignees((p) => [...p, res]);
       setInput("");
       inputRef.current?.focus();
-      // Mark step2 done if it was skipped
       if (status.step2_skipped) {
-        await apiFetch("/api/v1/onboarding/step2/done", { method: "POST", body: JSON.stringify({ skipped: false }) });
+        await apiFetch("/api/v1/onboarding/step2/done", { method: "POST", body: JSON.stringify({ skipped: false, business_id: bizId || undefined }) });
         onStepDone();
       }
     } catch (e: any) { setMsg(e.message); }
@@ -203,13 +205,13 @@ function TeamInvitesSection({ status, onStepDone }: { status: OnboardingStatus; 
     const e = email.trim();
     if (!e) return;
     setSending(true); setError("");
+    const bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
     try {
-      const biz = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
-      await apiFetch("/api/v1/invites/", { method: "POST", body: JSON.stringify({ email: e, role, business_id: biz }) });
+      await apiFetch("/api/v1/invites/", { method: "POST", body: JSON.stringify({ email: e, role, business_id: bizId }) });
       setSent((p) => [...p, e]);
       setEmail("");
       if (status.step2_skipped) {
-        await apiFetch("/api/v1/onboarding/step2/done", { method: "POST", body: JSON.stringify({ skipped: false }) });
+        await apiFetch("/api/v1/onboarding/step2/done", { method: "POST", body: JSON.stringify({ skipped: false, business_id: bizId || undefined }) });
         onStepDone();
       }
     } catch (err: any) { setError(err.message); }
@@ -368,7 +370,7 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
         }
       }
 
-      await apiFetch("/api/v1/onboarding/step3/done", { method: "POST", body: JSON.stringify({ skipped: false }) });
+      await apiFetch("/api/v1/onboarding/step3/done", { method: "POST", body: JSON.stringify({ skipped: false, business_id: biz }) });
       onStepDone();
       setManualBuildings([]); setManualClients([]);
       setUploadStatus("idle"); setUploadCount(0);
@@ -556,8 +558,9 @@ export default function SettingsOnboardingPage() {
   const [error, setError]     = useState("");
 
   const reload = useCallback(async () => {
+    const bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
     try {
-      const s = await apiFetch("/api/v1/onboarding/status");
+      const s = await apiFetch(`/api/v1/onboarding/status${bizId ? `?business_id=${bizId}` : ""}`);
       setStatus(s);
     } catch (e: any) { setError(e.message); }
   }, []);
@@ -566,10 +569,9 @@ export default function SettingsOnboardingPage() {
     (async () => {
       setLoading(true);
       try {
-        // Check admin/owner access
-        const biz = await apiFetch("/api/v1/businesses/my");
-        if (!biz?.id) throw new Error("No business");
-        const role = await apiFetch(`/api/v1/businesses/${biz.id}/my-role`);
+        const bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
+        if (!bizId) { setError("No workspace selected. Please sign in again."); setLoading(false); return; }
+        const role = await apiFetch(`/api/v1/businesses/${bizId}/my-role`);
         if (role?.role === "member") { router.replace("/daily-brief"); return; }
         await reload();
       } catch (e: any) {
