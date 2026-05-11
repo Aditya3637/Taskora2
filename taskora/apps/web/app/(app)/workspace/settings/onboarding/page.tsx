@@ -695,8 +695,14 @@ export default function SettingsOnboardingPage() {
     (async () => {
       setLoading(true);
       try {
-        const bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
-        if (!bizId) { setError("No workspace selected. Please sign in again."); setLoading(false); return; }
+        let bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
+        if (!bizId) {
+          // Auto-resolve from API — covers cases where localStorage was cleared
+          const biz = await apiFetch("/api/v1/businesses/my");
+          bizId = biz?.id ?? "";
+          if (bizId) localStorage.setItem("business_id", bizId);
+        }
+        if (!bizId) { setError("No workspace found for your account."); setLoading(false); return; }
         const role = await apiFetch(`/api/v1/businesses/${bizId}/my-role`);
         if (role?.role === "member") { router.replace("/daily-brief"); return; }
         await reload();

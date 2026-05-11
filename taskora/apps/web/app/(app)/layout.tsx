@@ -133,17 +133,31 @@ function SidebarContent({
       const { data: { user } } = await supabase.auth.getUser();
       if (user?.user_metadata?.is_admin) setIsPlatformAdmin(true);
 
-      // Load workspace role
+      // Ensure business_id is in localStorage — auto-resolve if missing
       try {
-        const businessId =
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) return;
+
+        let businessId =
           typeof window !== "undefined"
             ? localStorage.getItem("business_id") ?? ""
             : "";
+
+        if (!businessId) {
+          const res = await fetch(`${API}/api/v1/businesses/my`, {
+            headers: { Authorization: `Bearer ${session.access_token}` },
+          });
+          if (res.ok) {
+            const biz = await res.json();
+            businessId = biz?.id ?? "";
+            if (businessId) localStorage.setItem("business_id", businessId);
+          }
+        }
+
         if (businessId) {
-          const { data: { session } } = await supabase.auth.getSession();
           const res = await fetch(
             `${API}/api/v1/businesses/${businessId}/my-role`,
-            { headers: { Authorization: `Bearer ${session?.access_token ?? ""}` } }
+            { headers: { Authorization: `Bearer ${session.access_token}` } }
           );
           if (res.ok) {
             const data = await res.json();
