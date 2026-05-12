@@ -372,6 +372,8 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
   const cFileRef = useRef<HTMLInputElement>(null);
 
   const [importing, setImporting] = useState(false);
+  const [addingBuilding, setAddingBuilding] = useState(false);
+  const [addingClient, setAddingClient] = useState(false);
   const [msg, setMsg]             = useState("");
 
   const badgeOk = status.step3_done && !status.step3_skipped;
@@ -412,16 +414,55 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
     reader.readAsText(file);
   }
 
-  function addBuilding() {
+  async function addBuilding() {
     if (!buildingForm.name.trim()) return;
-    setManualBuildings((p) => [...p, { ...buildingForm }]);
-    setBuildingForm(EMPTY_BUILDING);
+    setAddingBuilding(true);
+    setMsg("");
+    try {
+      const biz = status.business_id;
+      await apiFetch(`/api/v1/businesses/${biz}/buildings/bulk`, {
+        method: "POST",
+        body: JSON.stringify({ items: [{
+          name: buildingForm.name.trim(),
+          zone: buildingForm.zone || undefined,
+          city: buildingForm.city || undefined,
+          code: buildingForm.code || undefined,
+          area: buildingForm.area || undefined,
+        }] }),
+      });
+      setManualBuildings((p) => [...p, { ...buildingForm }]);
+      setBuildingForm(EMPTY_BUILDING);
+      setMsg("Building saved.");
+    } catch (e: any) {
+      setMsg(`Error: ${e.message}`);
+    } finally {
+      setAddingBuilding(false);
+    }
   }
 
-  function addClient() {
+  async function addClient() {
     if (!clientForm.name.trim()) return;
-    setManualClients((p) => [...p, { ...clientForm }]);
-    setClientForm(EMPTY_CLIENT);
+    setAddingClient(true);
+    setMsg("");
+    try {
+      const biz = status.business_id;
+      await apiFetch(`/api/v1/businesses/${biz}/clients/bulk`, {
+        method: "POST",
+        body: JSON.stringify({ items: [{
+          name: clientForm.name.trim(),
+          code: clientForm.code || undefined,
+          contact_email: clientForm.contact_email || undefined,
+          contact_phone: clientForm.contact_phone || undefined,
+        }] }),
+      });
+      setManualClients((p) => [...p, { ...clientForm }]);
+      setClientForm(EMPTY_CLIENT);
+      setMsg("Client saved.");
+    } catch (e: any) {
+      setMsg(`Error: ${e.message}`);
+    } finally {
+      setAddingClient(false);
+    }
   }
 
   async function handleImport() {
@@ -430,23 +471,15 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
     try {
       const biz = status.business_id;
 
+      // Only import CSV data — manual entries are already saved on "Add Building/Client"
       const bParsed: Record<string, string>[] = (bFileRef as any)._parsed ?? [];
-      const buildingItems = [
-        ...bParsed.map((r) => ({
-          name: r["building name"] || r["name"] || "",
-          zone: r["zone"] || undefined,
-          city: r["city"] || undefined,
-          code: r["building code"] || r["code"] || undefined,
-          area: r["area"] || undefined,
-        })),
-        ...manualBuildings.map((b) => ({
-          name: b.name,
-          zone: b.zone || undefined,
-          city: b.city || undefined,
-          code: b.code || undefined,
-          area: b.area || undefined,
-        })),
-      ].filter((r) => r.name.trim());
+      const buildingItems = bParsed.map((r) => ({
+        name: r["building name"] || r["name"] || "",
+        zone: r["zone"] || undefined,
+        city: r["city"] || undefined,
+        code: r["building code"] || r["code"] || undefined,
+        area: r["area"] || undefined,
+      })).filter((r) => r.name.trim());
 
       if (buildingItems.length) {
         const res = await apiFetch(`/api/v1/businesses/${biz}/buildings/bulk`, {
@@ -456,20 +489,12 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
       }
 
       const cParsed: Record<string, string>[] = (cFileRef as any)._parsed ?? [];
-      const clientItems = [
-        ...cParsed.map((r) => ({
-          name: r.name ?? "",
-          code: r["client code"] || r["code"] || undefined,
-          contact_email: r["contact email"] || r.contact_email || undefined,
-          contact_phone: r["contact phone"] || r.contact_phone || undefined,
-        })),
-        ...manualClients.map((c) => ({
-          name: c.name,
-          code: c.code || undefined,
-          contact_email: c.contact_email || undefined,
-          contact_phone: c.contact_phone || undefined,
-        })),
-      ].filter((r) => r.name.trim());
+      const clientItems = cParsed.map((r) => ({
+        name: r.name ?? "",
+        code: r["client code"] || r["code"] || undefined,
+        contact_email: r["contact email"] || r.contact_email || undefined,
+        contact_phone: r["contact phone"] || r.contact_phone || undefined,
+      })).filter((r) => r.name.trim());
 
       if (clientItems.length) {
         const res = await apiFetch(`/api/v1/businesses/${biz}/clients/bulk`, {
@@ -480,7 +505,6 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
 
       await apiFetch("/api/v1/onboarding/step3/done", { method: "POST", body: JSON.stringify({ skipped: false, business_id: biz }) });
       onStepDone();
-      setManualBuildings([]); setManualClients([]);
       setBUploadStatus("idle"); setBUploadCount(0);
       setCUploadStatus("idle"); setCUploadCount(0);
       setMsg(msgs.length > 0 ? msgs.join(" · ") + "." : "Done!");
@@ -488,7 +512,7 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
     finally { setImporting(false); }
   }
 
-  const hasData = bUploadStatus === "parsed" || manualBuildings.length > 0 || cUploadStatus === "parsed" || manualClients.length > 0;
+  const hasData = bUploadStatus === "parsed" || cUploadStatus === "parsed";
 
   return (
     <Section title="Buildings & Clients" badge={badgeOk ? "Complete" : status.step3_skipped ? "Skipped" : "Not started"} badgeOk={badgeOk}>
@@ -560,9 +584,9 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
                 onChange={(e) => setBuildingForm((f) => ({ ...f, area: e.target.value }))}
                 className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
             </div>
-            <button onClick={addBuilding} disabled={!buildingForm.name.trim()}
+            <button onClick={addBuilding} disabled={!buildingForm.name.trim() || addingBuilding}
               className="w-full h-9 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
-              + Add Building
+              {addingBuilding ? "Saving…" : "+ Add Building"}
             </button>
           </div>
           {manualBuildings.length > 0 && (
@@ -623,9 +647,9 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
                 onChange={(e) => setClientForm((f) => ({ ...f, contact_phone: e.target.value }))}
                 className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red" />
             </div>
-            <button onClick={addClient} disabled={!clientForm.name.trim()}
+            <button onClick={addClient} disabled={!clientForm.name.trim() || addingClient}
               className="w-full h-9 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
-              + Add Client
+              {addingClient ? "Saving…" : "+ Add Client"}
             </button>
           </div>
           {manualClients.length > 0 && (
