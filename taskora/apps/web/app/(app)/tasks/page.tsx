@@ -77,7 +77,8 @@ type Subtask = {
 };
 
 type Member = { user_id: string; name: string; email: string };
-type Entity = { id: string; name: string };
+type BuildingEntity = { id: string; name: string; zone?: string };
+type ClientEntity = { id: string; name: string };
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -496,6 +497,190 @@ function TaskCard({
   );
 }
 
+// ── Building Selector ─────────────────────────────────────────────────────────
+
+function BuildingSelector({
+  buildings,
+  selected,
+  onChange,
+}: {
+  buildings: BuildingEntity[];
+  selected: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  const zones = Array.from(
+    new Set(buildings.map((b) => b.zone?.trim() || "Other"))
+  ).sort();
+  const allSelected =
+    buildings.length > 0 && selected.length === buildings.length;
+
+  function toggleAll() {
+    onChange(allSelected ? [] : buildings.map((b) => b.id));
+  }
+
+  function toggleZone(zone: string) {
+    const ids = buildings
+      .filter((b) => (b.zone?.trim() || "Other") === zone)
+      .map((b) => b.id);
+    const zoneAllSel = ids.every((id) => selected.includes(id));
+    if (zoneAllSel) {
+      onChange(selected.filter((id) => !ids.includes(id)));
+    } else {
+      const next = [...selected];
+      ids.forEach((id) => { if (!next.includes(id)) next.push(id); });
+      onChange(next);
+    }
+  }
+
+  function toggleOne(id: string) {
+    onChange(
+      selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-xs font-semibold text-steel uppercase tracking-wider">
+          Select Buildings
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-steel cursor-pointer hover:text-midnight">
+          <input
+            type="checkbox"
+            checked={allSelected}
+            onChange={toggleAll}
+            className="rounded"
+          />
+          Select All ({buildings.length})
+        </label>
+      </div>
+      <div className="border border-pebble rounded-lg max-h-56 overflow-y-auto divide-y divide-pebble/50">
+        {buildings.length === 0 && (
+          <p className="text-xs text-steel/60 italic px-3 py-3">No buildings found for this workspace.</p>
+        )}
+        {zones.map((zone) => {
+          const zoneBuildings = buildings.filter(
+            (b) => (b.zone?.trim() || "Other") === zone
+          );
+          const zoneAllSel = zoneBuildings.every((b) => selected.includes(b.id));
+          const zoneSomeSel =
+            !zoneAllSel && zoneBuildings.some((b) => selected.includes(b.id));
+          return (
+            <div key={zone}>
+              <div className="flex items-center gap-2 px-3 py-2 bg-mist/60 sticky top-0">
+                <input
+                  type="checkbox"
+                  checked={zoneAllSel}
+                  onChange={() => toggleZone(zone)}
+                  ref={(el) => {
+                    if (el) el.indeterminate = zoneSomeSel;
+                  }}
+                  className="rounded"
+                />
+                <span className="text-xs font-semibold text-midnight flex-1">
+                  {zone}
+                </span>
+                <span className="text-[10px] text-steel/60">
+                  {zoneBuildings.length}
+                </span>
+              </div>
+              {zoneBuildings.map((b) => (
+                <label
+                  key={b.id}
+                  className="flex items-center gap-2 px-5 py-2 hover:bg-mist/30 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(b.id)}
+                    onChange={() => toggleOne(b.id)}
+                    className="rounded"
+                  />
+                  <span className="text-sm text-midnight truncate">{b.name}</span>
+                </label>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+      {selected.length > 0 && (
+        <p className="text-xs text-steel mt-1.5">
+          {selected.length} building{selected.length !== 1 ? "s" : ""} selected
+          — will create {selected.length} task{selected.length !== 1 ? "s" : ""}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Client Selector ───────────────────────────────────────────────────────────
+
+function ClientSelector({
+  clients,
+  selected,
+  onChange,
+}: {
+  clients: ClientEntity[];
+  selected: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  const allSelected =
+    clients.length > 0 && selected.length === clients.length;
+
+  function toggleAll() {
+    onChange(allSelected ? [] : clients.map((c) => c.id));
+  }
+
+  function toggleOne(id: string) {
+    onChange(
+      selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-xs font-semibold text-steel uppercase tracking-wider">
+          Select Clients
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-steel cursor-pointer hover:text-midnight">
+          <input
+            type="checkbox"
+            checked={allSelected}
+            onChange={toggleAll}
+            className="rounded"
+          />
+          Select All ({clients.length})
+        </label>
+      </div>
+      <div className="border border-pebble rounded-lg max-h-56 overflow-y-auto divide-y divide-pebble/50">
+        {clients.length === 0 && (
+          <p className="text-xs text-steel/60 italic px-3 py-3">No clients found for this workspace.</p>
+        )}
+        {clients.map((c) => (
+          <label
+            key={c.id}
+            className="flex items-center gap-2 px-3 py-2 hover:bg-mist/30 cursor-pointer"
+          >
+            <input
+              type="checkbox"
+              checked={selected.includes(c.id)}
+              onChange={() => toggleOne(c.id)}
+              className="rounded"
+            />
+            <span className="text-sm text-midnight truncate">{c.name}</span>
+          </label>
+        ))}
+      </div>
+      {selected.length > 0 && (
+        <p className="text-xs text-steel mt-1.5">
+          {selected.length} client{selected.length !== 1 ? "s" : ""} selected
+          — will create {selected.length} task{selected.length !== 1 ? "s" : ""}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ── Task Breakdown Modal ──────────────────────────────────────────────────────
 
 function BreakdownModal({
@@ -511,45 +696,45 @@ function BreakdownModal({
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const [title, setTitle] = useState("");
-  const [taskType, setTaskType] = useState<"general" | "building" | "client">(
-    "general"
-  );
+  const [taskType, setTaskType] = useState<"general" | "building" | "client">("general");
   const [selectedEntities, setSelectedEntities] = useState<string[]>([]);
+  const [buildings, setBuildings] = useState<BuildingEntity[]>([]);
+  const [clients, setClients] = useState<ClientEntity[]>([]);
+  const [loadingEntities, setLoadingEntities] = useState(false);
+  const [title, setTitle] = useState("");
   const [secondaryStakeholderId, setSecondaryStakeholderId] = useState("");
   const [priority, setPriority] = useState("medium");
   const [dueDate, setDueDate] = useState("");
   const [members, setMembers] = useState<Member[]>([]);
-  const [entities, setEntities] = useState<Entity[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
+  // Load members once on mount
   useEffect(() => {
-    async function loadMeta() {
-      try {
-        const [mems, biz] = await Promise.all([
-          apiFetch(`/api/v1/businesses/${businessId}/members`),
-          apiFetch("/api/v1/businesses/my"),
-        ]);
-        setMembers(
-          Array.isArray(mems)
-            ? mems.filter((m: Member) => m.user_id !== currentUserId)
-            : []
-        );
-        if (biz?.id && taskType !== "general") {
-          const endpoint =
-            taskType === "building"
-              ? `/api/v1/businesses/${biz.id}/buildings`
-              : `/api/v1/businesses/${biz.id}/clients`;
-          const ents = await apiFetch(endpoint).catch(() => []);
-          setEntities(Array.isArray(ents) ? ents : []);
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-    loadMeta();
-  }, [businessId, currentUserId, taskType]);
+    apiFetch(`/api/v1/businesses/${businessId}/members`)
+      .then((mems: any) => {
+        setMembers(Array.isArray(mems) ? mems.filter((m: Member) => m.user_id !== currentUserId) : []);
+      })
+      .catch(() => {});
+  }, [businessId, currentUserId]);
+
+  // Load buildings or clients when task type changes
+  useEffect(() => {
+    if (taskType === "general") return;
+    setSelectedEntities([]);
+    setLoadingEntities(true);
+    const endpoint = taskType === "building"
+      ? `/api/v1/businesses/${businessId}/buildings`
+      : `/api/v1/businesses/${businessId}/clients`;
+    apiFetch(endpoint)
+      .then((data: any) => {
+        const arr = Array.isArray(data) ? data : [];
+        if (taskType === "building") setBuildings(arr);
+        else setClients(arr);
+      })
+      .catch(() => {})
+      .finally(() => setLoadingEntities(false));
+  }, [taskType, businessId]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -566,23 +751,16 @@ function BreakdownModal({
           primary_stakeholder_id: currentUserId,
           initiative_id: initiative.id,
           ...(dueDate && { due_date: dueDate }),
-          entities:
-            taskType !== "general"
-              ? selectedEntities.map((id) => ({
-                  entity_type: taskType,
-                  entity_id: id,
-                }))
-              : [],
+          entities: taskType !== "general"
+            ? selectedEntities.map((id) => ({ entity_type: taskType, entity_id: id }))
+            : [],
         }),
       });
 
       if (secondaryStakeholderId) {
         await apiFetch(`/api/v1/tasks/${task.id}/stakeholders`, {
           method: "POST",
-          body: JSON.stringify({
-            user_id: secondaryStakeholderId,
-            role: "secondary",
-          }),
+          body: JSON.stringify({ user_id: secondaryStakeholderId, role: "secondary" }),
         }).catch(() => {});
       }
 
@@ -607,9 +785,7 @@ function BreakdownModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-1">
-          <h2 className="text-lg font-bold text-midnight">
-            Break Down Initiative
-          </h2>
+          <h2 className="text-lg font-bold text-midnight">Break Down Initiative</h2>
           <button onClick={onClose}>
             <X className="w-5 h-5 text-steel" />
           </button>
@@ -617,15 +793,49 @@ function BreakdownModal({
         <div className="flex items-center gap-2 mb-5">
           <span className="text-sm text-steel">{initiative.name}</span>
           {initiative.impact_category && (
-            <span
-              className={`text-[11px] px-1.5 py-0.5 rounded-full font-medium border ${IMPACT_CATEGORY_COLOR[cat]}`}
-            >
+            <span className={`text-[11px] px-1.5 py-0.5 rounded-full font-medium border ${IMPACT_CATEGORY_COLOR[cat]}`}>
               {IMPACT_CATEGORY_LABEL[cat]}
             </span>
           )}
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* 1. Task Type — always first */}
+          <div>
+            <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-2">
+              Task Type
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {(["general", "building", "client"] as const).map((type) => (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => { setTaskType(type); setSelectedEntities([]); }}
+                  className={`py-2 rounded-lg border text-sm font-medium capitalize transition-colors ${
+                    taskType === type
+                      ? "bg-taskora-red text-white border-taskora-red"
+                      : "border-pebble text-steel hover:border-ocean/40"
+                  }`}
+                >
+                  {type === "general" ? "General" : type === "building" ? "Building" : "Client"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 2. Entity selector — appears immediately after task type for building/client */}
+          {taskType === "building" && (
+            loadingEntities
+              ? <p className="text-xs text-steel/60 italic py-2">Loading buildings…</p>
+              : <BuildingSelector buildings={buildings} selected={selectedEntities} onChange={setSelectedEntities} />
+          )}
+          {taskType === "client" && (
+            loadingEntities
+              ? <p className="text-xs text-steel/60 italic py-2">Loading clients…</p>
+              : <ClientSelector clients={clients} selected={selectedEntities} onChange={setSelectedEntities} />
+          )}
+
+          {/* 3. Task Title */}
           <div>
             <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1">
               Task Title *
@@ -640,85 +850,25 @@ function BreakdownModal({
             />
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-2">
-              Task Type
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {(["general", "building", "client"] as const).map((type) => (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => {
-                    setTaskType(type);
-                    setSelectedEntities([]);
-                  }}
-                  className={`py-2 rounded-lg border text-sm font-medium capitalize transition-colors ${
-                    taskType === type
-                      ? "bg-taskora-red text-white border-taskora-red"
-                      : "border-pebble text-steel hover:border-ocean/40"
-                  }`}
-                >
-                  {type === "general"
-                    ? "General"
-                    : type === "building"
-                    ? "Building"
-                    : "Client"}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {taskType !== "general" && entities.length > 0 && (
-            <div>
-              <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1">
-                Select{" "}
-                {taskType === "building" ? "Buildings" : "Clients"}
-              </label>
-              <div className="grid grid-cols-2 gap-1.5 max-h-36 overflow-y-auto">
-                {entities.map((e) => (
-                  <label
-                    key={e.id}
-                    className="flex items-center gap-2 text-sm cursor-pointer hover:bg-mist/30 rounded px-1 py-1"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selectedEntities.includes(e.id)}
-                      onChange={(ev) =>
-                        setSelectedEntities(
-                          ev.target.checked
-                            ? [...selectedEntities, e.id]
-                            : selectedEntities.filter((x) => x !== e.id)
-                        )
-                      }
-                      className="rounded"
-                    />
-                    <span className="truncate">{e.name}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
+          {/* 4. Secondary Stakeholder */}
           <div>
             <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1">
               Secondary Stakeholder{" "}
-              <span className="text-steel/50 font-normal">(defaults to you)</span>
+              <span className="text-steel/50 font-normal">(optional)</span>
             </label>
             <select
               value={secondaryStakeholderId}
               onChange={(e) => setSecondaryStakeholderId(e.target.value)}
               className="w-full border border-pebble rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-taskora-red"
             >
-              <option value="">You (default)</option>
+              <option value="">None</option>
               {members.map((m) => (
-                <option key={m.user_id} value={m.user_id}>
-                  {m.name || m.email}
-                </option>
+                <option key={m.user_id} value={m.user_id}>{m.name || m.email}</option>
               ))}
             </select>
           </div>
 
+          {/* 5. Priority + Due Date */}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1">
@@ -730,9 +880,7 @@ function BreakdownModal({
                 className="w-full border border-pebble rounded-lg px-3 py-2 text-sm focus:outline-none"
               >
                 {["low", "medium", "high", "urgent"].map((p) => (
-                  <option key={p} value={p}>
-                    {p}
-                  </option>
+                  <option key={p} value={p}>{p}</option>
                 ))}
               </select>
             </div>
