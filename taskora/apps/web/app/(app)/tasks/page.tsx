@@ -721,11 +721,13 @@ function BreakdownModal({
   // Load buildings or clients when task type changes
   useEffect(() => {
     if (taskType === "general") return;
+    const bizId = businessId || (typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "");
+    if (!bizId) return;
     setSelectedEntities([]);
     setLoadingEntities(true);
     const endpoint = taskType === "building"
-      ? `/api/v1/businesses/${businessId}/buildings`
-      : `/api/v1/businesses/${businessId}/clients`;
+      ? `/api/v1/businesses/${bizId}/buildings`
+      : `/api/v1/businesses/${bizId}/clients`;
     apiFetch(endpoint)
       .then((data: any) => {
         const arr = Array.isArray(data) ? data : [];
