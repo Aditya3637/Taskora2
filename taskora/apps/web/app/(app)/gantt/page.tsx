@@ -280,7 +280,7 @@ export default function GanttPage() {
         localStorage.setItem("business_id", bizId);
       }
       setBusinessId(bizId);
-      const data = await apiFetch(`/api/v1/initiatives/?business_id=${bizId}`);
+      const data = await apiFetch(`/api/v1/initiatives?business_id=${bizId}`);
       setInitiatives(Array.isArray(data) ? data : data.results ?? []);
     } catch {
       setError("Failed to load initiatives.");

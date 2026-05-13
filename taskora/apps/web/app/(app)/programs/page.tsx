@@ -723,7 +723,7 @@ export default function ProgramsPage() {
       }
       setBusinessId(bizId);
 
-      const data = await apiFetch(`/api/v1/programs/?business_id=${bizId}`);
+      const data = await apiFetch(`/api/v1/programs?business_id=${bizId}`);
       setPrograms(Array.isArray(data) ? data : []);
 
       const roleData = await apiFetch(`/api/v1/businesses/${bizId}/my-role`).catch(() => null);

@@ -1,7 +1,7 @@
 from typing import List, Literal, Optional
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
@@ -61,22 +61,31 @@ def get_my_tasks(
     all_ids = list(set(primary_ids + secondary_ids))
     if not all_ids:
         return []
-    tasks = sb.table("tasks").select("*, task_entities(*), task_stakeholders(*)").in_("id", all_ids).order("created_at", desc=True).execute().data
-    # Resolve entity names
+    tasks = sb.table("tasks").select("*").in_("id", all_ids).order("created_at", desc=True).execute().data
+
+    # Fetch task_entities separately (more reliable than embedded PostgREST select)
+    all_entities = sb.table("task_entities").select("*").in_("task_id", all_ids).execute().data
+    entities_by_task: dict = {}
+    for e in all_entities:
+        entities_by_task.setdefault(e["task_id"], []).append(e)
+
+    # Resolve entity names in a single batch
+    building_ids = list({e["entity_id"] for e in all_entities if e.get("entity_type") == "building"})
+    client_ids   = list({e["entity_id"] for e in all_entities if e.get("entity_type") == "client"})
+    name_map: dict = {}
+    if building_ids:
+        for r in sb.table("buildings").select("id, name").in_("id", building_ids).execute().data:
+            name_map[r["id"]] = r["name"]
+    if client_ids:
+        for r in sb.table("clients").select("id, name").in_("id", client_ids).execute().data:
+            name_map[r["id"]] = r["name"]
+
     for task in tasks:
-        entities = task.get("task_entities") or []
-        building_ids = [e["entity_id"] for e in entities if e.get("entity_type") == "building"]
-        client_ids   = [e["entity_id"] for e in entities if e.get("entity_type") == "client"]
-        name_map = {}
-        if building_ids:
-            for r in sb.table("buildings").select("id, name").in_("id", building_ids).execute().data:
-                name_map[r["id"]] = r["name"]
-        if client_ids:
-            for r in sb.table("clients").select("id, name").in_("id", client_ids).execute().data:
-                name_map[r["id"]] = r["name"]
+        entities = entities_by_task.get(task["id"], [])
         for e in entities:
             e["entity_name"] = name_map.get(e["entity_id"], e["entity_id"])
         task["task_entities"] = entities
+
     return tasks
 
 
@@ -491,6 +500,58 @@ def create_subtask(
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create subtask")
     return result.data[0]
+
+
+@router.get("/{task_id}/stakeholders")
+def get_task_stakeholders(
+    task_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    _assert_task_access(sb, task_id, user["id"])
+    rows = sb.table("task_stakeholders").select("user_id, role").eq("task_id", task_id).execute().data
+    user_ids = [r["user_id"] for r in rows]
+    name_map: dict = {}
+    if user_ids:
+        for u in sb.table("users").select("id, name, email").in_("id", user_ids).execute().data:
+            name_map[u["id"]] = {"name": u.get("name") or "", "email": u.get("email") or ""}
+    for r in rows:
+        info = name_map.get(r["user_id"], {})
+        r["name"] = info.get("name", "")
+        r["email"] = info.get("email", "")
+    return rows
+
+
+class TaskEntityUpdate(BaseModel):
+    per_entity_status: Optional[str] = None
+    per_entity_end_date: Optional[date] = None
+
+
+@router.patch("/{task_id}/entities/{entity_id}")
+def update_task_entity(
+    task_id: str,
+    entity_id: str,
+    body: TaskEntityUpdate,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    _assert_task_access(sb, task_id, user["id"])
+    payload: dict = {}
+    if body.per_entity_status is not None:
+        payload["per_entity_status"] = body.per_entity_status
+    if body.per_entity_end_date is not None:
+        payload["per_entity_end_date"] = body.per_entity_end_date.isoformat()
+    if not payload:
+        raise HTTPException(status_code=422, detail="No fields to update")
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    result = (
+        sb.table("task_entities")
+        .update(payload)
+        .eq("task_id", task_id)
+        .eq("entity_id", entity_id)
+        .execute()
+    )
+    return result.data[0] if result.data else {}
 
 
 @router.patch("/{task_id}/subtasks/{subtask_id}")

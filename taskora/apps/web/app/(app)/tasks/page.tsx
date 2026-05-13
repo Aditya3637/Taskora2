@@ -55,6 +55,14 @@ type TaskEntity = {
   entity_name?: string;
   entity_type?: string;
   per_entity_status?: string;
+  per_entity_end_date?: string;
+};
+
+type Stakeholder = {
+  user_id: string;
+  role: string;
+  name?: string;
+  email?: string;
 };
 
 type Task = {
@@ -296,6 +304,9 @@ function EntitySubtaskRow({
   const [subtasks, setSubtasks] = useState<Subtask[]>([]);
   const [loading, setLoading] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
+  const [entityStatus, setEntityStatus] = useState(entity.per_entity_status ?? "backlog");
+  const [entityEndDate, setEntityEndDate] = useState(entity.per_entity_end_date?.slice(0, 10) ?? "");
+  const [updatingStatus, setUpdatingStatus] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -317,24 +328,80 @@ function EntitySubtaskRow({
     if (next && subtasks.length === 0) load();
   }
 
+  async function handleEntityStatusChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    e.stopPropagation();
+    const newStatus = e.target.value;
+    const prev = entityStatus;
+    setEntityStatus(newStatus);
+    setUpdatingStatus(true);
+    try {
+      await apiFetch(`/api/v1/tasks/${taskId}/entities/${entity.entity_id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ per_entity_status: newStatus }),
+      });
+    } catch {
+      setEntityStatus(prev);
+    } finally {
+      setUpdatingStatus(false);
+    }
+  }
+
+  async function handleEntityDateChange(e: React.ChangeEvent<HTMLInputElement>) {
+    e.stopPropagation();
+    const newDate = e.target.value;
+    setEntityEndDate(newDate);
+    if (!newDate) return;
+    try {
+      await apiFetch(`/api/v1/tasks/${taskId}/entities/${entity.entity_id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ per_entity_end_date: newDate }),
+      });
+    } catch { /* silent */ }
+  }
+
   const doneCount = subtasks.filter((s) => s.status === "done").length;
   const colorCls =
     entity.entity_type === "building"
       ? "bg-amber-50 text-amber-700 border-amber-200"
       : "bg-sky-50 text-sky-700 border-sky-200";
+  const statusCls = STATUS_COLORS[entityStatus] ?? "bg-gray-100 text-gray-600";
 
   return (
-    <div className="mb-1">
-      <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-mist/30">
-        <span
-          className={`text-xs px-2 py-0.5 rounded border font-medium flex-1 ${colorCls}`}
-        >
+    <div className="mb-1.5">
+      <div className="flex items-center gap-2 px-2 py-2 rounded hover:bg-mist/30 flex-wrap">
+        {/* Entity name badge */}
+        <span className={`text-xs px-2 py-0.5 rounded border font-medium flex-shrink-0 max-w-[120px] truncate ${colorCls}`}>
           {entity.entity_name ?? entity.entity_id}
         </span>
+
+        {/* Per-entity status */}
+        <select
+          value={entityStatus}
+          onChange={handleEntityStatusChange}
+          onClick={(e) => e.stopPropagation()}
+          disabled={updatingStatus}
+          className={`text-xs px-2 py-0.5 rounded-full font-medium border-0 cursor-pointer appearance-none focus:outline-none focus:ring-1 focus:ring-ocean/30 disabled:opacity-50 ${statusCls}`}
+        >
+          {["backlog", "todo", "in_progress", "pending_decision", "blocked", "done"].map((s) => (
+            <option key={s} value={s}>{STATUS_LABELS[s] ?? s}</option>
+          ))}
+        </select>
+
+        {/* Per-entity planned end date */}
+        <input
+          type="date"
+          value={entityEndDate}
+          onChange={handleEntityDateChange}
+          onClick={(e) => e.stopPropagation()}
+          title="Planned end date"
+          className="text-xs border border-pebble rounded px-1.5 py-0.5 text-midnight focus:outline-none focus:border-ocean flex-shrink-0"
+        />
+
+        {/* Expand / subtask count */}
         <button
           type="button"
           onClick={toggle}
-          className="flex items-center gap-1 text-xs text-steel hover:text-midnight flex-shrink-0"
+          className="ml-auto flex items-center gap-1 text-xs text-steel hover:text-midnight flex-shrink-0"
         >
           {subtasks.length > 0 ? `${doneCount}/${subtasks.length}` : ""}
           {expanded ? (
@@ -460,6 +527,11 @@ function TaskCard({
   const [loadingSubtasks, setLoadingSubtasks] = useState(false);
   const [showAddSubtask, setShowAddSubtask] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [editDueDate, setEditDueDate] = useState(task.due_date ?? "");
+  const [savingDate, setSavingDate] = useState(false);
+  const [stakeholders, setStakeholders] = useState<Stakeholder[]>([]);
+  const [stakeholdersLoaded, setStakeholdersLoaded] = useState(false);
+  const [newStakeholderUserId, setNewStakeholderUserId] = useState("");
   const ents = task.task_entities ?? [];
 
   const canDelete =
@@ -493,10 +565,57 @@ function TaskCard({
     }
   }
 
+  async function loadStakeholders() {
+    try {
+      const data = await apiFetch(`/api/v1/tasks/${task.id}/stakeholders`);
+      setStakeholders(Array.isArray(data) ? data : []);
+      setStakeholdersLoaded(true);
+    } catch { /* silent */ }
+  }
+
+  async function handleDueDateChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const newDate = e.target.value;
+    setEditDueDate(newDate);
+    if (!newDate) return;
+    setSavingDate(true);
+    try {
+      await apiFetch(`/api/v1/tasks/${task.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ due_date: newDate }),
+      });
+    } catch { /* silent */ } finally {
+      setSavingDate(false);
+    }
+  }
+
+  async function addStakeholder() {
+    if (!newStakeholderUserId) return;
+    try {
+      await apiFetch(`/api/v1/tasks/${task.id}/stakeholders`, {
+        method: "POST",
+        body: JSON.stringify({ user_id: newStakeholderUserId, role: "secondary" }),
+      });
+      setNewStakeholderUserId("");
+      loadStakeholders();
+    } catch { /* silent */ }
+  }
+
+  async function removeStakeholder(userId: string) {
+    try {
+      await apiFetch(`/api/v1/tasks/${task.id}/stakeholders/${userId}`, {
+        method: "DELETE",
+      });
+      setStakeholders((prev) => prev.filter((s) => s.user_id !== userId));
+    } catch { /* silent */ }
+  }
+
   function toggleExpand() {
     const next = !expanded;
     setExpanded(next);
-    if (next && subtasks.length === 0) loadSubtasks();
+    if (next) {
+      if (ents.length === 0 && subtasks.length === 0) loadSubtasks();
+      if (!stakeholdersLoaded) loadStakeholders();
+    }
   }
 
   const doneCount = subtasks.filter((s) => s.status === "done").length;
@@ -564,6 +683,63 @@ function TaskCard({
 
       {expanded && (
         <div className="border-t border-pebble/50 px-4 pb-3 pt-2 bg-mist/10">
+
+          {/* ── Task meta: due date + secondary stakeholders ── */}
+          <div className="flex items-center gap-3 pb-2 mb-2 border-b border-pebble/30 flex-wrap text-xs">
+            <label className="flex items-center gap-1.5 flex-shrink-0">
+              <span className="text-steel font-medium">Due date:</span>
+              <input
+                type="date"
+                value={editDueDate}
+                onChange={handleDueDateChange}
+                disabled={savingDate}
+                className="border border-pebble rounded px-1.5 py-0.5 text-midnight focus:outline-none focus:border-ocean disabled:opacity-50"
+              />
+            </label>
+
+            <div className="flex items-center gap-1.5 flex-wrap flex-1 min-w-0">
+              <span className="text-steel font-medium flex-shrink-0">Team:</span>
+              {stakeholders.filter((s) => s.role !== "primary").map((s) => (
+                <span key={s.user_id} className="inline-flex items-center gap-1 bg-white border border-pebble rounded-full px-2 py-0.5 text-midnight">
+                  <User className="w-3 h-3 text-steel/50 flex-shrink-0" />
+                  <span className="max-w-[80px] truncate">{s.name || s.email || "Member"}</span>
+                  {task.primary_stakeholder_id === currentUserId && (
+                    <button
+                      onClick={() => removeStakeholder(s.user_id)}
+                      className="ml-0.5 text-steel/40 hover:text-red-500 leading-none text-sm"
+                    >
+                      ×
+                    </button>
+                  )}
+                </span>
+              ))}
+              {task.primary_stakeholder_id === currentUserId && (
+                <div className="flex items-center gap-1">
+                  <select
+                    value={newStakeholderUserId}
+                    onChange={(e) => setNewStakeholderUserId(e.target.value)}
+                    className="border border-pebble rounded px-1.5 py-0.5 text-steel max-w-[140px] focus:outline-none focus:border-ocean"
+                  >
+                    <option value="">+ Add person</option>
+                    {members
+                      .filter((m) => !stakeholders.some((s) => s.user_id === m.user_id))
+                      .map((m) => (
+                        <option key={m.user_id} value={m.user_id}>{m.name || m.email}</option>
+                      ))}
+                  </select>
+                  {newStakeholderUserId && (
+                    <button
+                      onClick={addStakeholder}
+                      className="px-2 py-0.5 bg-taskora-red text-white rounded font-medium text-[11px]"
+                    >
+                      Add
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
           {ents.length > 0 ? (
             /* Entity tasks: each building/client is a collapsible subtask with its own sub-subtasks */
             <>

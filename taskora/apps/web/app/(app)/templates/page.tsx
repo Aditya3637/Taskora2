@@ -46,7 +46,7 @@ export default function TemplatesPage() {
         setBusinessId(bid);
         if (bid) {
           const [tmpl, init] = await Promise.all([
-            apiFetch(`/api/v1/templates/?business_id=${bid}`),
+            apiFetch(`/api/v1/templates?business_id=${bid}`),
             apiFetch(`/api/v1/initiatives/business/${bid}`),
           ]);
           setTemplates(tmpl as Template[]);

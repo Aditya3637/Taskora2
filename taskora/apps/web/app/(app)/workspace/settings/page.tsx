@@ -73,7 +73,7 @@ export default function WorkspaceSettingsPage() {
       const [membersData, roleData, invitesData] = await Promise.all([
         apiFetch(`/api/v1/businesses/${bId}/members`),
         apiFetch(`/api/v1/businesses/${bId}/my-role`),
-        apiFetch(`/api/v1/invites/?business_id=${bId}`),
+        apiFetch(`/api/v1/invites?business_id=${bId}`),
       ]);
       setMembers(Array.isArray(membersData) ? membersData : []);
       setMyRole(roleData?.role ?? "member");
