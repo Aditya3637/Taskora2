@@ -15,6 +15,7 @@ app = FastAPI(
     title="Taskora API",
     version="1.0.0",
     description="60-second decision-making backend",
+    redirect_slashes=False,
 )
 
 # TODO: tighten allow_origins / allow_methods / allow_headers before production
