@@ -349,6 +349,8 @@ function TeamInvitesSection({ status, onStepDone }: { status: OnboardingStatus; 
 
 type ManualBuilding = { name: string; zone: string; city: string; code: string; area: string };
 type ManualClient = { name: string; code: string; contact_email: string; contact_phone: string };
+type DbBuilding = { id: string; name: string; zone?: string; city?: string; code?: string };
+type DbClient = { id: string; name: string; code?: string; contact_info?: { email?: string } };
 
 const EMPTY_BUILDING: ManualBuilding = { name: "", zone: "", city: "", code: "", area: "" };
 const EMPTY_CLIENT: ManualClient = { name: "", code: "", contact_email: "", contact_phone: "" };
@@ -358,14 +360,14 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
   const [activeTab, setActiveTab] = useState<"buildings" | "clients">("buildings");
 
   const [buildingForm, setBuildingForm] = useState<ManualBuilding>(EMPTY_BUILDING);
-  const [manualBuildings, setManualBuildings] = useState<ManualBuilding[]>([]);
+  const [dbBuildings, setDbBuildings] = useState<DbBuilding[]>([]);
   const [bUploadStatus, setBUploadStatus] = useState<"idle" | "parsed" | "error">("idle");
   const [bUploadCount, setBUploadCount] = useState(0);
   const [bUploadError, setBUploadError] = useState("");
   const bFileRef = useRef<HTMLInputElement>(null);
 
   const [clientForm, setClientForm] = useState<ManualClient>(EMPTY_CLIENT);
-  const [manualClients, setManualClients] = useState<ManualClient[]>([]);
+  const [dbClients, setDbClients] = useState<DbClient[]>([]);
   const [cUploadStatus, setCUploadStatus] = useState<"idle" | "parsed" | "error">("idle");
   const [cUploadCount, setCUploadCount] = useState(0);
   const [cUploadError, setCUploadError] = useState("");
@@ -374,9 +376,42 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
   const [importing, setImporting] = useState(false);
   const [addingBuilding, setAddingBuilding] = useState(false);
   const [addingClient, setAddingClient] = useState(false);
-  const [msg, setMsg]             = useState("");
+  const [msg, setMsg] = useState("");
 
+  const biz = status.business_id;
   const badgeOk = status.step3_done && !status.step3_skipped;
+
+  const loadEntities = useCallback(async () => {
+    if (!biz) return;
+    try {
+      const [buildings, clients] = await Promise.all([
+        apiFetch(`/api/v1/businesses/${biz}/buildings`),
+        apiFetch(`/api/v1/businesses/${biz}/clients`),
+      ]);
+      setDbBuildings(Array.isArray(buildings) ? buildings : []);
+      setDbClients(Array.isArray(clients) ? clients : []);
+    } catch {}
+  }, [biz]);
+
+  useEffect(() => { loadEntities(); }, [loadEntities]);
+
+  async function deleteBuilding(id: string) {
+    try {
+      await apiFetch(`/api/v1/businesses/${biz}/buildings/${id}`, { method: "DELETE" });
+      setDbBuildings((p) => p.filter((b) => b.id !== id));
+    } catch (e: any) {
+      setMsg(`Error: ${e.message}`);
+    }
+  }
+
+  async function deleteClient(id: string) {
+    try {
+      await apiFetch(`/api/v1/businesses/${biz}/clients/${id}`, { method: "DELETE" });
+      setDbClients((p) => p.filter((c) => c.id !== id));
+    } catch (e: any) {
+      setMsg(`Error: ${e.message}`);
+    }
+  }
 
   function handleBuildingFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -419,7 +454,6 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
     setAddingBuilding(true);
     setMsg("");
     try {
-      const biz = status.business_id;
       await apiFetch(`/api/v1/businesses/${biz}/buildings/bulk`, {
         method: "POST",
         body: JSON.stringify({ items: [{
@@ -430,9 +464,9 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
           area: buildingForm.area || undefined,
         }] }),
       });
-      setManualBuildings((p) => [...p, { ...buildingForm }]);
       setBuildingForm(EMPTY_BUILDING);
       setMsg("Building saved.");
+      await loadEntities();
     } catch (e: any) {
       setMsg(`Error: ${e.message}`);
     } finally {
@@ -445,7 +479,6 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
     setAddingClient(true);
     setMsg("");
     try {
-      const biz = status.business_id;
       await apiFetch(`/api/v1/businesses/${biz}/clients/bulk`, {
         method: "POST",
         body: JSON.stringify({ items: [{
@@ -455,9 +488,9 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
           contact_phone: clientForm.contact_phone || undefined,
         }] }),
       });
-      setManualClients((p) => [...p, { ...clientForm }]);
       setClientForm(EMPTY_CLIENT);
       setMsg("Client saved.");
+      await loadEntities();
     } catch (e: any) {
       setMsg(`Error: ${e.message}`);
     } finally {
@@ -469,9 +502,6 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
     setImporting(true); setMsg("");
     const msgs: string[] = [];
     try {
-      const biz = status.business_id;
-
-      // Only import CSV data — manual entries are already saved on "Add Building/Client"
       const bParsed: Record<string, string>[] = (bFileRef as any)._parsed ?? [];
       const buildingItems = bParsed.map((r) => ({
         name: r["building name"] || r["name"] || "",
@@ -508,6 +538,7 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
       setBUploadStatus("idle"); setBUploadCount(0);
       setCUploadStatus("idle"); setCUploadCount(0);
       setMsg(msgs.length > 0 ? msgs.join(" · ") + "." : "Done!");
+      await loadEntities();
     } catch (e: any) { setMsg(`Error: ${e.message}`); }
     finally { setImporting(false); }
   }
@@ -528,14 +559,14 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
                 : "border-transparent text-steel hover:text-midnight"
             }`}>
             {tab}
-            {tab === "buildings" && (manualBuildings.length > 0 || bUploadStatus === "parsed") && (
+            {tab === "buildings" && (dbBuildings.length > 0 || bUploadStatus === "parsed") && (
               <span className="ml-1.5 text-xs bg-taskora-red/10 text-taskora-red rounded-full px-1.5 py-0.5">
-                {manualBuildings.length + (bUploadStatus === "parsed" ? bUploadCount : 0)}
+                {dbBuildings.length + (bUploadStatus === "parsed" ? bUploadCount : 0)}
               </span>
             )}
-            {tab === "clients" && (manualClients.length > 0 || cUploadStatus === "parsed") && (
+            {tab === "clients" && (dbClients.length > 0 || cUploadStatus === "parsed") && (
               <span className="ml-1.5 text-xs bg-taskora-red/10 text-taskora-red rounded-full px-1.5 py-0.5">
-                {manualClients.length + (cUploadStatus === "parsed" ? cUploadCount : 0)}
+                {dbClients.length + (cUploadStatus === "parsed" ? cUploadCount : 0)}
               </span>
             )}
           </button>
@@ -589,17 +620,17 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
               {addingBuilding ? "Saving…" : "+ Add Building"}
             </button>
           </div>
-          {manualBuildings.length > 0 && (
+          {dbBuildings.length > 0 && (
             <div className="space-y-1 max-h-36 overflow-y-auto">
-              {manualBuildings.map((b, i) => (
-                <div key={i} className="flex items-center justify-between bg-mist rounded-lg px-3 py-1.5">
+              {dbBuildings.map((b) => (
+                <div key={b.id} className="flex items-center justify-between bg-mist rounded-lg px-3 py-1.5">
                   <div className="min-w-0">
                     <span className="text-sm text-midnight font-medium">{b.name}</span>
                     {(b.zone || b.city || b.code) && (
                       <span className="text-xs text-steel ml-2">{[b.zone, b.city, b.code].filter(Boolean).join(" · ")}</span>
                     )}
                   </div>
-                  <button onClick={() => setManualBuildings((p) => p.filter((_, j) => j !== i))}
+                  <button onClick={() => deleteBuilding(b.id)}
                     className="text-steel hover:text-red-500 text-lg leading-none ml-2 flex-shrink-0">&times;</button>
                 </div>
               ))}
@@ -652,15 +683,15 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
               {addingClient ? "Saving…" : "+ Add Client"}
             </button>
           </div>
-          {manualClients.length > 0 && (
+          {dbClients.length > 0 && (
             <div className="space-y-1 max-h-36 overflow-y-auto">
-              {manualClients.map((c, i) => (
-                <div key={i} className="flex items-center justify-between bg-mist rounded-lg px-3 py-1.5">
+              {dbClients.map((c) => (
+                <div key={c.id} className="flex items-center justify-between bg-mist rounded-lg px-3 py-1.5">
                   <div className="min-w-0">
                     <span className="text-sm text-midnight font-medium">{c.name}</span>
-                    {c.contact_email && <span className="text-xs text-steel ml-2">{c.contact_email}</span>}
+                    {c.contact_info?.email && <span className="text-xs text-steel ml-2">{c.contact_info.email}</span>}
                   </div>
-                  <button onClick={() => setManualClients((p) => p.filter((_, j) => j !== i))}
+                  <button onClick={() => deleteClient(c.id)}
                     className="text-steel hover:text-red-500 text-lg leading-none ml-2 flex-shrink-0">&times;</button>
                 </div>
               ))}

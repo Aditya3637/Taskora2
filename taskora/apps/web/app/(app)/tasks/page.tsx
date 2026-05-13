@@ -1053,7 +1053,30 @@ function NewTaskModal({
   const [priority, setPriority] = useState("medium");
   const [dueDate, setDueDate] = useState("");
   const [initiativeId, setInitiativeId] = useState("");
+  const [taskType, setTaskType] = useState<"general" | "building" | "client">("general");
+  const [selectedEntities, setSelectedEntities] = useState<string[]>([]);
+  const [buildings, setBuildings] = useState<BuildingEntity[]>([]);
+  const [clients, setClients] = useState<ClientEntity[]>([]);
+  const [loadingEntities, setLoadingEntities] = useState(false);
   const [creating, setCreating] = useState(false);
+
+  useEffect(() => {
+    if (taskType === "general") return;
+    if (!businessId) return;
+    setSelectedEntities([]);
+    setLoadingEntities(true);
+    const endpoint = taskType === "building"
+      ? `/api/v1/businesses/${businessId}/buildings`
+      : `/api/v1/businesses/${businessId}/clients`;
+    apiFetch(endpoint)
+      .then((data: any) => {
+        const arr = Array.isArray(data) ? data : [];
+        if (taskType === "building") setBuildings(arr);
+        else setClients(arr);
+      })
+      .catch(() => {})
+      .finally(() => setLoadingEntities(false));
+  }, [taskType, businessId]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -1069,7 +1092,9 @@ function NewTaskModal({
           primary_stakeholder_id: currentUserId,
           ...(initiativeId && { initiative_id: initiativeId }),
           ...(dueDate && { due_date: dueDate }),
-          entities: [],
+          entities: taskType !== "general"
+            ? selectedEntities.map((id) => ({ entity_type: taskType, entity_id: id }))
+            : [],
         }),
       });
       onCreated();
@@ -1090,7 +1115,7 @@ function NewTaskModal({
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl"
+        className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between mb-4">
@@ -1100,6 +1125,41 @@ function NewTaskModal({
           </button>
         </div>
         <form onSubmit={handleCreate} className="space-y-4">
+          {/* Task Type */}
+          <div>
+            <label className="text-xs text-steel font-semibold uppercase tracking-wider mb-2 block">
+              Task Type
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {(["general", "building", "client"] as const).map((type) => (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => { setTaskType(type); setSelectedEntities([]); }}
+                  className={`py-2 rounded-lg border text-sm font-medium capitalize transition-colors ${
+                    taskType === type
+                      ? "bg-taskora-red text-white border-taskora-red"
+                      : "border-pebble text-steel hover:border-ocean/40"
+                  }`}
+                >
+                  {type === "general" ? "General" : type === "building" ? "Building" : "Client"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Entity selector */}
+          {taskType === "building" && (
+            loadingEntities
+              ? <p className="text-xs text-steel/60 italic py-1">Loading buildings…</p>
+              : <BuildingSelector buildings={buildings} selected={selectedEntities} onChange={setSelectedEntities} />
+          )}
+          {taskType === "client" && (
+            loadingEntities
+              ? <p className="text-xs text-steel/60 italic py-1">Loading clients…</p>
+              : <ClientSelector clients={clients} selected={selectedEntities} onChange={setSelectedEntities} />
+          )}
+
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}

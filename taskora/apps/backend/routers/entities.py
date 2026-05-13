@@ -90,6 +90,27 @@ def list_clients(
     )
 
 
+@router.delete("/clients/{client_id}", status_code=204)
+def delete_client(
+    business_id: str,
+    client_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    require_member(sb, business_id, user["id"])
+    existing = (
+        sb.table("clients")
+        .select("id")
+        .eq("id", client_id)
+        .eq("business_id", business_id)
+        .execute()
+        .data
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Client not found")
+    sb.table("clients").update({"is_active": False}).eq("id", client_id).execute()
+
+
 # ---------------------------------------------------------------------------
 # Building detail & update endpoints
 # ---------------------------------------------------------------------------
@@ -167,6 +188,27 @@ def update_building(
 
     result = sb.table("buildings").update(payload).eq("id", building_id).execute()
     return result.data[0] if result.data else {}
+
+
+@router.delete("/buildings/{building_id}", status_code=204)
+def delete_building(
+    business_id: str,
+    building_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    require_member(sb, business_id, user["id"])
+    existing = (
+        sb.table("buildings")
+        .select("id")
+        .eq("id", building_id)
+        .eq("business_id", business_id)
+        .execute()
+        .data
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Building not found")
+    sb.table("buildings").update({"is_active": False}).eq("id", building_id).execute()
 
 
 # Bulk import ────────────────────────────────────────────────────────────────
