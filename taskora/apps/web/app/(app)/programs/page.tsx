@@ -706,14 +706,6 @@ export default function ProgramsPage() {
     setLoading(true);
     setError("");
     try {
-      const sessionResult = await supabase.auth.getSession();
-      const session = sessionResult?.data?.session ?? null;
-      if (!session) {
-        router.replace("/login?next=/programs");
-        return;
-      }
-      const userId = session.user?.id ?? null;
-
       let bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
       if (!bizId) {
         const biz = await apiFetch("/api/v1/businesses/my");
