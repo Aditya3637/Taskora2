@@ -1,28 +1,12 @@
-const CACHE_NAME = 'taskora-v1';
-const STATIC_SHELL = [
-  '/',
-  '/daily-brief',
-  '/tasks',
-  '/war-room',
-  '/initiatives',
-  '/programs',
-  '/gantt',
-  '/reports',
-  '/analytics',
-  '/templates',
-];
+// v2: never cache navigation responses — auth redirects must not be cached
+const CACHE_NAME = 'taskora-v2';
 
-// Install: pre-cache app shell
+// Install: skip waiting, no app-shell pre-caching (pages need fresh auth checks)
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_SHELL).catch(() => {});
-    })
-  );
   self.skipWaiting();
 });
 
-// Activate: clean old caches
+// Activate: clean old caches and claim clients immediately
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
@@ -32,16 +16,32 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Fetch: network-first for API, cache-first for static
+// Fetch strategy:
+//   navigate requests  → always network (never cache — auth redirects must stay fresh)
+//   /api/*             → network-first with offline fallback
+//   _next/static/*     → cache-first (immutable build assets)
+//   everything else    → network only
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Skip non-GET and cross-origin requests
   if (event.request.method !== 'GET') return;
   if (url.origin !== self.location.origin) return;
 
+  // Navigation (HTML pages): always fetch from network — never serve a cached redirect
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request).catch(() =>
+        new Response(
+          '<html><body><h1>Taskora — Offline</h1><p>Please reconnect to use Taskora.</p></body></html>',
+          { headers: { 'Content-Type': 'text/html' } }
+        )
+      )
+    );
+    return;
+  }
+
+  // API calls: network-first
   if (url.pathname.startsWith('/api/')) {
-    // Network-first for API calls
     event.respondWith(
       fetch(event.request).catch(() =>
         new Response(
@@ -53,26 +53,24 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Cache-first for everything else (static assets, pages)
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((res) => {
-        if (res.ok) {
-          const clone = res.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        }
-        return res;
-      }).catch(() => {
-        // Offline fallback for navigations
-        if (event.request.mode === 'navigate') {
-          return caches.match('/daily-brief') ||
-            new Response('<html><body><h1>Taskora — Offline</h1><p>Please reconnect to use Taskora.</p></body></html>',
-              { headers: { 'Content-Type': 'text/html' } });
-        }
-      });
-    })
-  );
+  // Next.js build assets (_next/static): cache-first (content-hashed, safe to cache)
+  if (url.pathname.startsWith('/_next/static/')) {
+    event.respondWith(
+      caches.match(event.request).then((cached) => {
+        if (cached) return cached;
+        return fetch(event.request).then((res) => {
+          if (res.ok) {
+            const clone = res.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return res;
+        });
+      })
+    );
+    return;
+  }
+
+  // Everything else: network only
 });
 
 // Push notification handler
