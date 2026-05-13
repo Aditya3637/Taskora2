@@ -54,6 +54,7 @@ type TaskEntity = {
   entity_id: string;
   entity_name?: string;
   entity_type?: string;
+  per_entity_status?: string;
 };
 
 type Task = {
@@ -203,11 +204,15 @@ function AddSubtaskInline({
   taskId,
   members,
   currentUserId,
+  scopedEntityId,
+  scopedEntityType,
   onCreated,
 }: {
   taskId: string;
   members: Member[];
   currentUserId: string;
+  scopedEntityId?: string;
+  scopedEntityType?: string;
   onCreated: () => void;
 }) {
   const [title, setTitle] = useState("");
@@ -224,6 +229,10 @@ function AddSubtaskInline({
         body: JSON.stringify({
           title: title.trim(),
           assignee_id: assigneeId || currentUserId,
+          ...(scopedEntityId && {
+            scoped_entity_id: scopedEntityId,
+            scoped_entity_type: scopedEntityType,
+          }),
         }),
       });
       setTitle("");
@@ -267,6 +276,116 @@ function AddSubtaskInline({
         Add
       </button>
     </form>
+  );
+}
+
+// ── Entity Subtask Row (entity = first-level subtask, supports nested sub-subtasks) ──
+
+function EntitySubtaskRow({
+  entity,
+  taskId,
+  members,
+  currentUserId,
+}: {
+  entity: TaskEntity;
+  taskId: string;
+  members: Member[];
+  currentUserId: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [subtasks, setSubtasks] = useState<Subtask[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const data = await apiFetch(
+        `/api/v1/tasks/${taskId}/subtasks?for_entity=${entity.entity_id}`
+      );
+      setSubtasks(Array.isArray(data) ? data : []);
+    } catch {
+      /* silent */
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function toggle() {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && subtasks.length === 0) load();
+  }
+
+  const doneCount = subtasks.filter((s) => s.status === "done").length;
+  const colorCls =
+    entity.entity_type === "building"
+      ? "bg-amber-50 text-amber-700 border-amber-200"
+      : "bg-sky-50 text-sky-700 border-sky-200";
+
+  return (
+    <div className="mb-1">
+      <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-mist/30">
+        <span
+          className={`text-xs px-2 py-0.5 rounded border font-medium flex-1 ${colorCls}`}
+        >
+          {entity.entity_name ?? entity.entity_id}
+        </span>
+        <button
+          type="button"
+          onClick={toggle}
+          className="flex items-center gap-1 text-xs text-steel hover:text-midnight flex-shrink-0"
+        >
+          {subtasks.length > 0 ? `${doneCount}/${subtasks.length}` : ""}
+          {expanded ? (
+            <ChevronDown className="w-3.5 h-3.5" />
+          ) : (
+            <ChevronRight className="w-3.5 h-3.5" />
+          )}
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="ml-4 pl-2 border-l border-pebble/40 mt-0.5">
+          {loading && (
+            <p className="text-xs text-steel/50 py-1">Loading…</p>
+          )}
+          {subtasks.map((s) => (
+            <SubtaskRow
+              key={s.id}
+              subtask={s}
+              taskId={taskId}
+              onToggle={load}
+            />
+          ))}
+          {subtasks.length === 0 && !loading && (
+            <p className="text-xs text-steel/50 py-1 italic">
+              No sub-tasks yet.
+            </p>
+          )}
+          {showAdd ? (
+            <AddSubtaskInline
+              taskId={taskId}
+              members={members}
+              currentUserId={currentUserId}
+              scopedEntityId={entity.entity_id}
+              scopedEntityType={entity.entity_type ?? "building"}
+              onCreated={() => {
+                setShowAdd(false);
+                load();
+              }}
+            />
+          ) : (
+            <button
+              onClick={() => setShowAdd(true)}
+              className="mt-0.5 text-xs text-taskora-red hover:underline font-medium flex items-center gap-1 py-0.5"
+            >
+              <Plus className="w-3 h-3" /> Add sub-task
+            </button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -407,22 +526,8 @@ function TaskCard({
               )}
             </div>
 
-            {ents.length > 0 && (
-              <div className="flex flex-wrap gap-1 mt-1.5">
-                {ents.map((e) => (
-                  <span
-                    key={e.entity_id}
-                    className={`text-xs px-2 py-0.5 rounded font-medium ${
-                      e.entity_type === "building"
-                        ? "bg-amber-50 text-amber-700"
-                        : "bg-sky-50 text-sky-700"
-                    }`}
-                  >
-                    {e.entity_name ?? e.entity_id}
-                  </span>
-                ))}
-              </div>
-            )}
+
+
           </div>
 
           <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
@@ -441,7 +546,9 @@ function TaskCard({
               className="flex items-center gap-1 text-xs text-steel hover:text-midnight"
             >
               <span className="font-medium">
-                {subtasks.length > 0
+                {ents.length > 0
+                  ? `${ents.length} ${ents[0]?.entity_type === "client" ? "client" : "building"}${ents.length !== 1 ? "s" : ""}`
+                  : subtasks.length > 0
                   ? `${doneCount}/${subtasks.length}`
                   : "Subtasks"}
               </span>
@@ -457,39 +564,57 @@ function TaskCard({
 
       {expanded && (
         <div className="border-t border-pebble/50 px-4 pb-3 pt-2 bg-mist/10">
-          {loadingSubtasks && (
-            <p className="text-xs text-steel/50 py-1">Loading…</p>
-          )}
-          {subtasks.map((s) => (
-            <SubtaskRow
-              key={s.id}
-              subtask={s}
-              taskId={task.id}
-              onToggle={loadSubtasks}
-            />
-          ))}
-          {subtasks.length === 0 && !loadingSubtasks && (
-            <p className="text-xs text-steel/50 py-1 italic">
-              No subtasks yet.
-            </p>
-          )}
-          {showAddSubtask ? (
-            <AddSubtaskInline
-              taskId={task.id}
-              members={members}
-              currentUserId={currentUserId}
-              onCreated={() => {
-                setShowAddSubtask(false);
-                loadSubtasks();
-              }}
-            />
+          {ents.length > 0 ? (
+            /* Entity tasks: each building/client is a collapsible subtask with its own sub-subtasks */
+            <>
+              {ents.map((e) => (
+                <EntitySubtaskRow
+                  key={e.entity_id}
+                  entity={e}
+                  taskId={task.id}
+                  members={members}
+                  currentUserId={currentUserId}
+                />
+              ))}
+            </>
           ) : (
-            <button
-              onClick={() => setShowAddSubtask(true)}
-              className="mt-1 text-xs text-taskora-red hover:underline font-medium flex items-center gap-1"
-            >
-              <Plus className="w-3 h-3" /> Add subtask
-            </button>
+            /* General tasks: flat subtask list */
+            <>
+              {loadingSubtasks && (
+                <p className="text-xs text-steel/50 py-1">Loading…</p>
+              )}
+              {subtasks.map((s) => (
+                <SubtaskRow
+                  key={s.id}
+                  subtask={s}
+                  taskId={task.id}
+                  onToggle={loadSubtasks}
+                />
+              ))}
+              {subtasks.length === 0 && !loadingSubtasks && (
+                <p className="text-xs text-steel/50 py-1 italic">
+                  No subtasks yet.
+                </p>
+              )}
+              {showAddSubtask ? (
+                <AddSubtaskInline
+                  taskId={task.id}
+                  members={members}
+                  currentUserId={currentUserId}
+                  onCreated={() => {
+                    setShowAddSubtask(false);
+                    loadSubtasks();
+                  }}
+                />
+              ) : (
+                <button
+                  onClick={() => setShowAddSubtask(true)}
+                  className="mt-1 text-xs text-taskora-red hover:underline font-medium flex items-center gap-1"
+                >
+                  <Plus className="w-3 h-3" /> Add subtask
+                </button>
+              )}
+            </>
           )}
         </div>
       )}
@@ -513,6 +638,13 @@ function BuildingSelector({
   ).sort();
   const allSelected =
     buildings.length > 0 && selected.length === buildings.length;
+  const [collapsedZones, setCollapsedZones] = useState<string[]>([]);
+
+  function toggleCollapse(zone: string) {
+    setCollapsedZones((prev) =>
+      prev.includes(zone) ? prev.filter((z) => z !== zone) : [...prev, zone]
+    );
+  }
 
   function toggleAll() {
     onChange(allSelected ? [] : buildings.map((b) => b.id));
@@ -565,6 +697,8 @@ function BuildingSelector({
           const zoneAllSel = zoneBuildings.every((b) => selected.includes(b.id));
           const zoneSomeSel =
             !zoneAllSel && zoneBuildings.some((b) => selected.includes(b.id));
+          const isCollapsed = collapsedZones.includes(zone);
+          const zoneSelectedCount = zoneBuildings.filter((b) => selected.includes(b.id)).length;
           return (
             <div key={zone}>
               <div className="flex items-center gap-2 px-3 py-2 bg-mist/60 sticky top-0">
@@ -577,14 +711,28 @@ function BuildingSelector({
                   }}
                   className="rounded"
                 />
-                <span className="text-xs font-semibold text-midnight flex-1">
-                  {zone}
-                </span>
-                <span className="text-[10px] text-steel/60">
-                  {zoneBuildings.length}
-                </span>
+                <button
+                  type="button"
+                  onClick={() => toggleCollapse(zone)}
+                  className="flex items-center gap-1.5 flex-1 text-left"
+                >
+                  <span className="text-xs font-semibold text-midnight flex-1">
+                    {zone}
+                  </span>
+                  <span className="text-[10px] text-steel/60">
+                    {isCollapsed && zoneSelectedCount > 0
+                      ? `${zoneSelectedCount}/${zoneBuildings.length}`
+                      : zoneBuildings.length}
+                  </span>
+                  <svg
+                    className={`w-3.5 h-3.5 text-steel/50 transition-transform duration-150 ${isCollapsed ? "-rotate-90" : ""}`}
+                    fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
               </div>
-              {zoneBuildings.map((b) => (
+              {!isCollapsed && zoneBuildings.map((b) => (
                 <label
                   key={b.id}
                   className="flex items-center gap-2 px-5 py-2 hover:bg-mist/30 cursor-pointer"
@@ -1058,7 +1206,19 @@ function NewTaskModal({
   const [buildings, setBuildings] = useState<BuildingEntity[]>([]);
   const [clients, setClients] = useState<ClientEntity[]>([]);
   const [loadingEntities, setLoadingEntities] = useState(false);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [secondaryStakeholderId, setSecondaryStakeholderId] = useState("");
   const [creating, setCreating] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!businessId) return;
+    apiFetch(`/api/v1/businesses/${businessId}/members`)
+      .then((mems: any) => {
+        setMembers(Array.isArray(mems) ? mems.filter((m: Member) => m.user_id !== currentUserId) : []);
+      })
+      .catch(() => {});
+  }, [businessId, currentUserId]);
 
   useEffect(() => {
     if (taskType === "general") return;
@@ -1082,13 +1242,13 @@ function NewTaskModal({
     e.preventDefault();
     if (!title.trim()) return;
     setCreating(true);
+    setError("");
     try {
-      await apiFetch("/api/v1/tasks/", {
+      const task = await apiFetch("/api/v1/tasks/", {
         method: "POST",
         body: JSON.stringify({
           title: title.trim(),
           priority,
-          status: "todo",
           primary_stakeholder_id: currentUserId,
           ...(initiativeId && { initiative_id: initiativeId }),
           ...(dueDate && { due_date: dueDate }),
@@ -1097,13 +1257,16 @@ function NewTaskModal({
             : [],
         }),
       });
+      if (secondaryStakeholderId) {
+        await apiFetch(`/api/v1/tasks/${task.id}/stakeholders`, {
+          method: "POST",
+          body: JSON.stringify({ user_id: secondaryStakeholderId, role: "secondary" }),
+        }).catch(() => {});
+      }
       onCreated();
       onClose();
     } catch (err: unknown) {
-      alert(
-        "Failed to create: " +
-          (err instanceof Error ? err.message : String(err))
-      );
+      setError("Failed to create task: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setCreating(false);
     }
@@ -1216,6 +1379,24 @@ function NewTaskModal({
               </select>
             </div>
           )}
+          {members.length > 0 && (
+            <div>
+              <label className="text-xs text-steel font-medium mb-1 block">
+                Secondary Stakeholder <span className="text-steel/50">(optional)</span>
+              </label>
+              <select
+                value={secondaryStakeholderId}
+                onChange={(e) => setSecondaryStakeholderId(e.target.value)}
+                className="w-full h-10 px-3 border border-pebble rounded-lg text-sm focus:outline-none"
+              >
+                <option value="">None</option>
+                {members.map((m) => (
+                  <option key={m.user_id} value={m.user_id}>{m.name || m.email}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {error && <p className="text-xs text-red-600">{error}</p>}
           <div className="flex gap-3 pt-2">
             <button
               type="button"
@@ -1226,7 +1407,7 @@ function NewTaskModal({
             </button>
             <button
               type="submit"
-              disabled={creating}
+              disabled={creating || !title.trim()}
               className="flex-1 h-10 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-50"
             >
               {creating ? "Creating..." : "Create Task"}
