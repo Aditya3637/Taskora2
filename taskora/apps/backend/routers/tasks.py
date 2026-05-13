@@ -416,6 +416,8 @@ def bulk_update_tasks(
 class SubtaskCreate(BaseModel):
     title: str
     assignee_id: Optional[str] = None
+    scoped_entity_id: Optional[str] = None
+    scoped_entity_type: Optional[str] = None
 
 
 class SubtaskUpdate(BaseModel):
@@ -438,18 +440,22 @@ def _assert_task_access(sb: Client, task_id: str, user_id: str):
 @router.get("/{task_id}/subtasks")
 def list_subtasks(
     task_id: str,
+    for_entity: Optional[str] = Query(default=None, description="entity_id to scope subtasks to"),
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
     _assert_task_access(sb, task_id, user["id"])
-    subtasks = (
+    query = (
         sb.table("subtasks")
-        .select("id, title, status, assignee_id, created_at")
+        .select("id, title, status, assignee_id, created_at, scoped_entity_id, scoped_entity_type")
         .eq("task_id", task_id)
         .order("created_at")
-        .execute()
-        .data
     )
+    if for_entity is not None:
+        query = query.eq("scoped_entity_id", for_entity)
+    else:
+        query = query.is_("scoped_entity_id", "null")
+    subtasks = query.execute().data
     # Resolve assignee names
     assignee_ids = list({s["assignee_id"] for s in subtasks if s.get("assignee_id")})
     name_map: dict = {}
@@ -470,14 +476,18 @@ def create_subtask(
 ):
     _assert_task_access(sb, task_id, user["id"])
     now = datetime.now(timezone.utc).isoformat()
-    result = sb.table("subtasks").insert({
+    row: dict = {
         "task_id": task_id,
         "title": body.title,
         "status": "todo",
         "assignee_id": body.assignee_id or user["id"],
         "created_at": now,
         "updated_at": now,
-    }).execute()
+    }
+    if body.scoped_entity_id:
+        row["scoped_entity_id"] = body.scoped_entity_id
+        row["scoped_entity_type"] = body.scoped_entity_type
+    result = sb.table("subtasks").insert(row).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create subtask")
     return result.data[0]
