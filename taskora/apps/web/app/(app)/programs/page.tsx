@@ -14,24 +14,15 @@ import { supabase } from "@/lib/supabase";
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 async function apiFetch(path: string, opts?: RequestInit) {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  const token = session?.access_token;
-  if (!token) throw new Error("Not authenticated — please sign in again.");
-  let res: Response;
-  try {
-    res = await fetch(`${API}${path}`, {
-      ...opts,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-        ...(opts?.headers ?? {}),
-      },
-    });
-  } catch (e: any) {
-    throw new Error(`Network error: ${e?.message}`);
-  }
+  const { data: { session } } = await supabase.auth.getSession();
+  const res = await fetch(`${API}${path}`, {
+    ...opts,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session?.access_token ?? ""}`,
+      ...(opts?.headers ?? {}),
+    },
+  });
   if (!res.ok) {
     const detail = await res
       .json()
@@ -694,7 +685,6 @@ function ProgramRow({
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function ProgramsPage() {
-  const router = useRouter();
   const [programs, setPrograms] = useState<Program[]>([]);
   const [businessId, setBusinessId] = useState<string | null>(null);
   const [canEdit, setCanEdit] = useState(false);
@@ -722,10 +712,6 @@ export default function ProgramsPage() {
       if (roleData?.role === "owner" || roleData?.role === "admin") setCanEdit(true);
     } catch (err: any) {
       const msg = err?.message ?? err?.toString?.() ?? "Unknown error";
-      if (msg.toLowerCase().includes("not authenticated")) {
-        router.replace("/login?next=/programs");
-        return;
-      }
       setError(msg || "Unexpected error — check console.");
     } finally {
       setLoading(false);
