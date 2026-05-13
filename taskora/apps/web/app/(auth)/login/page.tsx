@@ -19,7 +19,7 @@ function LoginForm() {
     const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
     if (authError) { setError(authError.message); setLoading(false); return; }
     const next = searchParams.get("next") ?? "/war-room";
-    router.push(next);
+    window.location.href = next;
   }
 
   return (
