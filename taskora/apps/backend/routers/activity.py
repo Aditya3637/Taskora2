@@ -23,7 +23,7 @@ class ActivityCreate(BaseModel):
     new_value: Optional[str] = None
 
 
-@router.get("/")
+@router.get("")
 def list_activity(
     initiative_id: Optional[str] = None,
     task_id: Optional[str] = None,

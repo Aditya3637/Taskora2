@@ -25,7 +25,7 @@ class ThemeUpdate(BaseModel):
     color: Optional[str] = None
 
 
-@router.get("/")
+@router.get("")
 def list_themes(
     business_id: str,
     program_id: Optional[str] = None,

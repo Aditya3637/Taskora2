@@ -134,7 +134,7 @@ def update_business(
     return result.data[0] if result.data else {}
 
 
-@router.get("/")
+@router.get("")
 def list_businesses(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),

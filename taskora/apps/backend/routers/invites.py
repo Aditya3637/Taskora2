@@ -185,7 +185,7 @@ def revoke_invite(
     sb.table("workspace_invites").update({"status": "revoked"}).eq("id", invite_id).execute()
 
 
-@router.get("/")
+@router.get("")
 def list_invites(
     business_id: str,
     user: dict = Depends(get_current_user),

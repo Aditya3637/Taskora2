@@ -98,7 +98,7 @@ def _get_program_or_404(sb: Client, program_id: str) -> dict:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
-@router.get("/")
+@router.get("")
 def list_programs(
     business_id: str,
     user: dict = Depends(get_current_user),
@@ -136,7 +136,7 @@ def list_programs(
     return programs
 
 
-@router.post("/", status_code=201)
+@router.post("", status_code=201)
 def create_program(
     body: ProgramCreate,
     user: dict = Depends(get_current_user),

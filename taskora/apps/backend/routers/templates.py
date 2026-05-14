@@ -24,7 +24,7 @@ class ApplyTemplate(BaseModel):
     initiative_id: str
 
 
-@router.get("/")
+@router.get("")
 def list_templates(
     business_id: str,
     user: dict = Depends(get_current_user),

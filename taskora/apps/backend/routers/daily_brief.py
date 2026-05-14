@@ -25,7 +25,7 @@ def _resolve_entity_names(sb: Client, task_entities: list) -> list:
     return task_entities
 
 
-@router.get("/")
+@router.get("")
 def get_daily_brief(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
