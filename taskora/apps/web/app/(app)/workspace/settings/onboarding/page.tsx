@@ -8,9 +8,18 @@ import SettingsTabs from "@/components/SettingsTabs";
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 async function apiFetch(path: string, opts?: RequestInit) {
-  const { data: { session } } = await supabase.auth.getSession();
-  const token = session?.access_token;
-  if (!token) throw new Error("Not authenticated");
+  let { data: { session } } = await supabase.auth.getSession();
+  if (!session) {
+    const { data } = await supabase.auth.refreshSession();
+    session = data.session;
+  }
+  if (!session) {
+    if (typeof window !== "undefined") {
+      window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
+    }
+    throw new Error("Session expired. Redirecting to login…");
+  }
+  const token = session.access_token;
   const res = await fetch(`${API}${path}`, {
     ...opts,
     headers: {

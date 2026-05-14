@@ -7,11 +7,16 @@ import { supabase } from "@/lib/supabase";
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 async function apiFetch(path: string, opts?: RequestInit) {
-  const { data: { session } } = await supabase.auth.getSession();
+  let { data: { session } } = await supabase.auth.getSession();
+  if (!session) {
+    const { data } = await supabase.auth.refreshSession();
+    session = data.session;
+  }
+  if (!session) throw new Error("Session expired — please sign in again.");
   return fetch(`${API}${path}`, {
     ...opts,
     headers: {
-      Authorization: `Bearer ${session?.access_token ?? ""}`,
+      Authorization: `Bearer ${session.access_token}`,
       "Content-Type": "application/json",
       ...(opts?.headers ?? {}),
     },
