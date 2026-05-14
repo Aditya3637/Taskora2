@@ -9,8 +9,29 @@ from deps import get_supabase, get_member_role
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
-# Valid status values shared by task-level and per-entity updates
-_TASK_STATUSES = Literal["open", "in_progress", "pending_decision", "blocked", "done", "cancelled"]
+# Valid status values shared by task-level and per-entity updates.
+# Source of truth — matches the CHECK constraint on tasks.status (migration 002)
+# and the constraint on task_entities.per_entity_status (also migration 002,
+# minus 'archived' which only applies at the task level).
+_TASK_STATUSES = Literal[
+    "backlog",
+    "todo",
+    "in_progress",
+    "pending_decision",
+    "blocked",
+    "done",
+    "archived",
+]
+
+# Status values valid on subtasks and entity-scoped rows (no 'archived').
+_SUBTASK_STATUSES = Literal[
+    "backlog",
+    "todo",
+    "in_progress",
+    "pending_decision",
+    "blocked",
+    "done",
+]
 
 
 class TaskEntityCreate(BaseModel):
@@ -50,28 +71,18 @@ class StakeholderAdd(BaseModel):
     role: Literal["primary", "secondary", "follower"] = "secondary"
 
 
-@router.get("/my")
-def get_my_tasks(
-    user: dict = Depends(get_current_user),
-    sb: Client = Depends(get_supabase),
-):
-    uid = user["id"]
-    primary_ids = [r["id"] for r in sb.table("tasks").select("id").eq("primary_stakeholder_id", uid).execute().data]
-    secondary_ids = [r["task_id"] for r in sb.table("task_stakeholders").select("task_id").eq("user_id", uid).execute().data]
-    all_ids = list(set(primary_ids + secondary_ids))
-    if not all_ids:
-        return []
-    tasks = sb.table("tasks").select("*").in_("id", all_ids).order("created_at", desc=True).execute().data
-
-    # Fetch task_entities separately (more reliable than embedded PostgREST select)
-    all_entities = sb.table("task_entities").select("*").in_("task_id", all_ids).execute().data
+def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
+    """Attach task_entities (with resolved building/client names) to each task."""
+    if not tasks:
+        return tasks
+    task_ids = [t["id"] for t in tasks]
+    all_entities = sb.table("task_entities").select("*").in_("task_id", task_ids).execute().data
     entities_by_task: dict = {}
     for e in all_entities:
         entities_by_task.setdefault(e["task_id"], []).append(e)
 
-    # Resolve entity names in a single batch
     building_ids = list({e["entity_id"] for e in all_entities if e.get("entity_type") == "building"})
-    client_ids   = list({e["entity_id"] for e in all_entities if e.get("entity_type") == "client"})
+    client_ids = list({e["entity_id"] for e in all_entities if e.get("entity_type") == "client"})
     name_map: dict = {}
     if building_ids:
         for r in sb.table("buildings").select("id, name").in_("id", building_ids).execute().data:
@@ -85,8 +96,77 @@ def get_my_tasks(
         for e in entities:
             e["entity_name"] = name_map.get(e["entity_id"], e["entity_id"])
         task["task_entities"] = entities
-
     return tasks
+
+
+@router.get("/my")
+def get_my_tasks(
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Flat list of tasks the caller is a stakeholder on (used by mobile).
+    For the paginated web flow, see /my/page.
+    """
+    uid = user["id"]
+    primary_ids = [r["id"] for r in sb.table("tasks").select("id").eq("primary_stakeholder_id", uid).execute().data]
+    secondary_ids = [r["task_id"] for r in sb.table("task_stakeholders").select("task_id").eq("user_id", uid).execute().data]
+    all_ids = list(set(primary_ids + secondary_ids))
+    if not all_ids:
+        return []
+    tasks = sb.table("tasks").select("*").in_("id", all_ids).order("created_at", desc=True).execute().data
+    return _hydrate_tasks_with_entities(sb, tasks)
+
+
+@router.get("/my/page")
+def get_my_tasks_page(
+    limit: int = Query(default=20, ge=1, le=100),
+    cursor: Optional[str] = Query(
+        default=None,
+        description="ISO timestamp of the last task's created_at — return tasks older than this",
+    ),
+    status: Optional[str] = Query(default=None, description="Filter by exact task status"),
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """B5: Cursor-paginated list of tasks the caller is a stakeholder on.
+
+    Returns: {"items": [...tasks], "next_cursor": "<iso>" | None}
+    """
+    uid = user["id"]
+    primary_ids = [
+        r["id"]
+        for r in sb.table("tasks").select("id").eq("primary_stakeholder_id", uid).execute().data
+    ]
+    secondary_ids = [
+        r["task_id"]
+        for r in sb.table("task_stakeholders").select("task_id").eq("user_id", uid).execute().data
+    ]
+    all_ids = list(set(primary_ids + secondary_ids))
+    if not all_ids:
+        return {"items": [], "next_cursor": None}
+
+    q = (
+        sb.table("tasks")
+        .select("*")
+        .in_("id", all_ids)
+        .order("created_at", desc=True)
+        .limit(limit + 1)
+    )
+    if cursor:
+        q = q.lt("created_at", cursor)
+    if status:
+        q = q.eq("status", status)
+    tasks = q.execute().data
+
+    has_more = len(tasks) > limit
+    if has_more:
+        tasks = tasks[:limit]
+    next_cursor = tasks[-1]["created_at"] if has_more and tasks else None
+
+    return {
+        "items": _hydrate_tasks_with_entities(sb, tasks),
+        "next_cursor": next_cursor,
+    }
 
 
 @router.post("/", status_code=201)
@@ -427,12 +507,14 @@ class SubtaskCreate(BaseModel):
     assignee_id: Optional[str] = None
     scoped_entity_id: Optional[str] = None
     scoped_entity_type: Optional[str] = None
+    parent_subtask_id: Optional[str] = None  # B1: enables Task → Subtask → Sub-subtask
 
 
 class SubtaskUpdate(BaseModel):
     title: Optional[str] = None
     status: Optional[str] = None
     assignee_id: Optional[str] = None
+    parent_subtask_id: Optional[str] = None
 
 
 def _assert_task_access(sb: Client, task_id: str, user_id: str):
@@ -456,7 +538,10 @@ def list_subtasks(
     _assert_task_access(sb, task_id, user["id"])
     query = (
         sb.table("subtasks")
-        .select("id, title, status, assignee_id, created_at, scoped_entity_id, scoped_entity_type")
+        .select(
+            "id, title, status, assignee_id, created_at, "
+            "scoped_entity_id, scoped_entity_type, parent_subtask_id"
+        )
         .eq("task_id", task_id)
         .order("created_at")
     )
@@ -476,6 +561,53 @@ def list_subtasks(
     return subtasks
 
 
+@router.get("/{task_id}/subtasks-grouped")
+def list_subtasks_grouped(
+    task_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """B4: One-shot fetch of every subtask under a task, grouped by entity_id.
+
+    Returns: {"by_entity": {entity_id: [subtask, ...], ...}, "task_flat": [...]}
+
+    Replaces the per-entity N+1 pattern where each building row separately
+    called /subtasks?for_entity=<id>. With 50 buildings, that was 50 trips;
+    now it's one query that benefits from the (task_id, scoped_entity_id) index.
+    """
+    _assert_task_access(sb, task_id, user["id"])
+    rows = (
+        sb.table("subtasks")
+        .select(
+            "id, title, status, assignee_id, created_at, "
+            "scoped_entity_id, scoped_entity_type, parent_subtask_id"
+        )
+        .eq("task_id", task_id)
+        .order("created_at")
+        .execute()
+        .data
+    )
+
+    # Resolve assignee names in one batch
+    assignee_ids = list({s["assignee_id"] for s in rows if s.get("assignee_id")})
+    name_map: dict = {}
+    if assignee_ids:
+        for r in sb.table("users").select("id, name").in_("id", assignee_ids).execute().data:
+            name_map[r["id"]] = r.get("name") or ""
+    for s in rows:
+        s["assignee_name"] = name_map.get(s.get("assignee_id") or "", "")
+
+    by_entity: dict = {}
+    task_flat: list = []
+    for s in rows:
+        eid = s.get("scoped_entity_id")
+        if eid:
+            by_entity.setdefault(eid, []).append(s)
+        else:
+            task_flat.append(s)
+    return {"by_entity": by_entity, "task_flat": task_flat}
+
+
 @router.post("/{task_id}/subtasks", status_code=201)
 def create_subtask(
     task_id: str,
@@ -493,9 +625,34 @@ def create_subtask(
         "created_at": now,
         "updated_at": now,
     }
-    if body.scoped_entity_id:
+
+    # If parent_subtask_id is provided, verify it belongs to the same task and
+    # inherit its entity scope (children of an entity-scoped subtask stay scoped
+    # to that entity). Cap nesting at depth 2 (sub-subtask): no grandchildren.
+    if body.parent_subtask_id:
+        parent_rows = (
+            sb.table("subtasks")
+            .select("task_id, scoped_entity_id, scoped_entity_type, parent_subtask_id")
+            .eq("id", body.parent_subtask_id)
+            .execute()
+            .data
+        )
+        if not parent_rows:
+            raise HTTPException(status_code=404, detail="Parent subtask not found")
+        parent = parent_rows[0]
+        if parent["task_id"] != task_id:
+            raise HTTPException(status_code=400, detail="Parent subtask belongs to a different task")
+        if parent.get("parent_subtask_id"):
+            raise HTTPException(status_code=400, detail="Subtasks can only nest one level deep")
+        row["parent_subtask_id"] = body.parent_subtask_id
+        # Inherit scope from parent so the child renders under the same entity
+        if parent.get("scoped_entity_id"):
+            row["scoped_entity_id"] = parent["scoped_entity_id"]
+            row["scoped_entity_type"] = parent.get("scoped_entity_type")
+    elif body.scoped_entity_id:
         row["scoped_entity_id"] = body.scoped_entity_id
         row["scoped_entity_type"] = body.scoped_entity_type
+
     result = sb.table("subtasks").insert(row).execute()
     if not result.data:
         raise HTTPException(status_code=500, detail="Failed to create subtask")

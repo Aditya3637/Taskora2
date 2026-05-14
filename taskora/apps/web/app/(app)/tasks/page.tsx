@@ -86,6 +86,15 @@ type Subtask = {
   status: string;
   assignee_id?: string;
   assignee_name?: string;
+  parent_subtask_id?: string | null;
+  scoped_entity_id?: string | null;
+  scoped_entity_type?: string | null;
+};
+
+// Shape returned by GET /tasks/{id}/subtasks-grouped (B4).
+type SubtasksGrouped = {
+  by_entity: Record<string, Subtask[]>;
+  task_flat: Subtask[];
 };
 
 type Member = { user_id: string; name: string; email: string };
@@ -102,24 +111,46 @@ type Comment = {
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
+// B6: Source of truth for task statuses. Matches the DB CHECK constraint on
+// tasks.status (migration 002) and the Pydantic _TASK_STATUSES Literal.
+const TASK_STATUS_ORDER = [
+  "backlog",
+  "todo",
+  "in_progress",
+  "pending_decision",
+  "blocked",
+  "done",
+  "archived",
+] as const;
+
+// Subtasks / per-entity statuses share the same values minus 'archived'.
+const SUBTASK_STATUS_ORDER = [
+  "backlog",
+  "todo",
+  "in_progress",
+  "pending_decision",
+  "blocked",
+  "done",
+] as const;
+
 const STATUS_LABELS: Record<string, string> = {
-  pending_decision: "Pending Decision",
+  backlog: "Backlog",
+  todo: "To Do",
   in_progress: "In Progress",
+  pending_decision: "Pending Decision",
   blocked: "Blocked",
   done: "Done",
-  todo: "To Do",
-  backlog: "Backlog",
-  open: "Open",
+  archived: "Archived",
 };
 
 const STATUS_COLORS: Record<string, string> = {
-  pending_decision: "bg-amber-100 text-amber-800",
+  backlog: "bg-gray-100 text-gray-500",
+  todo: "bg-gray-100 text-gray-600",
   in_progress: "bg-blue-100 text-blue-800",
+  pending_decision: "bg-amber-100 text-amber-800",
   blocked: "bg-red-100 text-red-800",
   done: "bg-green-100 text-green-800",
-  todo: "bg-gray-100 text-gray-600",
-  backlog: "bg-gray-100 text-gray-500",
-  open: "bg-sky-100 text-sky-700",
+  archived: "bg-gray-100 text-gray-400",
 };
 
 const PRIORITY_BORDER: Record<string, string> = {
@@ -146,72 +177,177 @@ const IMPACT_CATEGORY_LABEL: Record<string, string> = {
   other: "Other",
 };
 
+// Filter pills shown at the top of the Tasks page. Backlog & archived are
+// not included by default — they're set-only states.
 const STATUSES = [
   "All",
+  "todo",
   "in_progress",
   "pending_decision",
   "blocked",
   "done",
-  "todo",
 ];
 
-// ── Subtask Row ───────────────────────────────────────────────────────────────
+// ── Subtask Row (recursive: supports one level of child sub-subtasks) ────────
 
 function SubtaskRow({
   subtask,
+  children,
   taskId,
-  onToggle,
+  members,
+  currentUserId,
+  onChanged,
 }: {
   subtask: Subtask;
+  children: Subtask[]; // child sub-subtasks; empty when subtask is itself a child
   taskId: string;
-  onToggle: () => void;
+  members: Member[];
+  currentUserId: string;
+  onChanged: () => void;
 }) {
-  const [toggling, setToggling] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [showAddChild, setShowAddChild] = useState(false);
 
-  async function toggle() {
-    setToggling(true);
-    const next = subtask.status === "done" ? "todo" : "done";
+  // Schema caps nesting at 1 level: only top-level subtasks may have children.
+  const isChild = !!subtask.parent_subtask_id;
+  const hasChildren = children.length > 0;
+  const canAddChild = !isChild;
+
+  async function setStatus(next: string) {
+    if (next === subtask.status) return;
+    setUpdating(true);
     try {
       await apiFetch(`/api/v1/tasks/${taskId}/subtasks/${subtask.id}`, {
         method: "PATCH",
         body: JSON.stringify({ status: next }),
       });
-      onToggle();
+      onChanged();
     } catch {
       /* silent */
     } finally {
-      setToggling(false);
+      setUpdating(false);
     }
   }
 
+  function toggleDone() {
+    setStatus(subtask.status === "done" ? "todo" : "done");
+  }
+
+  const statusCls = STATUS_COLORS[subtask.status] ?? "bg-gray-100 text-gray-600";
+
   return (
-    <div className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-mist/30 group">
-      <button
-        onClick={toggle}
-        disabled={toggling}
-        className={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center transition-colors ${
-          subtask.status === "done"
-            ? "bg-green-500 border-green-500"
-            : "border-pebble hover:border-ocean"
-        }`}
-      >
-        {subtask.status === "done" && (
-          <span className="text-white text-[10px] font-bold">✓</span>
+    <div>
+      <div className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-mist/30 group">
+        {/* Chevron — only on top-level rows; placeholder keeps alignment */}
+        {!isChild ? (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="w-3.5 h-3.5 flex items-center justify-center text-steel/50 hover:text-midnight flex-shrink-0"
+            title={expanded ? "Collapse" : "Expand"}
+          >
+            {hasChildren || expanded ? (
+              expanded ? (
+                <ChevronDown className="w-3 h-3" />
+              ) : (
+                <ChevronRight className="w-3 h-3" />
+              )
+            ) : null}
+          </button>
+        ) : (
+          <span className="w-3.5 flex-shrink-0" />
         )}
-      </button>
-      <span
-        className={`text-xs flex-1 ${
-          subtask.status === "done"
-            ? "line-through text-steel/50"
-            : "text-midnight"
-        }`}
-      >
-        {subtask.title}
-      </span>
-      {subtask.assignee_name && (
-        <span className="text-[10px] text-steel/60 hidden group-hover:block">
-          {subtask.assignee_name}
+
+        {/* Quick-toggle checkbox */}
+        <button
+          onClick={toggleDone}
+          disabled={updating}
+          className={`w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center transition-colors disabled:opacity-50 ${
+            subtask.status === "done"
+              ? "bg-green-500 border-green-500"
+              : "border-pebble hover:border-ocean"
+          }`}
+          title="Toggle done"
+        >
+          {subtask.status === "done" && (
+            <span className="text-white text-[10px] font-bold">✓</span>
+          )}
+        </button>
+
+        <span
+          className={`text-xs flex-1 truncate ${
+            subtask.status === "done"
+              ? "line-through text-steel/50"
+              : "text-midnight"
+          }`}
+        >
+          {subtask.title}
         </span>
+
+        {/* Full status select */}
+        <select
+          value={subtask.status}
+          onChange={(e) => setStatus(e.target.value)}
+          disabled={updating}
+          className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border-0 cursor-pointer appearance-none focus:outline-none focus:ring-1 focus:ring-ocean/30 disabled:opacity-50 ${statusCls}`}
+        >
+          {SUBTASK_STATUS_ORDER.map((s) => (
+            <option key={s} value={s}>
+              {STATUS_LABELS[s] ?? s}
+            </option>
+          ))}
+        </select>
+
+        {subtask.assignee_name && (
+          <span className="text-[10px] text-steel/60 hidden group-hover:block max-w-[80px] truncate">
+            {subtask.assignee_name}
+          </span>
+        )}
+
+        {/* Add-child button — only on parent rows */}
+        {canAddChild && (
+          <button
+            type="button"
+            onClick={() => {
+              setShowAddChild(true);
+              setExpanded(true);
+            }}
+            className="text-[10px] text-steel/40 hover:text-taskora-red flex-shrink-0"
+            title="Add sub-sub-task"
+          >
+            <Plus className="w-3 h-3" />
+          </button>
+        )}
+      </div>
+
+      {/* Children + add-child form */}
+      {!isChild && expanded && (
+        <div className="ml-6 pl-2 border-l border-pebble/30">
+          {children.map((c) => (
+            <SubtaskRow
+              key={c.id}
+              subtask={c}
+              children={[]}
+              taskId={taskId}
+              members={members}
+              currentUserId={currentUserId}
+              onChanged={onChanged}
+            />
+          ))}
+          {showAddChild && (
+            <AddSubtaskInline
+              taskId={taskId}
+              members={members}
+              currentUserId={currentUserId}
+              parentSubtaskId={subtask.id}
+              onCreated={() => {
+                setShowAddChild(false);
+                onChanged();
+              }}
+            />
+          )}
+        </div>
       )}
     </div>
   );
@@ -225,6 +361,7 @@ function AddSubtaskInline({
   currentUserId,
   scopedEntityId,
   scopedEntityType,
+  parentSubtaskId,
   onCreated,
 }: {
   taskId: string;
@@ -232,6 +369,7 @@ function AddSubtaskInline({
   currentUserId: string;
   scopedEntityId?: string;
   scopedEntityType?: string;
+  parentSubtaskId?: string;
   onCreated: () => void;
 }) {
   const [title, setTitle] = useState("");
@@ -248,10 +386,14 @@ function AddSubtaskInline({
         body: JSON.stringify({
           title: title.trim(),
           assignee_id: assigneeId || currentUserId,
-          ...(scopedEntityId && {
-            scoped_entity_id: scopedEntityId,
-            scoped_entity_type: scopedEntityType,
-          }),
+          // Backend infers scope from parent when parent_subtask_id is set, so we
+          // only send the entity scope when we're at the top level (no parent).
+          ...(parentSubtaskId
+            ? { parent_subtask_id: parentSubtaskId }
+            : scopedEntityId && {
+                scoped_entity_id: scopedEntityId,
+                scoped_entity_type: scopedEntityType,
+              }),
         }),
       });
       setTitle("");
@@ -443,41 +585,40 @@ function EntitySubtaskRow({
   taskId,
   members,
   currentUserId,
+  subtasks,
+  subtasksLoading,
   onEntityUpdate,
+  onSubtasksChanged,
 }: {
   entity: TaskEntity;
   taskId: string;
   members: Member[];
   currentUserId: string;
+  // B4: subtasks now come from a single parent-level fetch instead of one
+  // request per entity. Empty array = no subtasks (not "not loaded yet").
+  subtasks: Subtask[];
+  subtasksLoading: boolean;
   onEntityUpdate?: (entityId: string, updates: Partial<TaskEntity>) => void;
+  onSubtasksChanged: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [subtasks, setSubtasks] = useState<Subtask[]>([]);
-  const [loading, setLoading] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [entityStatus, setEntityStatus] = useState(entity.per_entity_status ?? "backlog");
   const [entityEndDate, setEntityEndDate] = useState(entity.per_entity_end_date?.slice(0, 10) ?? "");
   const [updatingStatus, setUpdatingStatus] = useState(false);
   const [showComments, setShowComments] = useState(false);
 
-  async function load() {
-    setLoading(true);
-    try {
-      const data = await apiFetch(
-        `/api/v1/tasks/${taskId}/subtasks?for_entity=${entity.entity_id}`
-      );
-      setSubtasks(Array.isArray(data) ? data : []);
-    } catch {
-      /* silent */
-    } finally {
-      setLoading(false);
+  // Split parents from children for recursive rendering.
+  const parentSubtasks = subtasks.filter((s) => !s.parent_subtask_id);
+  const childrenByParent: Record<string, Subtask[]> = {};
+  for (const s of subtasks) {
+    if (s.parent_subtask_id) {
+      (childrenByParent[s.parent_subtask_id] ??= []).push(s);
     }
   }
 
   function toggle() {
-    const next = !expanded;
-    setExpanded(next);
-    if (next && subtasks.length === 0) load();
+    setExpanded((v) => !v);
   }
 
   async function handleEntityStatusChange(e: React.ChangeEvent<HTMLSelectElement>) {
@@ -513,7 +654,10 @@ function EntitySubtaskRow({
     } catch { /* silent */ }
   }
 
-  const doneCount = subtasks.filter((s) => s.status === "done").length;
+  // Count is over parent rows only — children are a UI detail and shouldn't
+  // double-count toward the "X/Y done" indicator.
+  const doneCount = parentSubtasks.filter((s) => s.status === "done").length;
+  const totalCount = parentSubtasks.length;
   const colorCls =
     entity.entity_type === "building"
       ? "bg-amber-50 text-amber-700 border-amber-200"
@@ -536,7 +680,7 @@ function EntitySubtaskRow({
           disabled={updatingStatus}
           className={`text-xs px-2 py-0.5 rounded-full font-medium border-0 cursor-pointer appearance-none focus:outline-none focus:ring-1 focus:ring-ocean/30 disabled:opacity-50 ${statusCls}`}
         >
-          {["backlog", "todo", "in_progress", "pending_decision", "blocked", "done"].map((s) => (
+          {SUBTASK_STATUS_ORDER.map((s) => (
             <option key={s} value={s}>{STATUS_LABELS[s] ?? s}</option>
           ))}
         </select>
@@ -567,7 +711,7 @@ function EntitySubtaskRow({
           onClick={toggle}
           className="ml-auto flex items-center gap-1 text-xs text-steel hover:text-midnight flex-shrink-0"
         >
-          {subtasks.length > 0 ? `${doneCount}/${subtasks.length}` : ""}
+          {totalCount > 0 ? `${doneCount}/${totalCount}` : ""}
           {expanded ? (
             <ChevronDown className="w-3.5 h-3.5" />
           ) : (
@@ -578,18 +722,21 @@ function EntitySubtaskRow({
 
       {expanded && (
         <div className="ml-4 pl-2 border-l border-pebble/40 mt-0.5">
-          {loading && (
+          {subtasksLoading && totalCount === 0 && (
             <p className="text-xs text-steel/50 py-1">Loading…</p>
           )}
-          {subtasks.map((s) => (
+          {parentSubtasks.map((s) => (
             <SubtaskRow
               key={s.id}
               subtask={s}
+              children={childrenByParent[s.id] ?? []}
               taskId={taskId}
-              onToggle={load}
+              members={members}
+              currentUserId={currentUserId}
+              onChanged={onSubtasksChanged}
             />
           ))}
-          {subtasks.length === 0 && !loading && (
+          {!subtasksLoading && totalCount === 0 && (
             <p className="text-xs text-steel/50 py-1 italic">
               No sub-tasks yet.
             </p>
@@ -603,7 +750,7 @@ function EntitySubtaskRow({
               scopedEntityType={entity.entity_type ?? "building"}
               onCreated={() => {
                 setShowAdd(false);
-                load();
+                onSubtasksChanged();
               }}
             />
           ) : (
@@ -696,7 +843,10 @@ function TaskCard({
   onDelete: (taskId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [subtasks, setSubtasks] = useState<Subtask[]>([]);
+  // B4: a single grouped fetch covers every entity in the task. by_entity is
+  // keyed by entity_id; task_flat holds subtasks not scoped to an entity.
+  const [grouped, setGrouped] = useState<SubtasksGrouped>({ by_entity: {}, task_flat: [] });
+  const [groupedLoaded, setGroupedLoaded] = useState(false);
   const [loadingSubtasks, setLoadingSubtasks] = useState(false);
   const [showAddSubtask, setShowAddSubtask] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -735,12 +885,15 @@ function TaskCard({
     }
   }
 
-  async function loadSubtasks() {
-    if (loadingSubtasks) return;
+  async function loadSubtasksGrouped() {
     setLoadingSubtasks(true);
     try {
-      const data = await apiFetch(`/api/v1/tasks/${task.id}/subtasks`);
-      setSubtasks(Array.isArray(data) ? data : []);
+      const data = await apiFetch(`/api/v1/tasks/${task.id}/subtasks-grouped`);
+      setGrouped({
+        by_entity: data?.by_entity ?? {},
+        task_flat: data?.task_flat ?? [],
+      });
+      setGroupedLoaded(true);
     } catch {
       /* silent */
     } finally {
@@ -796,12 +949,22 @@ function TaskCard({
     const next = !expanded;
     setExpanded(next);
     if (next) {
-      if (localEnts.length === 0 && subtasks.length === 0) loadSubtasks();
+      if (!groupedLoaded) loadSubtasksGrouped();
       if (!stakeholdersLoaded) loadStakeholders();
     }
   }
 
-  const doneCount = subtasks.filter((s) => s.status === "done").length;
+  // doneCount only meaningful for the flat (no-entity) view; entity-scoped
+  // tasks display their own X/Y counts per building.
+  const doneCount = grouped.task_flat.filter((s) => s.status === "done").length;
+  const flatTotal = grouped.task_flat.length;
+  const flatParents = grouped.task_flat.filter((s) => !s.parent_subtask_id);
+  const flatChildrenByParent: Record<string, Subtask[]> = {};
+  for (const s of grouped.task_flat) {
+    if (s.parent_subtask_id) {
+      (flatChildrenByParent[s.parent_subtask_id] ??= []).push(s);
+    }
+  }
 
   return (
     <div
@@ -850,8 +1013,8 @@ function TaskCard({
               <span className="font-medium">
                 {localEnts.length > 0
                   ? `${localEnts.length} ${localEnts[0]?.entity_type === "client" ? "client" : "building"}${localEnts.length !== 1 ? "s" : ""}`
-                  : subtasks.length > 0
-                  ? `${doneCount}/${subtasks.length}`
+                  : flatTotal > 0
+                  ? `${doneCount}/${flatTotal}`
                   : "Subtasks"}
               </span>
               {expanded ? (
@@ -924,7 +1087,7 @@ function TaskCard({
           </div>
 
           {localEnts.length > 0 ? (
-            /* Entity tasks: each building/client is a collapsible subtask with its own sub-subtasks */
+            /* Entity tasks: each building/client is a collapsible row, subtasks come from the single grouped fetch */
             <>
               {localEnts.map((e) => (
                 <EntitySubtaskRow
@@ -933,25 +1096,31 @@ function TaskCard({
                   taskId={task.id}
                   members={members}
                   currentUserId={currentUserId}
+                  subtasks={grouped.by_entity[e.entity_id] ?? []}
+                  subtasksLoading={loadingSubtasks}
                   onEntityUpdate={handleEntityUpdate}
+                  onSubtasksChanged={loadSubtasksGrouped}
                 />
               ))}
             </>
           ) : (
-            /* General tasks: flat subtask list */
+            /* General tasks: flat subtask list, recursive SubtaskRow handles nesting */
             <>
-              {loadingSubtasks && (
+              {loadingSubtasks && flatTotal === 0 && (
                 <p className="text-xs text-steel/50 py-1">Loading…</p>
               )}
-              {subtasks.map((s) => (
+              {flatParents.map((s) => (
                 <SubtaskRow
                   key={s.id}
                   subtask={s}
+                  children={flatChildrenByParent[s.id] ?? []}
                   taskId={task.id}
-                  onToggle={loadSubtasks}
+                  members={members}
+                  currentUserId={currentUserId}
+                  onChanged={loadSubtasksGrouped}
                 />
               ))}
-              {subtasks.length === 0 && !loadingSubtasks && (
+              {flatTotal === 0 && !loadingSubtasks && (
                 <p className="text-xs text-steel/50 py-1 italic">
                   No subtasks yet.
                 </p>
@@ -963,7 +1132,7 @@ function TaskCard({
                   currentUserId={currentUserId}
                   onCreated={() => {
                     setShowAddSubtask(false);
-                    loadSubtasks();
+                    loadSubtasksGrouped();
                   }}
                 />
               ) : (
@@ -1968,6 +2137,8 @@ function TasksPageInner() {
   const searchParams = useSearchParams();
   const highlightInitiativeId = searchParams.get("initiative");
 
+  const PAGE_SIZE = 20;
+
   const [tasks, setTasks] = useState<Task[]>([]);
   const [initiatives, setInitiatives] = useState<MyInitiative[]>([]);
   const [businessId, setBusinessId] = useState("");
@@ -1978,6 +2149,25 @@ function TasksPageInner() {
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("All");
   const [showCreate, setShowCreate] = useState(false);
+  // B5: cursor pagination on /tasks/my/page
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  // Fetches a page of tasks. When `append` is true, results are appended to the
+  // current list (used by Load More). Otherwise the list is replaced and the
+  // cursor is reset (used by initial load and filter changes).
+  const fetchTaskPage = useCallback(
+    async (statusFilter: string, cursor: string | null, append: boolean) => {
+      const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
+      if (cursor) params.set("cursor", cursor);
+      if (statusFilter !== "All") params.set("status", statusFilter);
+      const page = await apiFetch(`/api/v1/tasks/my/page?${params.toString()}`);
+      const items: Task[] = Array.isArray(page?.items) ? page.items : [];
+      setTasks((prev) => (append ? [...prev, ...items] : items));
+      setNextCursor(page?.next_cursor ?? null);
+    },
+    []
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1991,14 +2181,13 @@ function TasksPageInner() {
       const userId = session.user.id;
       setCurrentUserId(userId);
 
-      // Fetch biz, tasks, and initiatives in parallel
-      const [biz, taskData, initData] = await Promise.all([
+      // Fetch biz, first page of tasks, and initiatives in parallel.
+      const [biz, , initData] = await Promise.all([
         apiFetch("/api/v1/businesses/my"),
-        apiFetch("/api/v1/tasks/my"),
+        fetchTaskPage(filter, null, false),
         apiFetch("/api/v1/initiatives/my"),
       ]);
 
-      setTasks(Array.isArray(taskData) ? taskData : []);
       setInitiatives(Array.isArray(initData) ? initData : []);
       if (biz?.id) {
         setBusinessId(biz.id);
@@ -2030,11 +2219,24 @@ function TasksPageInner() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [filter, fetchTaskPage, router]);
 
   useEffect(() => {
     load();
+    // load is intentionally re-created when filter changes, which retriggers this.
   }, [load]);
+
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      await fetchTaskPage(filter, nextCursor, true);
+    } catch {
+      /* silent */
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   // Optimistic status update
   function handleStatusChange(taskId: string, newStatus: string) {
@@ -2054,9 +2256,9 @@ function TasksPageInner() {
     setTasks((prev) => prev.filter((t) => t.initiative_id !== initiativeId));
   }
 
-  // Filter tasks
-  const filtered =
-    filter === "All" ? tasks : tasks.filter((t) => t.status === filter);
+  // Server filters the page by status now (B5), so the on-screen list is
+  // already filtered. Keep this alias for the grouping logic below.
+  const filtered = tasks;
 
   // Group tasks by initiative
   const initiativeMap = Object.fromEntries(
@@ -2195,6 +2397,19 @@ function TasksPageInner() {
                 onStatusChange={handleStatusChange}
                 onTaskDeleted={handleTaskDelete}
               />
+            )}
+
+            {/* B5: Load more — visible only when the server says there are more pages */}
+            {nextCursor && (
+              <div className="flex justify-center pt-2">
+                <button
+                  onClick={loadMore}
+                  disabled={loadingMore}
+                  className="px-4 py-2 text-xs font-semibold rounded-lg border border-pebble bg-white text-steel hover:bg-mist disabled:opacity-50"
+                >
+                  {loadingMore ? "Loading…" : "Load more"}
+                </button>
+              </div>
             )}
           </div>
         )}
