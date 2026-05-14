@@ -694,6 +694,75 @@ def recurring_mark_done(
     return result.data[0] if result.data else {}
 
 
+# ---------------------------------------------------------------------------
+# Entity comment endpoints
+# ---------------------------------------------------------------------------
+
+class CommentCreate(BaseModel):
+    content: str
+
+
+@router.get("/{task_id}/entities/{entity_id}/comments")
+def list_entity_comments(
+    task_id: str,
+    entity_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Return all comments scoped to a specific task entity, oldest first."""
+    _assert_task_access(sb, task_id, user["id"])
+    rows = (
+        sb.table("comments")
+        .select("id, content, user_id, created_at")
+        .eq("task_id", task_id)
+        .eq("entity_id", entity_id)
+        .order("created_at")
+        .execute()
+        .data
+    )
+    # Resolve author names in one batch
+    user_ids = list({r["user_id"] for r in rows if r.get("user_id")})
+    name_map: dict = {}
+    if user_ids:
+        for u in sb.table("users").select("id, name").in_("id", user_ids).execute().data:
+            name_map[u["id"]] = u.get("name") or ""
+    for r in rows:
+        r["author_name"] = name_map.get(r["user_id"], "")
+        r["author_id"] = r.pop("user_id")
+    return rows
+
+
+@router.post("/{task_id}/entities/{entity_id}/comments", status_code=201)
+def create_entity_comment(
+    task_id: str,
+    entity_id: str,
+    body: CommentCreate,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Post a comment scoped to a specific task entity."""
+    if not body.content.strip():
+        raise HTTPException(status_code=422, detail="Comment content cannot be empty")
+    _assert_task_access(sb, task_id, user["id"])
+    now = datetime.now(timezone.utc).isoformat()
+    result = sb.table("comments").insert({
+        "task_id": task_id,
+        "entity_id": entity_id,
+        "user_id": user["id"],
+        "content": body.content.strip(),
+        "created_at": now,
+        "updated_at": now,
+    }).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create comment")
+    row = result.data[0]
+    # Resolve author name for the response
+    user_row = sb.table("users").select("name").eq("id", user["id"]).execute().data
+    row["author_name"] = user_row[0].get("name", "") if user_row else ""
+    row["author_id"] = row.pop("user_id")
+    return row
+
+
 class DependenciesUpdate(BaseModel):
     depends_on: List[str]
 
