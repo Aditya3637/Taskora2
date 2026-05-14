@@ -23,3 +23,5 @@ build/
 *.log
 .env.local
 .vercel
+.env.prod
+.env.vercel
