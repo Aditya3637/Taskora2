@@ -1445,8 +1445,9 @@ function BreakdownModal({
 
       onCreated();
       onClose();
-    } catch {
-      setError("Failed to create task.");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(`Failed to create task: ${msg}`);
     } finally {
       setSaving(false);
     }
