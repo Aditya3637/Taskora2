@@ -6,11 +6,7 @@ import OnboardingBanner from "@/components/OnboardingBanner";
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 async function apiFetch(path: string, opts?: RequestInit) {
-  let { data: { session } } = await supabase.auth.getSession();
-  if (!session || (session.expires_at ?? 0) < Math.floor(Date.now() / 1000) + 30) {
-    const { data } = await supabase.auth.refreshSession();
-    session = data.session;
-  }
+  const { data: { session } } = await supabase.auth.getSession();
   if (!session) {
     if (typeof window !== "undefined") {
       window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;

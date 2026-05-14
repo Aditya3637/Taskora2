@@ -5,11 +5,7 @@ import { supabase } from "@/lib/supabase";
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 async function apiFetch(path: string, opts?: RequestInit) {
-  let { data: { session } } = await supabase.auth.getSession();
-  if (!session || (session.expires_at ?? 0) < Math.floor(Date.now() / 1000) + 30) {
-    const { data } = await supabase.auth.refreshSession();
-    session = data.session;
-  }
+  const { data: { session } } = await supabase.auth.getSession();
   if (!session) {
     if (typeof window !== "undefined") {
       window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
@@ -80,11 +76,7 @@ export default function ReportsPage() {
     if (!businessId) return;
     const qs = `business_id=${businessId}&start_date=${startDate}&end_date=${endDate}&format=csv`;
     const endpoint = tab === "tasks" ? "tasks" : "initiatives";
-    let { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
-      const { data } = await supabase.auth.refreshSession();
-      session = data.session;
-    }
+    const { data: { session } } = await supabase.auth.getSession();
     const res = await fetch(`${API}/api/v1/reports/${endpoint}?${qs}`, {
       headers: { Authorization: `Bearer ${session?.access_token ?? ""}` },
     });
