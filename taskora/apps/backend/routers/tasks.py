@@ -172,7 +172,11 @@ def get_my_tasks_page(
     }
 
 
+# Registered at both "" and "/" because the Vercel/Next.js rewrite strips the
+# trailing slash, so the proxied request arrives as POST /api/v1/tasks (no
+# slash) and FastAPI's slash-redirect does not survive the proxy.
 @router.post("/", status_code=201)
+@router.post("", status_code=201, include_in_schema=False)
 def create_task(
     body: TaskCreate,
     user: dict = Depends(get_current_user),
