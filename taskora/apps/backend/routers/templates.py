@@ -45,6 +45,7 @@ def list_templates(
 
 
 @router.post("/", status_code=201)
+@router.post("", status_code=201, include_in_schema=False)
 def create_template(
     body: TemplateCreate,
     action: Optional[str] = Query(default=None),

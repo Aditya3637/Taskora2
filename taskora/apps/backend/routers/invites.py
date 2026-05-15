@@ -20,6 +20,7 @@ class InviteCreate(BaseModel):
 
 
 @router.post("/", status_code=201)
+@router.post("", status_code=201, include_in_schema=False)
 def create_invite(
     body: InviteCreate,
     user: dict = Depends(get_current_user),

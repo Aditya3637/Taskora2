@@ -60,6 +60,7 @@ def get_my_initiatives(
 
 
 @router.post("/", status_code=201)
+@router.post("", status_code=201, include_in_schema=False)
 def create_initiative(
     body: InitiativeCreate,
     user: dict = Depends(get_current_user),

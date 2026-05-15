@@ -27,6 +27,7 @@ class MemberRoleUpdate(BaseModel):
 
 
 @router.post("/", status_code=201)
+@router.post("", status_code=201, include_in_schema=False)
 def create_business(
     body: BusinessCreate,
     user: dict = Depends(get_current_user),

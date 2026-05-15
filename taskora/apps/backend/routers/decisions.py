@@ -20,6 +20,7 @@ class DecisionAction(BaseModel):
 
 
 @router.post("/", status_code=201)
+@router.post("", status_code=201, include_in_schema=False)
 def take_decision(
     task_id: str,
     body: DecisionAction,
