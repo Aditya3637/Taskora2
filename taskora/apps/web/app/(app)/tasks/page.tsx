@@ -388,6 +388,7 @@ function SubtaskRow({
           apiPath={`/api/v1/tasks/${taskId}/subtasks/${subtask.id}/comments`}
           title={subtask.title}
           onClose={() => setShowComments(false)}
+          onPosted={onChanged}
         />
       )}
     </div>
@@ -655,10 +656,14 @@ function CommentsPopup({
   apiPath,
   title,
   onClose,
+  onPosted,
 }: {
   apiPath: string;
   title: string;
   onClose: () => void;
+  // Fired after a successful post with the freshly-created comment so callers
+  // can refresh their inline "latest comment" preview instantly.
+  onPosted?: (created: Comment) => void;
 }) {
   const [comments, setComments] = useState<Comment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -686,12 +691,13 @@ function CommentsPopup({
     if (!newComment.trim()) return;
     setSubmitting(true);
     try {
-      await apiFetch(apiPath, {
+      const created = await apiFetch(apiPath, {
         method: "POST",
         body: JSON.stringify({ content: newComment.trim() }),
       });
       setNewComment("");
       loadComments();
+      if (created && created.content) onPosted?.(created as Comment);
     } catch {
       /* silent */
     } finally {
@@ -983,6 +989,15 @@ function EntitySubtaskRow({
           apiPath={`/api/v1/tasks/${taskId}/entities/${entity.entity_id}/comments`}
           title={entity.entity_name ?? entity.entity_id}
           onClose={() => setShowComments(false)}
+          onPosted={(c) =>
+            onEntityUpdate?.(entity.entity_id, {
+              latest_comment: {
+                content: c.content,
+                author_name: c.author_name,
+                created_at: c.created_at,
+              },
+            })
+          }
         />
       )}
 
@@ -1079,9 +1094,13 @@ function TaskCard({
   const [stakeholdersLoaded, setStakeholdersLoaded] = useState(false);
   const [newStakeholderUserId, setNewStakeholderUserId] = useState("");
   const [localEnts, setLocalEnts] = useState<TaskEntity[]>(task.task_entities ?? []);
+  // Local override so the inline preview updates instantly after posting,
+  // without waiting for the next page load.
+  const [taskLatest, setTaskLatest] = useState<LatestComment>(task.latest_comment ?? null);
 
   useEffect(() => {
     setLocalEnts(task.task_entities ?? []);
+    setTaskLatest(task.latest_comment ?? null);
   }, [task.id]);
 
   function handleEntityUpdate(entityId: string, updates: Partial<TaskEntity>) {
@@ -1222,7 +1241,7 @@ function TaskCard({
             {/* Task-level comments — shows latest inline; click opens thread */}
             <div className="px-2 py-1 rounded border border-pebble flex items-center">
               <LatestCommentButton
-                latest={task.latest_comment}
+                latest={taskLatest}
                 onClick={() => setShowComments(true)}
               />
             </div>
@@ -1394,6 +1413,13 @@ function TaskCard({
           apiPath={`/api/v1/tasks/${task.id}/comments`}
           title={task.title}
           onClose={() => setShowComments(false)}
+          onPosted={(c) =>
+            setTaskLatest({
+              content: c.content,
+              author_name: c.author_name,
+              created_at: c.created_at,
+            })
+          }
         />
       )}
 
