@@ -837,11 +837,20 @@ function EntitySubtaskRow({
     setEntityStatus(newStatus);
     setUpdatingStatus(true);
     try {
-      await apiFetch(`/api/v1/tasks/${taskId}/entities/${entity.entity_id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ per_entity_status: newStatus }),
+      const updated = await apiFetch(
+        `/api/v1/tasks/${taskId}/entities/${entity.entity_id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ per_entity_status: newStatus }),
+        }
+      );
+      onEntityUpdate?.(entity.entity_id, {
+        per_entity_status: newStatus,
+        // Reflect the server's closure stamp instantly (null when reopened).
+        closed_at:
+          updated?.closed_at ??
+          (newStatus === "done" ? new Date().toISOString() : null),
       });
-      onEntityUpdate?.(entity.entity_id, { per_entity_status: newStatus });
     } catch {
       setEntityStatus(prev);
     } finally {
@@ -2525,7 +2534,20 @@ function TasksPageInner() {
   // Optimistic status update
   function handleStatusChange(taskId: string, newStatus: string) {
     setTasks((prev) =>
-      prev.map((t) => (t.id === taskId ? { ...t, status: newStatus } : t))
+      prev.map((t) =>
+        t.id === taskId
+          ? {
+              ...t,
+              status: newStatus,
+              // Mirror the backend's closure stamp optimistically; the next
+              // page load replaces this with the exact server timestamp.
+              closed_at:
+                newStatus === "done"
+                  ? t.closed_at ?? new Date().toISOString()
+                  : null,
+            }
+          : t
+      )
     );
   }
 
