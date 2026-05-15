@@ -889,6 +889,7 @@ function EntitySubtaskRow({
   async function handleEntityDateChange(e: React.ChangeEvent<HTMLInputElement>) {
     e.stopPropagation();
     const newDate = e.target.value;
+    const priorDate = entityEndDate;
     setEntityEndDate(newDate);
     if (!newDate) return;
     try {
@@ -896,7 +897,13 @@ function EntitySubtaskRow({
         method: "PATCH",
         body: JSON.stringify({ per_entity_end_date: newDate }),
       });
-      onEntityUpdate?.(entity.entity_id, { per_entity_end_date: newDate });
+      onEntityUpdate?.(entity.entity_id, {
+        per_entity_end_date: newDate,
+        // Mirror the backend's change-log insert so the ↻ counter updates live.
+        ...(newDate !== priorDate
+          ? { date_change_count: (entity.date_change_count ?? 0) + 1 }
+          : {}),
+      });
     } catch { /* silent */ }
   }
 
@@ -1134,10 +1141,12 @@ function TaskCard({
   // Local override so the inline preview updates instantly after posting,
   // without waiting for the next page load.
   const [taskLatest, setTaskLatest] = useState<LatestComment>(task.latest_comment ?? null);
+  const [dateChangeCount, setDateChangeCount] = useState(task.date_change_count ?? 0);
 
   useEffect(() => {
     setLocalEnts(task.task_entities ?? []);
     setTaskLatest(task.latest_comment ?? null);
+    setDateChangeCount(task.date_change_count ?? 0);
   }, [task.id]);
 
   function handleEntityUpdate(entityId: string, updates: Partial<TaskEntity>) {
@@ -1190,6 +1199,7 @@ function TaskCard({
 
   async function handleDueDateChange(e: React.ChangeEvent<HTMLInputElement>) {
     const newDate = e.target.value;
+    const priorDate = editDueDate;
     setEditDueDate(newDate);
     if (!newDate) return;
     setSavingDate(true);
@@ -1198,6 +1208,11 @@ function TaskCard({
         method: "PATCH",
         body: JSON.stringify({ due_date: newDate }),
       });
+      // Backend logs a change only when the date actually differs; mirror
+      // that here so the ↻ counter updates without a page reload.
+      if (newDate !== priorDate) {
+        setDateChangeCount((c) => c + 1);
+      }
     } catch { /* silent */ } finally {
       setSavingDate(false);
     }
@@ -1333,14 +1348,14 @@ function TaskCard({
                 disabled={savingDate}
                 className="border border-pebble rounded px-1.5 py-0.5 text-midnight focus:outline-none focus:border-ocean disabled:opacity-50"
               />
-              {(task.date_change_count ?? 0) > 0 && (
+              {dateChangeCount > 0 && (
                 <button
                   type="button"
                   onClick={() => setShowDateLog(true)}
                   title="Due date changed — view history"
                   className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-medium hover:bg-amber-200"
                 >
-                  ↻{task.date_change_count}
+                  ↻{dateChangeCount}
                 </button>
               )}
               <ClosedStamp at={task.closed_at} />
