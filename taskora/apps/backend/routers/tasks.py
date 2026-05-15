@@ -859,32 +859,33 @@ def recurring_mark_done(
 
 
 # ---------------------------------------------------------------------------
-# Entity comment endpoints
+# Comment endpoints — comments exist at three scopes:
+#   task-level    : /tasks/{id}/comments                       (entity & subtask NULL)
+#   entity-level  : /tasks/{id}/entities/{entity_id}/comments  (building/client row)
+#   subtask-level : /tasks/{id}/subtasks/{subtask_id}/comments (subtask/sub-subtask)
 # ---------------------------------------------------------------------------
 
 class CommentCreate(BaseModel):
     content: str
 
 
-@router.get("/{task_id}/entities/{entity_id}/comments")
-def list_entity_comments(
-    task_id: str,
-    entity_id: str,
-    user: dict = Depends(get_current_user),
-    sb: Client = Depends(get_supabase),
-):
-    """Return all comments scoped to a specific task entity, oldest first."""
-    _assert_task_access(sb, task_id, user["id"])
-    rows = (
+def _list_comments_scoped(sb: Client, task_id: str, *, entity_id=None, subtask_id=None):
+    """Return comments for a given scope, oldest first, with author names."""
+    q = (
         sb.table("comments")
         .select("id, content, user_id, created_at")
         .eq("task_id", task_id)
-        .eq("entity_id", entity_id)
         .order("created_at")
-        .execute()
-        .data
     )
-    # Resolve author names in one batch
+    if entity_id is not None:
+        q = q.eq("entity_id", entity_id)
+    elif subtask_id is not None:
+        q = q.eq("subtask_id", subtask_id)
+    else:
+        # task-level: neither scope set
+        q = q.is_("entity_id", "null").is_("subtask_id", "null")
+    rows = q.execute().data
+
     user_ids = list({r["user_id"] for r in rows if r.get("user_id")})
     name_map: dict = {}
     if user_ids:
@@ -896,6 +897,71 @@ def list_entity_comments(
     return rows
 
 
+def _create_comment_scoped(sb: Client, task_id: str, user_id: str, content: str,
+                           *, entity_id=None, subtask_id=None):
+    """Insert a comment for a given scope and return it with author name."""
+    if not content.strip():
+        raise HTTPException(status_code=422, detail="Comment content cannot be empty")
+    now = datetime.now(timezone.utc).isoformat()
+    payload: dict = {
+        "task_id": task_id,
+        "user_id": user_id,
+        "content": content.strip(),
+        "created_at": now,
+        "updated_at": now,
+    }
+    if entity_id is not None:
+        payload["entity_id"] = entity_id
+    if subtask_id is not None:
+        payload["subtask_id"] = subtask_id
+    result = sb.table("comments").insert(payload).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to create comment")
+    row = result.data[0]
+    user_row = sb.table("users").select("name").eq("id", user_id).execute().data
+    row["author_name"] = user_row[0].get("name", "") if user_row else ""
+    row["author_id"] = row.pop("user_id")
+    return row
+
+
+# ── Task-level ────────────────────────────────────────────────────────────────
+
+@router.get("/{task_id}/comments")
+@router.get("/{task_id}/comments/", include_in_schema=False)
+def list_task_comments(
+    task_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    _assert_task_access(sb, task_id, user["id"])
+    return _list_comments_scoped(sb, task_id)
+
+
+@router.post("/{task_id}/comments", status_code=201)
+@router.post("/{task_id}/comments/", status_code=201, include_in_schema=False)
+def create_task_comment(
+    task_id: str,
+    body: CommentCreate,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    _assert_task_access(sb, task_id, user["id"])
+    return _create_comment_scoped(sb, task_id, user["id"], body.content)
+
+
+# ── Entity-level ──────────────────────────────────────────────────────────────
+
+@router.get("/{task_id}/entities/{entity_id}/comments")
+def list_entity_comments(
+    task_id: str,
+    entity_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    _assert_task_access(sb, task_id, user["id"])
+    return _list_comments_scoped(sb, task_id, entity_id=entity_id)
+
+
 @router.post("/{task_id}/entities/{entity_id}/comments", status_code=201)
 def create_entity_comment(
     task_id: str,
@@ -904,27 +970,33 @@ def create_entity_comment(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    """Post a comment scoped to a specific task entity."""
-    if not body.content.strip():
-        raise HTTPException(status_code=422, detail="Comment content cannot be empty")
     _assert_task_access(sb, task_id, user["id"])
-    now = datetime.now(timezone.utc).isoformat()
-    result = sb.table("comments").insert({
-        "task_id": task_id,
-        "entity_id": entity_id,
-        "user_id": user["id"],
-        "content": body.content.strip(),
-        "created_at": now,
-        "updated_at": now,
-    }).execute()
-    if not result.data:
-        raise HTTPException(status_code=500, detail="Failed to create comment")
-    row = result.data[0]
-    # Resolve author name for the response
-    user_row = sb.table("users").select("name").eq("id", user["id"]).execute().data
-    row["author_name"] = user_row[0].get("name", "") if user_row else ""
-    row["author_id"] = row.pop("user_id")
-    return row
+    return _create_comment_scoped(sb, task_id, user["id"], body.content, entity_id=entity_id)
+
+
+# ── Subtask-level (covers sub-subtasks too) ──────────────────────────────────
+
+@router.get("/{task_id}/subtasks/{subtask_id}/comments")
+def list_subtask_comments(
+    task_id: str,
+    subtask_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    _assert_task_access(sb, task_id, user["id"])
+    return _list_comments_scoped(sb, task_id, subtask_id=subtask_id)
+
+
+@router.post("/{task_id}/subtasks/{subtask_id}/comments", status_code=201)
+def create_subtask_comment(
+    task_id: str,
+    subtask_id: str,
+    body: CommentCreate,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    _assert_task_access(sb, task_id, user["id"])
+    return _create_comment_scoped(sb, task_id, user["id"], body.content, subtask_id=subtask_id)
 
 
 class DependenciesUpdate(BaseModel):

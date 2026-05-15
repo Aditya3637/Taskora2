@@ -208,6 +208,7 @@ function SubtaskRow({
   const [updating, setUpdating] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [showAddChild, setShowAddChild] = useState(false);
+  const [showComments, setShowComments] = useState(false);
 
   // Schema caps nesting at 1 level: only top-level subtasks may have children.
   const isChild = !!subtask.parent_subtask_id;
@@ -305,6 +306,16 @@ function SubtaskRow({
           </span>
         )}
 
+        {/* Comments — every subtask & sub-subtask */}
+        <button
+          type="button"
+          onClick={() => setShowComments(true)}
+          className="text-steel/40 hover:text-ocean transition-colors flex-shrink-0"
+          title="Comments"
+        >
+          <MessageSquare className="w-3 h-3" />
+        </button>
+
         {/* Add-child button — only on parent rows */}
         {canAddChild && (
           <button
@@ -348,6 +359,14 @@ function SubtaskRow({
             />
           )}
         </div>
+      )}
+
+      {showComments && (
+        <CommentsPopup
+          apiPath={`/api/v1/tasks/${taskId}/subtasks/${subtask.id}/comments`}
+          title={subtask.title}
+          onClose={() => setShowComments(false)}
+        />
       )}
     </div>
   );
@@ -442,15 +461,15 @@ function AddSubtaskInline({
 
 // ── Comments Popup ────────────────────────────────────────────────────────────
 
+// Scope-agnostic: takes the comments API path + a display title so it can be
+// reused for task-level, entity-level, and subtask-level threads.
 function CommentsPopup({
-  taskId,
-  entityId,
-  entityName,
+  apiPath,
+  title,
   onClose,
 }: {
-  taskId: string;
-  entityId: string;
-  entityName: string;
+  apiPath: string;
+  title: string;
   onClose: () => void;
 }) {
   const [comments, setComments] = useState<Comment[]>([]);
@@ -461,9 +480,7 @@ function CommentsPopup({
   async function loadComments() {
     setLoading(true);
     try {
-      const data = await apiFetch(
-        `/api/v1/tasks/${taskId}/entities/${entityId}/comments`
-      );
+      const data = await apiFetch(apiPath);
       setComments(Array.isArray(data) ? data : []);
     } catch {
       /* silent */
@@ -474,20 +491,17 @@ function CommentsPopup({
 
   useEffect(() => {
     loadComments();
-  }, []);
+  }, [apiPath]);
 
   async function submitComment(e: React.FormEvent) {
     e.preventDefault();
     if (!newComment.trim()) return;
     setSubmitting(true);
     try {
-      await apiFetch(
-        `/api/v1/tasks/${taskId}/entities/${entityId}/comments`,
-        {
-          method: "POST",
-          body: JSON.stringify({ content: newComment.trim() }),
-        }
-      );
+      await apiFetch(apiPath, {
+        method: "POST",
+        body: JSON.stringify({ content: newComment.trim() }),
+      });
       setNewComment("");
       loadComments();
     } catch {
@@ -512,7 +526,7 @@ function CommentsPopup({
           <div className="flex items-center gap-2 min-w-0">
             <MessageSquare className="w-4 h-4 text-ocean flex-shrink-0" />
             <h3 className="font-semibold text-midnight text-sm truncate">
-              {entityName}
+              {title}
             </h3>
           </div>
           <button onClick={onClose} className="ml-2 flex-shrink-0">
@@ -766,9 +780,8 @@ function EntitySubtaskRow({
 
       {showComments && (
         <CommentsPopup
-          taskId={taskId}
-          entityId={entity.entity_id}
-          entityName={entity.entity_name ?? entity.entity_id}
+          apiPath={`/api/v1/tasks/${taskId}/entities/${entity.entity_id}/comments`}
+          title={entity.entity_name ?? entity.entity_id}
           onClose={() => setShowComments(false)}
         />
       )}
@@ -843,6 +856,7 @@ function TaskCard({
   onDelete: (taskId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [showComments, setShowComments] = useState(false);
   // B4: a single grouped fetch covers every entity in the task. by_entity is
   // keyed by entity_id; task_flat holds subtasks not scoped to an entity.
   const [grouped, setGrouped] = useState<SubtasksGrouped>({ by_entity: {}, task_flat: [] });
@@ -996,6 +1010,14 @@ function TaskCard({
           </div>
 
           <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
+            {/* Task-level comments — works for general, building & client tasks */}
+            <button
+              onClick={(e) => { e.stopPropagation(); setShowComments(true); }}
+              className="text-xs px-2 py-1 rounded border border-pebble text-steel/60 hover:text-ocean hover:border-ocean/40 transition-colors flex items-center gap-1"
+              title="Task comments"
+            >
+              <MessageSquare className="w-3.5 h-3.5" />
+            </button>
             {canDelete && (
               <button
                 onClick={handleDelete}
@@ -1146,6 +1168,14 @@ function TaskCard({
             </>
           )}
         </div>
+      )}
+
+      {showComments && (
+        <CommentsPopup
+          apiPath={`/api/v1/tasks/${task.id}/comments`}
+          title={task.title}
+          onClose={() => setShowComments(false)}
+        />
       )}
     </div>
   );
