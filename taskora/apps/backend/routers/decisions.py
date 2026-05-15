@@ -81,7 +81,8 @@ def take_decision(
         send_push_to_user(sb, body.delegate_to, "Task Delegated to You", task["title"], {"task_id": task_id})
 
     elif body.action == "escalate":
-        sb.table("tasks").update({"priority": "critical", "updated_at": now}).eq("id", task_id).execute()
+        # DB CHECK allows low/medium/high/urgent — 'critical' would be rejected.
+        sb.table("tasks").update({"priority": "urgent", "updated_at": now}).eq("id", task_id).execute()
         for s in stakeholders:
             send_push_to_user(sb, s["user_id"], "Task Escalated", task["title"],
                               {"task_id": task_id})

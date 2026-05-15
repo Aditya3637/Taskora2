@@ -45,10 +45,13 @@ class TaskCreate(BaseModel):
     description: Optional[str] = None
     initiative_id: Optional[str] = None
     primary_stakeholder_id: str
-    priority: Literal["low", "medium", "high", "critical"] = "medium"
+    # Must match the DB CHECK constraints (migration 002):
+    #   priority IN (low, medium, high, urgent)
+    #   entity_inheritance IN (inherited, overridden)
+    priority: Literal["low", "medium", "high", "urgent"] = "medium"
     due_date: Optional[date] = None
     date_mode: Literal["uniform", "per_entity"] = "uniform"
-    entity_inheritance: Literal["inherited", "custom"] = "inherited"
+    entity_inheritance: Literal["inherited", "overridden"] = "inherited"
     entities: List[TaskEntityCreate] = []
 
 
