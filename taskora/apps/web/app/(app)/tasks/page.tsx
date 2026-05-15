@@ -59,6 +59,8 @@ type TaskEntity = {
   entity_type?: string;
   per_entity_status?: string;
   per_entity_end_date?: string;
+  closed_at?: string | null;
+  date_change_count?: number;
 };
 
 type Stakeholder = {
@@ -78,6 +80,8 @@ type Task = {
   task_entities?: TaskEntity[];
   is_stale?: boolean;
   primary_stakeholder_id?: string;
+  closed_at?: string | null;
+  date_change_count?: number;
 };
 
 type Subtask = {
@@ -89,6 +93,17 @@ type Subtask = {
   parent_subtask_id?: string | null;
   scoped_entity_id?: string | null;
   scoped_entity_type?: string | null;
+  closed_at?: string | null;
+};
+
+type DateChange = {
+  id: string;
+  old_date: string | null;
+  new_date: string | null;
+  delay_days: number | null;
+  reason?: string | null;
+  changed_by_name?: string;
+  created_at: string;
 };
 
 // Shape returned by GET /tasks/{id}/subtasks-grouped (B4).
@@ -306,6 +321,8 @@ function SubtaskRow({
           </span>
         )}
 
+        <ClosedStamp at={subtask.closed_at} />
+
         {/* Comments — every subtask & sub-subtask */}
         <button
           type="button"
@@ -456,6 +473,139 @@ function AddSubtaskInline({
         Add
       </button>
     </form>
+  );
+}
+
+// ── Closure / date-change helpers ─────────────────────────────────────────────
+
+function fmtClosure(ts?: string | null): string {
+  if (!ts) return "";
+  return new Date(ts).toLocaleString(undefined, {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+// Small green closure stamp shown after a due date once an item is done.
+function ClosedStamp({ at }: { at?: string | null }) {
+  if (!at) return null;
+  return (
+    <span
+      className="text-[10px] text-green-700 bg-green-50 border border-green-200 rounded px-1.5 py-0.5 whitespace-nowrap flex-shrink-0"
+      title={`Closed ${new Date(at).toLocaleString()}`}
+    >
+      ✓ Closed {fmtClosure(at)}
+    </span>
+  );
+}
+
+// ── Date Change Log Popup ─────────────────────────────────────────────────────
+
+function DateChangeLogPopup({
+  apiPath,
+  title,
+  onClose,
+}: {
+  apiPath: string;
+  title: string;
+  onClose: () => void;
+}) {
+  const [rows, setRows] = useState<DateChange[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      setLoading(true);
+      try {
+        const data = await apiFetch(apiPath);
+        if (active) setRows(Array.isArray(data) ? data : []);
+      } catch {
+        /* silent */
+      } finally {
+        if (active) setLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [apiPath]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl shadow-xl w-full max-w-sm mx-4 flex flex-col"
+        style={{ maxHeight: "70vh" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-pebble flex-shrink-0">
+          <h3 className="font-semibold text-midnight text-sm truncate pr-2">
+            Due-date history — {title}
+          </h3>
+          <button onClick={onClose} className="flex-shrink-0">
+            <X className="w-4 h-4 text-steel hover:text-midnight" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2 min-h-0">
+          {loading && (
+            <p className="text-xs text-steel/50 text-center py-6">Loading…</p>
+          )}
+          {!loading && rows.length === 0 && (
+            <p className="text-xs text-steel/50 text-center py-6 italic">
+              No changes yet.
+            </p>
+          )}
+          {!loading &&
+            rows.map((r) => {
+              const delay = r.delay_days;
+              const delayLabel =
+                delay == null
+                  ? null
+                  : delay > 0
+                  ? `+${delay}d later`
+                  : delay < 0
+                  ? `${delay}d earlier`
+                  : "same day";
+              return (
+                <div key={r.id} className="bg-mist/50 rounded-lg px-3 py-2">
+                  <div className="flex items-center gap-1.5 text-xs text-midnight">
+                    <span className="text-steel/60">{r.old_date ?? "—"}</span>
+                    <span className="text-steel/40">→</span>
+                    <span className="font-medium">{r.new_date ?? "—"}</span>
+                    {delayLabel && (
+                      <span
+                        className={`ml-auto text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                          (delay ?? 0) > 0
+                            ? "bg-red-100 text-red-700"
+                            : (delay ?? 0) < 0
+                            ? "bg-green-100 text-green-700"
+                            : "bg-gray-100 text-gray-600"
+                        }`}
+                      >
+                        {delayLabel}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between gap-2 mt-1">
+                    <span className="text-[10px] text-steel/60">
+                      {r.changed_by_name || "Someone"}
+                    </span>
+                    <span className="text-[10px] text-steel/50">
+                      {fmtClosure(r.created_at)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -621,6 +771,7 @@ function EntitySubtaskRow({
   const [entityEndDate, setEntityEndDate] = useState(entity.per_entity_end_date?.slice(0, 10) ?? "");
   const [updatingStatus, setUpdatingStatus] = useState(false);
   const [showComments, setShowComments] = useState(false);
+  const [showDateLog, setShowDateLog] = useState(false);
 
   // Split parents from children for recursive rendering.
   const parentSubtasks = subtasks.filter((s) => !s.parent_subtask_id);
@@ -709,6 +860,21 @@ function EntitySubtaskRow({
           className="text-xs border border-pebble rounded px-1.5 py-0.5 text-midnight focus:outline-none focus:border-ocean flex-shrink-0"
         />
 
+        {/* Due-date change counter */}
+        {(entity.date_change_count ?? 0) > 0 && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); setShowDateLog(true); }}
+            title="Due date changed — view history"
+            className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-medium flex-shrink-0 hover:bg-amber-200"
+          >
+            ↻{entity.date_change_count}
+          </button>
+        )}
+
+        {/* Closure stamp */}
+        <ClosedStamp at={entity.closed_at} />
+
         {/* Comments button */}
         <button
           type="button"
@@ -785,6 +951,14 @@ function EntitySubtaskRow({
           onClose={() => setShowComments(false)}
         />
       )}
+
+      {showDateLog && (
+        <DateChangeLogPopup
+          apiPath={`/api/v1/tasks/${taskId}/date-changes?entity_id=${entity.entity_id}`}
+          title={entity.entity_name ?? entity.entity_id}
+          onClose={() => setShowDateLog(false)}
+        />
+      )}
     </div>
   );
 }
@@ -857,6 +1031,7 @@ function TaskCard({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showComments, setShowComments] = useState(false);
+  const [showDateLog, setShowDateLog] = useState(false);
   // B4: a single grouped fetch covers every entity in the task. by_entity is
   // keyed by entity_id; task_flat holds subtasks not scoped to an entity.
   const [grouped, setGrouped] = useState<SubtasksGrouped>({ by_entity: {}, task_flat: [] });
@@ -1063,6 +1238,17 @@ function TaskCard({
                 disabled={savingDate}
                 className="border border-pebble rounded px-1.5 py-0.5 text-midnight focus:outline-none focus:border-ocean disabled:opacity-50"
               />
+              {(task.date_change_count ?? 0) > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowDateLog(true)}
+                  title="Due date changed — view history"
+                  className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-medium hover:bg-amber-200"
+                >
+                  ↻{task.date_change_count}
+                </button>
+              )}
+              <ClosedStamp at={task.closed_at} />
             </label>
 
             <div className="flex items-center gap-1.5 flex-wrap flex-1 min-w-0">
@@ -1175,6 +1361,14 @@ function TaskCard({
           apiPath={`/api/v1/tasks/${task.id}/comments`}
           title={task.title}
           onClose={() => setShowComments(false)}
+        />
+      )}
+
+      {showDateLog && (
+        <DateChangeLogPopup
+          apiPath={`/api/v1/tasks/${task.id}/date-changes`}
+          title={task.title}
+          onClose={() => setShowDateLog(false)}
         />
       )}
     </div>

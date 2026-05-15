@@ -94,11 +94,33 @@ def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
         for r in sb.table("clients").select("id, name").in_("id", client_ids).execute().data:
             name_map[r["id"]] = r["name"]
 
+    # Batch the due-date-change counts: task-level (entity_id NULL) and per-entity.
+    log_rows = (
+        sb.table("task_date_change_log")
+        .select("task_id, entity_id")
+        .in_("task_id", task_ids)
+        .execute()
+        .data
+    )
+    task_change_count: dict = {}
+    entity_change_count: dict = {}
+    for lr in log_rows:
+        tid = lr.get("task_id")
+        eid = lr.get("entity_id")
+        if eid:
+            entity_change_count[(tid, eid)] = entity_change_count.get((tid, eid), 0) + 1
+        elif tid:
+            task_change_count[tid] = task_change_count.get(tid, 0) + 1
+
     for task in tasks:
         entities = entities_by_task.get(task["id"], [])
         for e in entities:
             e["entity_name"] = name_map.get(e["entity_id"], e["entity_id"])
+            e["date_change_count"] = entity_change_count.get(
+                (task["id"], e["entity_id"]), 0
+            )
         task["task_entities"] = entities
+        task["date_change_count"] = task_change_count.get(task["id"], 0)
     return tasks
 
 
@@ -327,6 +349,11 @@ def update_task(
     is_member = task_row[0]["primary_stakeholder_id"] == user["id"] or any(s["user_id"] == user["id"] for s in stakeholders)
     if not is_member:
         raise HTTPException(status_code=403, detail="Not a stakeholder")
+    # Snapshot current state BEFORE the update so we can detect transitions.
+    prior = sb.table("tasks").select("due_date, status, closed_at").eq("id", task_id).execute().data
+    prior_due_str = prior[0].get("due_date") if prior else None
+    prior_status = prior[0].get("status") if prior else None
+
     payload = {}
     if body.title is not None: payload["title"] = body.title
     if body.status is not None: payload["status"] = body.status
@@ -338,42 +365,28 @@ def update_task(
 
     now_iso = datetime.now(timezone.utc).isoformat()
     payload["updated_at"] = now_iso
+
+    # Closure timestamp: set when entering 'done', clear when leaving it.
+    if body.status is not None and body.status != prior_status:
+        if body.status == "done":
+            payload["closed_at"] = now_iso
+        elif prior_status == "done":
+            payload["closed_at"] = None
+
     result = sb.table("tasks").update(payload).eq("id", task_id).execute()
     updated = result.data[0] if result.data else {}
 
-    # Date change log + uniform subtask propagation
+    # Record the due-date change against the pre-update value.
     if body.due_date is not None:
-        old_row = sb.table("tasks").select("due_date, date_mode").eq("id", task_id).execute().data
-        old_date_str = old_row[0].get("due_date") if old_row else None
-        old_date = date.fromisoformat(old_date_str[:10]) if old_date_str else None
+        old_date = date.fromisoformat(prior_due_str[:10]) if prior_due_str else None
         if old_date != body.due_date:
-            delay = (body.due_date - old_date).days if old_date else None
             sb.table("task_date_change_log").insert({
                 "task_id": task_id,
                 "changed_by": user["id"],
                 "old_date": old_date.isoformat() if old_date else None,
                 "new_date": body.due_date.isoformat(),
-                "delay_days": delay,
+                "delay_days": (body.due_date - old_date).days if old_date else None,
             }).execute()
-
-        # Propagate to subtasks when date_mode == 'uniform'
-        date_mode = (old_row[0].get("date_mode") if old_row else None) or updated.get("date_mode")
-        if date_mode == "uniform":
-            subtasks = sb.table("subtasks").select("id, due_date").eq("task_id", task_id).execute().data
-            for sub in subtasks:
-                sub_old = sub.get("due_date")
-                if sub_old != body.due_date.isoformat():
-                    sb.table("subtasks").update({
-                        "due_date": body.due_date.isoformat(),
-                        "updated_at": now_iso,
-                    }).eq("id", sub["id"]).execute()
-                    sb.table("task_date_change_log").insert({
-                        "subtask_id": sub["id"],
-                        "changed_by": user["id"],
-                        "old_date": sub_old,
-                        "new_date": body.due_date.isoformat(),
-                        "delay_days": (body.due_date - date.fromisoformat(sub_old[:10])).days if sub_old else None,
-                    }).execute()
 
     return updated
 
@@ -388,10 +401,13 @@ def update_task_status(
     now = datetime.now(timezone.utc).isoformat()
 
     if body.entity_id is not None:
-        result = sb.table("task_entities").update({
-            "per_entity_status": body.status,
-            "updated_at": now,
-        }).eq("task_id", task_id).eq("entity_id", body.entity_id).execute()
+        ent_payload: dict = {"per_entity_status": body.status, "updated_at": now}
+        if body.status == "done":
+            ent_payload["closed_at"] = now
+        else:
+            ent_payload["closed_at"] = None
+        result = sb.table("task_entities").update(ent_payload).eq(
+            "task_id", task_id).eq("entity_id", body.entity_id).execute()
         if not result.data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -401,6 +417,7 @@ def update_task_status(
         update_payload: dict = {"status": body.status, "updated_at": now}
         if body.blocker_reason is not None:
             update_payload["blocker_reason"] = body.blocker_reason
+        update_payload["closed_at"] = now if body.status == "done" else None
         result = sb.table("tasks").update(update_payload).eq("id", task_id).execute()
         if not result.data:
             raise HTTPException(
@@ -546,7 +563,7 @@ def list_subtasks(
     query = (
         sb.table("subtasks")
         .select(
-            "id, title, status, assignee_id, created_at, "
+            "id, title, status, assignee_id, created_at, closed_at, "
             "scoped_entity_id, scoped_entity_type, parent_subtask_id"
         )
         .eq("task_id", task_id)
@@ -586,7 +603,7 @@ def list_subtasks_grouped(
     rows = (
         sb.table("subtasks")
         .select(
-            "id, title, status, assignee_id, created_at, "
+            "id, title, status, assignee_id, created_at, closed_at, "
             "scoped_entity_id, scoped_entity_type, parent_subtask_id"
         )
         .eq("task_id", task_id)
@@ -700,6 +717,18 @@ def update_task_entity(
     sb: Client = Depends(get_supabase),
 ):
     _assert_task_access(sb, task_id, user["id"])
+
+    prior = (
+        sb.table("task_entities")
+        .select("per_entity_status, per_entity_end_date")
+        .eq("task_id", task_id)
+        .eq("entity_id", entity_id)
+        .execute()
+        .data
+    )
+    prior_status = prior[0].get("per_entity_status") if prior else None
+    prior_due_str = prior[0].get("per_entity_end_date") if prior else None
+
     payload: dict = {}
     if body.per_entity_status is not None:
         payload["per_entity_status"] = body.per_entity_status
@@ -707,7 +736,16 @@ def update_task_entity(
         payload["per_entity_end_date"] = body.per_entity_end_date.isoformat()
     if not payload:
         raise HTTPException(status_code=422, detail="No fields to update")
-    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    payload["updated_at"] = now_iso
+
+    if body.per_entity_status is not None and body.per_entity_status != prior_status:
+        if body.per_entity_status == "done":
+            payload["closed_at"] = now_iso
+        elif prior_status == "done":
+            payload["closed_at"] = None
+
     result = (
         sb.table("task_entities")
         .update(payload)
@@ -715,6 +753,19 @@ def update_task_entity(
         .eq("entity_id", entity_id)
         .execute()
     )
+
+    if body.per_entity_end_date is not None:
+        old_date = date.fromisoformat(prior_due_str[:10]) if prior_due_str else None
+        if old_date != body.per_entity_end_date:
+            sb.table("task_date_change_log").insert({
+                "task_id": task_id,
+                "entity_id": entity_id,
+                "changed_by": user["id"],
+                "old_date": old_date.isoformat() if old_date else None,
+                "new_date": body.per_entity_end_date.isoformat(),
+                "delay_days": (body.per_entity_end_date - old_date).days if old_date else None,
+            }).execute()
+
     return result.data[0] if result.data else {}
 
 
@@ -730,7 +781,19 @@ def update_subtask(
     payload = {k: v for k, v in body.model_dump().items() if v is not None}
     if not payload:
         raise HTTPException(status_code=422, detail="No fields to update")
-    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    payload["updated_at"] = now_iso
+
+    if body.status is not None:
+        prior = sb.table("subtasks").select("status").eq("id", subtask_id).execute().data
+        prior_status = prior[0].get("status") if prior else None
+        if body.status != prior_status:
+            if body.status == "done":
+                payload["closed_at"] = now_iso
+            elif prior_status == "done":
+                payload["closed_at"] = None
+
     result = sb.table("subtasks").update(payload).eq("id", subtask_id).eq("task_id", task_id).execute()
     return result.data[0] if result.data else {}
 
@@ -997,6 +1060,45 @@ def create_subtask_comment(
 ):
     _assert_task_access(sb, task_id, user["id"])
     return _create_comment_scoped(sb, task_id, user["id"], body.content, subtask_id=subtask_id)
+
+
+# ---------------------------------------------------------------------------
+# Due-date change history
+# ---------------------------------------------------------------------------
+
+@router.get("/{task_id}/date-changes")
+def list_date_changes(
+    task_id: str,
+    entity_id: Optional[str] = Query(
+        default=None,
+        description="If set, return changes for that entity's due date; "
+                    "otherwise the task-level due-date history.",
+    ),
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Return the due-date change history (newest first) with changer names."""
+    _assert_task_access(sb, task_id, user["id"])
+    q = (
+        sb.table("task_date_change_log")
+        .select("id, old_date, new_date, delay_days, reason, changed_by, created_at")
+        .eq("task_id", task_id)
+        .order("created_at", desc=True)
+    )
+    if entity_id is not None:
+        q = q.eq("entity_id", entity_id)
+    else:
+        q = q.is_("entity_id", "null").is_("subtask_id", "null")
+    rows = q.execute().data
+
+    user_ids = list({r["changed_by"] for r in rows if r.get("changed_by")})
+    name_map: dict = {}
+    if user_ids:
+        for u in sb.table("users").select("id, name").in_("id", user_ids).execute().data:
+            name_map[u["id"]] = u.get("name") or ""
+    for r in rows:
+        r["changed_by_name"] = name_map.get(r.get("changed_by") or "", "")
+    return rows
 
 
 class DependenciesUpdate(BaseModel):
