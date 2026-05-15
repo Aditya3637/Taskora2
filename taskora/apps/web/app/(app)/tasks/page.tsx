@@ -81,6 +81,7 @@ type Task = {
   task_entities?: TaskEntity[];
   is_stale?: boolean;
   primary_stakeholder_id?: string;
+  created_at?: string;
   closed_at?: string | null;
   date_change_count?: number;
   latest_comment?: LatestComment;
@@ -503,6 +504,33 @@ function ClosedStamp({ at }: { at?: string | null }) {
       title={`Closed ${new Date(at).toLocaleString()}`}
     >
       ✓ Closed {fmtClosure(at)}
+    </span>
+  );
+}
+
+// Turnaround time: whole days from creation to closure (min 0).
+function tatDays(createdAt?: string, closedAt?: string | null): number | null {
+  if (!createdAt || !closedAt) return null;
+  const ms = new Date(closedAt).getTime() - new Date(createdAt).getTime();
+  if (Number.isNaN(ms)) return null;
+  return Math.max(0, Math.round(ms / 86_400_000));
+}
+
+function TatBadge({
+  createdAt,
+  closedAt,
+}: {
+  createdAt?: string;
+  closedAt?: string | null;
+}) {
+  const d = tatDays(createdAt, closedAt);
+  if (d === null) return null;
+  return (
+    <span
+      className="text-[10px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded px-1.5 py-0.5 whitespace-nowrap flex-shrink-0"
+      title={`Turnaround: ${d} day${d === 1 ? "" : "s"} from creation to closure`}
+    >
+      TAT {d}d
     </span>
   );
 }
@@ -1235,6 +1263,9 @@ function TaskCard({
                 <span className="text-xs text-steel">📅 {task.due_date}</span>
               )}
 
+              {/* Card-level closure stamp, right after the target date */}
+              <ClosedStamp at={task.closed_at} />
+
               {task.is_stale && (
                 <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
                   Needs Update
@@ -1281,6 +1312,9 @@ function TaskCard({
                 <ChevronRight className="w-3.5 h-3.5" />
               )}
             </button>
+
+            {/* Turnaround time — right-most, only once closed */}
+            <TatBadge createdAt={task.created_at} closedAt={task.closed_at} />
           </div>
         </div>
       </div>
