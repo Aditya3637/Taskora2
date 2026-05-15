@@ -61,6 +61,7 @@ type TaskEntity = {
   per_entity_end_date?: string;
   closed_at?: string | null;
   date_change_count?: number;
+  latest_comment?: LatestComment;
 };
 
 type Stakeholder = {
@@ -82,6 +83,7 @@ type Task = {
   primary_stakeholder_id?: string;
   closed_at?: string | null;
   date_change_count?: number;
+  latest_comment?: LatestComment;
 };
 
 type Subtask = {
@@ -94,6 +96,7 @@ type Subtask = {
   scoped_entity_id?: string | null;
   scoped_entity_type?: string | null;
   closed_at?: string | null;
+  latest_comment?: LatestComment;
 };
 
 type DateChange = {
@@ -123,6 +126,12 @@ type Comment = {
   author_id?: string;
   created_at: string;
 };
+
+type LatestComment = {
+  content: string;
+  author_name?: string;
+  created_at: string;
+} | null;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -323,15 +332,11 @@ function SubtaskRow({
 
         <ClosedStamp at={subtask.closed_at} />
 
-        {/* Comments — every subtask & sub-subtask */}
-        <button
-          type="button"
+        {/* Comments — every subtask & sub-subtask; shows latest inline */}
+        <LatestCommentButton
+          latest={subtask.latest_comment}
           onClick={() => setShowComments(true)}
-          className="text-steel/40 hover:text-ocean transition-colors flex-shrink-0"
-          title="Comments"
-        >
-          <MessageSquare className="w-3 h-3" />
-        </button>
+        />
 
         {/* Add-child button — only on parent rows */}
         {canAddChild && (
@@ -498,6 +503,39 @@ function ClosedStamp({ at }: { at?: string | null }) {
     >
       ✓ Closed {fmtClosure(at)}
     </span>
+  );
+}
+
+// Comment entry point: shows the latest comment inline (truncated) when one
+// exists, otherwise just the icon. Clicking always opens the full thread.
+function LatestCommentButton({
+  latest,
+  onClick,
+}: {
+  latest?: LatestComment;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      title={
+        latest
+          ? `${latest.author_name || "Someone"}: ${latest.content}`
+          : "Comments"
+      }
+      className="flex items-center gap-1 text-steel/50 hover:text-ocean transition-colors min-w-0 flex-shrink"
+    >
+      <MessageSquare className="w-3.5 h-3.5 flex-shrink-0" />
+      {latest && (
+        <span className="text-[10px] text-steel/70 truncate max-w-[160px]">
+          {latest.content}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -875,15 +913,11 @@ function EntitySubtaskRow({
         {/* Closure stamp */}
         <ClosedStamp at={entity.closed_at} />
 
-        {/* Comments button */}
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); setShowComments(true); }}
-          className="flex items-center gap-1 text-steel/50 hover:text-ocean transition-colors flex-shrink-0"
-          title="Comments"
-        >
-          <MessageSquare className="w-3.5 h-3.5" />
-        </button>
+        {/* Comments — shows latest inline */}
+        <LatestCommentButton
+          latest={entity.latest_comment}
+          onClick={() => setShowComments(true)}
+        />
 
         {/* Expand / subtask count */}
         <button
@@ -1185,14 +1219,13 @@ function TaskCard({
           </div>
 
           <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
-            {/* Task-level comments — works for general, building & client tasks */}
-            <button
-              onClick={(e) => { e.stopPropagation(); setShowComments(true); }}
-              className="text-xs px-2 py-1 rounded border border-pebble text-steel/60 hover:text-ocean hover:border-ocean/40 transition-colors flex items-center gap-1"
-              title="Task comments"
-            >
-              <MessageSquare className="w-3.5 h-3.5" />
-            </button>
+            {/* Task-level comments — shows latest inline; click opens thread */}
+            <div className="px-2 py-1 rounded border border-pebble flex items-center">
+              <LatestCommentButton
+                latest={task.latest_comment}
+                onClick={() => setShowComments(true)}
+              />
+            </div>
             {canDelete && (
               <button
                 onClick={handleDelete}

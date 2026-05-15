@@ -112,6 +112,34 @@ def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
         elif tid:
             task_change_count[tid] = task_change_count.get(tid, 0) + 1
 
+    # Latest comment per scope (task-level and per-entity), batched.
+    c_rows = (
+        sb.table("comments")
+        .select("task_id, entity_id, subtask_id, content, user_id, created_at")
+        .in_("task_id", task_ids)
+        .order("created_at", desc=True)
+        .execute()
+        .data
+    )
+    c_user_ids = list({c["user_id"] for c in c_rows if c.get("user_id")})
+    c_name_map: dict = {}
+    if c_user_ids:
+        for u in sb.table("users").select("id, name").in_("id", c_user_ids).execute().data:
+            c_name_map[u["id"]] = u.get("name") or ""
+    latest_task_comment: dict = {}
+    latest_entity_comment: dict = {}
+    for c in c_rows:  # already newest-first
+        tid, eid, sid = c.get("task_id"), c.get("entity_id"), c.get("subtask_id")
+        preview = {
+            "content": c["content"],
+            "author_name": c_name_map.get(c.get("user_id") or "", ""),
+            "created_at": c["created_at"],
+        }
+        if eid:
+            latest_entity_comment.setdefault((tid, eid), preview)
+        elif not sid:
+            latest_task_comment.setdefault(tid, preview)
+
     for task in tasks:
         entities = entities_by_task.get(task["id"], [])
         for e in entities:
@@ -119,8 +147,12 @@ def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
             e["date_change_count"] = entity_change_count.get(
                 (task["id"], e["entity_id"]), 0
             )
+            e["latest_comment"] = latest_entity_comment.get(
+                (task["id"], e["entity_id"])
+            )
         task["task_entities"] = entities
         task["date_change_count"] = task_change_count.get(task["id"], 0)
+        task["latest_comment"] = latest_task_comment.get(task["id"])
     return tasks
 
 
@@ -620,6 +652,34 @@ def list_subtasks_grouped(
             name_map[r["id"]] = r.get("name") or ""
     for s in rows:
         s["assignee_name"] = name_map.get(s.get("assignee_id") or "", "")
+
+    # Latest comment per subtask, batched.
+    sub_ids = [s["id"] for s in rows]
+    latest_sub_comment: dict = {}
+    if sub_ids:
+        c_rows = (
+            sb.table("comments")
+            .select("subtask_id, content, user_id, created_at")
+            .in_("subtask_id", sub_ids)
+            .order("created_at", desc=True)
+            .execute()
+            .data
+        )
+        c_uids = list({c["user_id"] for c in c_rows if c.get("user_id")})
+        c_names: dict = {}
+        if c_uids:
+            for u in sb.table("users").select("id, name").in_("id", c_uids).execute().data:
+                c_names[u["id"]] = u.get("name") or ""
+        for c in c_rows:  # newest-first
+            sid = c.get("subtask_id")
+            if sid:
+                latest_sub_comment.setdefault(sid, {
+                    "content": c["content"],
+                    "author_name": c_names.get(c.get("user_id") or "", ""),
+                    "created_at": c["created_at"],
+                })
+    for s in rows:
+        s["latest_comment"] = latest_sub_comment.get(s["id"])
 
     by_entity: dict = {}
     task_flat: list = []
