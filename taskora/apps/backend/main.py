@@ -51,28 +51,17 @@ app.include_router(onboarding.router)
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
+    # Log the full traceback server-side only. Returning it in the response
+    # body (previous behaviour) leaked file paths, vendored-lib layout, DB
+    # constraint names and query internals to any caller.
     tb = traceback.format_exc()
     print(f"UNHANDLED 500: {request.method} {request.url}\n{tb}")
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc), "traceback": tb},
+        content={"detail": "Internal server error"},
     )
 
 
 @app.get("/health", tags=["meta"])
 def health():
     return {"status": "ok", "version": app.version}
-
-
-@app.get("/debug/db", tags=["meta"])
-def debug_db():
-    from supabase import create_client
-    from config import get_settings as _gs
-    s = _gs()
-    try:
-        sb = create_client(s.supabase_url, s.supabase_service_key)
-        result = sb.table("businesses").select("id").limit(1).execute()
-        return {"ok": True, "data": result.data, "key_prefix": s.supabase_service_key[:15]}
-    except Exception as e:
-        import traceback as _tb
-        return {"ok": False, "error": str(e), "traceback": _tb.format_exc(), "key_prefix": s.supabase_service_key[:15]}

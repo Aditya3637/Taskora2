@@ -46,6 +46,20 @@ class ProgramUpdate(BaseModel):
     color: Optional[str] = None
     status: Optional[str] = None
 
+    @field_validator("name")
+    @classmethod
+    def name_valid(cls, v: Optional[str]) -> Optional[str]:
+        # Mirror ProgramCreate's rule. Create rejected blank/over-long names but
+        # update silently accepted them (whitespace-only, 500-char names).
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            raise ValueError("name cannot be empty")
+        if len(v) > 100:
+            raise ValueError("name cannot exceed 100 characters")
+        return v
+
     @field_validator("status")
     @classmethod
     def valid_status(cls, v: Optional[str]) -> Optional[str]:

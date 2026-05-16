@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
-from deps import get_supabase, get_member_role
+from deps import get_supabase, get_member_role, require_member
 from notifications import send_push_to_user
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
@@ -299,6 +299,40 @@ def create_task(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
+    # Authorization + integrity gate. A task lives under an initiative, which
+    # lives under a business. Previously this endpoint had NO auth at all: any
+    # authenticated user could create a task under *any* initiative_id (a
+    # cross-tenant IDOR), and bad/absent ids hit DB FK/NOT-NULL violations that
+    # surfaced as raw 500s. The caller must be a member of the initiative's
+    # business, and the primary stakeholder must be a member of it too.
+    uid = user["id"]
+    if not body.initiative_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="initiative_id is required",
+        )
+    init_rows = (
+        sb.table("initiatives")
+        .select("business_id")
+        .eq("id", body.initiative_id)
+        .execute()
+        .data
+    )
+    if not init_rows:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="Initiative not found")
+    business_id = init_rows[0]["business_id"]
+    require_member(sb, business_id, uid)  # 403 if caller not in this workspace
+    # Caller is a member (just verified). Only re-check when assigning the task
+    # to someone else, to keep the common self-assignment path single-query.
+    if body.primary_stakeholder_id != uid and get_member_role(
+        sb, business_id, body.primary_stakeholder_id
+    ) is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="primary_stakeholder_id must be a member of this workspace",
+        )
+
     result = sb.table("tasks").insert({
         "title": body.title,
         "description": body.description,
