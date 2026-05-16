@@ -1383,7 +1383,7 @@ def _list_comments_scoped(sb: Client, task_id: str, *, entity_id=None, subtask_i
     """Return comments for a given scope, oldest first, with author names."""
     q = (
         sb.table("comments")
-        .select("id, content, user_id, created_at")
+        .select("id, content, kind, user_id, created_at")
         .eq("task_id", task_id)
         .order("created_at")
     )
