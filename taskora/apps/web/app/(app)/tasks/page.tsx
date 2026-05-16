@@ -1586,6 +1586,8 @@ function TaskCard({
   myRole,
   onStatusChange,
   onDelete,
+  focusTaskId,
+  focusSubtaskId,
 }: {
   task: Task;
   members: Member[];
@@ -1593,8 +1595,25 @@ function TaskCard({
   myRole: string;
   onStatusChange: (taskId: string, newStatus: string) => void;
   onDelete: (taskId: string) => void;
+  focusTaskId?: string | null;
+  focusSubtaskId?: string | null;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const isFocused = !!focusTaskId && task.id === focusTaskId;
+  const [expanded, setExpanded] = useState(isFocused);
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  // Deep-link target (Daily Brief / War Room "↗ open"): open this card,
+  // scroll it into view, and briefly ring it so the eye lands on it. When a
+  // subtask is also targeted, the subtasks panel is opened too.
+  useEffect(() => {
+    if (!isFocused) return;
+    setExpanded(true);
+    if (focusSubtaskId) setShowComments(false);
+    const id = window.setTimeout(() => {
+      cardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 80);
+    return () => window.clearTimeout(id);
+  }, [isFocused, focusSubtaskId]);
   const [showComments, setShowComments] = useState(false);
   const [showDateLog, setShowDateLog] = useState(false);
   // B4: a single grouped fetch covers every entity in the task. by_entity is
@@ -1776,13 +1795,14 @@ function TaskCard({
 
   return (
     <div
-      className={`rounded-xl border border-l-4 shadow-sm ${
+      ref={cardRef}
+      className={`rounded-xl border border-l-4 shadow-sm scroll-mt-20 ${
         PRIORITY_BORDER[task.priority] ?? "border-l-gray-300"
       } ${
         taskRejected
           ? "bg-red-50 border-red-200"
           : "bg-white border-pebble"
-      }`}
+      } ${isFocused ? "ring-2 ring-ocean ring-offset-2" : ""}`}
     >
       <div className="p-4">
         <div className="flex items-start justify-between gap-3">
@@ -2846,6 +2866,8 @@ function InitiativeGroup({
   highlighted,
   onStatusChange,
   onTaskDeleted,
+  focusTaskId,
+  focusSubtaskId,
 }: {
   initiative: MyInitiative | null; // null = "Unlinked"
   tasks: Task[];
@@ -2855,9 +2877,12 @@ function InitiativeGroup({
   highlighted: boolean;
   onStatusChange: (taskId: string, newStatus: string) => void;
   onTaskDeleted: (taskId: string) => void;
+  focusTaskId?: string | null;
+  focusSubtaskId?: string | null;
 }) {
   const groupRef = useRef<HTMLDivElement>(null);
-  const [collapsed, setCollapsed] = useState(!highlighted);
+  const containsFocus = !!focusTaskId && tasks.some((t) => t.id === focusTaskId);
+  const [collapsed, setCollapsed] = useState(!highlighted && !containsFocus);
 
   // Auto-scroll to highlighted group
   useEffect(() => {
@@ -2865,6 +2890,12 @@ function InitiativeGroup({
       groupRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   }, [highlighted]);
+
+  // A deep-linked task lives in this group → make sure it's open so the
+  // card can reveal & scroll itself.
+  useEffect(() => {
+    if (containsFocus) setCollapsed(false);
+  }, [containsFocus]);
 
   const doneCount = tasks.filter((t) => t.status === "done").length;
   const total = tasks.length;
@@ -2951,6 +2982,8 @@ function InitiativeGroup({
                 myRole={myRole}
                 onStatusChange={onStatusChange}
                 onDelete={onTaskDeleted}
+                focusTaskId={focusTaskId}
+                focusSubtaskId={focusSubtaskId}
               />
             ))
           )}
@@ -3023,6 +3056,8 @@ function TasksPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const highlightInitiativeId = searchParams.get("initiative");
+  const focusTaskId = searchParams.get("task");
+  const focusSubtaskId = searchParams.get("subtask");
 
   const PAGE_SIZE = 20;
 
@@ -3290,6 +3325,8 @@ function TasksPageInner() {
                 highlighted={highlightInitiativeId === initId}
                 onStatusChange={handleStatusChange}
                 onTaskDeleted={handleTaskDelete}
+                focusTaskId={focusTaskId}
+                focusSubtaskId={focusSubtaskId}
               />
             ))}
 
@@ -3305,6 +3342,8 @@ function TasksPageInner() {
                 highlighted={false}
                 onStatusChange={handleStatusChange}
                 onTaskDeleted={handleTaskDelete}
+                focusTaskId={focusTaskId}
+                focusSubtaskId={focusSubtaskId}
               />
             )}
 
