@@ -180,6 +180,42 @@ def _approver_ids_by_task(sb: Client, task_ids: list[str]) -> dict:
     return out
 
 
+def _days_overdue(due: str | None, status: str | None, today: str) -> int:
+    if not due or status in _DONE:
+        return 0
+    try:
+        d = date.fromisoformat(due[:10])
+    except ValueError:
+        return 0
+    n = (date.fromisoformat(today) - d).days
+    return n if n > 0 else 0
+
+
+def _workload_bucket(t: dict, today: str) -> str:
+    """One mutually-exclusive segment per task for the stacked load bar."""
+    s = t.get("status")
+    if s in _DONE:
+        return "done"
+    due = t.get("due_date") or ""
+    if due and due < today:
+        return "overdue"
+    if s == "blocked":
+        return "blocked"
+    if s == "pending_decision":
+        return "pending_decision"
+    return "open"
+
+
+def _spotlight_key(t: dict, today: str):
+    """Most-needs-attention first: overdue (by days) > blocked > decision >
+    reopened, then soonest due."""
+    s = t.get("status")
+    od = _days_overdue(t.get("due_date"), s, today)
+    pr = (4 if od else 3 if s == "blocked" else 2 if s == "pending_decision"
+          else 1 if s == "reopened" else 0)
+    return (-pr, -od, t.get("due_date") or "9999-12-31")
+
+
 _PUSH_STATES = ("pending_decision", "blocked", "reopened")
 
 
@@ -253,6 +289,29 @@ def get_board(
         if cur is None or r.get("role") in ("owner", "admin"):
             member_meta[r["user_id"]] = r
 
+    today = date.today().isoformat()
+
+    # Initiative aggregates over the whole scope (so completion% is the real
+    # initiative figure, not just this person's slice). One pass, no queries.
+    init_agg: dict = {}
+    for t in tasks:
+        iid = t.get("initiative_id")
+        if not iid:
+            continue
+        a = init_agg.setdefault(
+            iid, {"total": 0, "done": 0, "open": 0, "overdue": 0, "blocked": 0})
+        a["total"] += 1
+        s = t.get("status")
+        due = t.get("due_date") or ""
+        if s in _DONE:
+            a["done"] += 1
+        else:
+            a["open"] += 1
+            if due and due < today:
+                a["overdue"] += 1
+            if s == "blocked":
+                a["blocked"] += 1
+
     people = []
     for pid in sorted(owner_ids):
         owned = [t for t in tasks if t.get("primary_stakeholder_id") == pid]
@@ -263,12 +322,61 @@ def get_board(
         counts = _count(owned, approving)
         led = [i for i in init_meta.values()
                if i.get("owner_id") == pid or i.get("primary_stakeholder_id") == pid]
+        led_ids = {i["id"] for i in led}
         prog_ids = {init_meta[t["initiative_id"]].get("program_id")
                     for t in owned
                     if t.get("initiative_id") in init_meta}
         prog_ids |= {i.get("program_id") for i in led}
         prog_ids.discard(None)
         mm = member_meta.get(pid, {})
+
+        # Workload bar segments (mutually exclusive).
+        workload = {"overdue": 0, "blocked": 0, "pending_decision": 0,
+                    "open": 0, "done": 0}
+        for t in owned:
+            workload[_workload_bucket(t, today)] += 1
+
+        # Spotlight: the 3 owned tasks that most need attention.
+        active = [t for t in owned if t.get("status") not in _DONE]
+        active.sort(key=lambda t: _spotlight_key(t, today))
+        spotlight = [{
+            "id": t["id"],
+            "title": t.get("title") or "Untitled",
+            "status": t.get("status"),
+            "column": _column_of(t),
+            "days_overdue": _days_overdue(t.get("due_date"), t.get("status"), today),
+            "initiative_name": (init_meta.get(t.get("initiative_id") or "", {})
+                                .get("name")),
+            "link": make_link(t),
+        } for t in active[:3]]
+
+        # Initiatives the person drives or has owned work in.
+        person_iids = led_ids | {t.get("initiative_id") for t in owned
+                                 if t.get("initiative_id")}
+        person_iids.discard(None)
+        inits = []
+        for iid in person_iids:
+            im = init_meta.get(iid)
+            if not im:
+                continue
+            a = init_agg.get(iid, {"total": 0, "done": 0, "open": 0,
+                                   "overdue": 0, "blocked": 0})
+            inits.append({
+                "initiative_id": iid,
+                "name": im.get("name") or "Untitled",
+                "leads": iid in led_ids,
+                "completion_pct": (round(a["done"] / a["total"] * 100)
+                                   if a["total"] else 0),
+                "open": a["open"],
+                "overdue": a["overdue"],
+                "blocked": a["blocked"],
+            })
+        inits.sort(key=lambda i: (not i["leads"], -i["overdue"],
+                                  -i["open"], i["name"].lower()))
+
+        last_active = max((t.get("updated_at") or "" for t in owned),
+                          default="") or None
+
         people.append({
             "user_id": pid,
             "name": name_map.get(pid, ""),
@@ -279,6 +387,10 @@ def get_board(
             "push_score": _push_score(counts),
             "initiatives_led": len(led),
             "programs_touched": len(prog_ids),
+            "last_active": last_active,
+            "workload": workload,
+            "spotlight": spotlight,
+            "initiatives": inits[:4],
         })
     people.sort(key=lambda p: (-p["push_score"], p["name"].lower()))
 

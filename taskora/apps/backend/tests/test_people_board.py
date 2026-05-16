@@ -156,6 +156,30 @@ def test_counts_and_push_score_ordering(sb):
 
 # ── Focus ────────────────────────────────────────────────────────────────────
 
+def test_gallery_card_detail(sb):
+    _CUR["u"] = OWNER
+    b = client.get("/api/v1/people/board").json()
+    a = next(p for p in b["people"] if p["user_id"] == ALICE)
+
+    assert a["workload"] == {"overdue": 1, "blocked": 1,
+                             "pending_decision": 1, "open": 0, "done": 1}
+
+    # Spotlight: most-urgent first (overdue T1, then blocked T2, then T3),
+    # Done T4 excluded.
+    assert [s["id"] for s in a["spotlight"]] == ["T1", "T2", "T3"]
+    assert a["spotlight"][0]["days_overdue"] == 10
+    assert a["spotlight"][0]["initiative_name"] == "Energy"
+    assert a["spotlight"][0]["link"]["task_id"] == "T1"
+
+    # Initiative completion is the real figure over the whole scope.
+    ini = next(i for i in a["initiatives"] if i["initiative_id"] == "INI")
+    assert ini["name"] == "Energy" and ini["leads"] is True
+    assert ini["completion_pct"] == 25  # 1 of 4 done (T4)
+    assert ini["open"] == 3 and ini["overdue"] == 1 and ini["blocked"] == 1
+
+    assert a["last_active"] is not None
+
+
 def test_focus_groups_program_initiative_and_roles(sb):
     _CUR["u"] = OWNER
     f = client.get(f"/api/v1/people/board/{ALICE}").json()
