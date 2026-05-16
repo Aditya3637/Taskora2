@@ -6,6 +6,7 @@ from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
 from deps import get_supabase, get_member_role
+from notifications import send_push_to_user
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
 
@@ -463,11 +464,18 @@ def update_task(
     payload["updated_at"] = now_iso
 
     # Closure timestamp: set when entering 'done', clear when leaving it.
+    # Approval is orthogonal — Done always anchors closed_at (the TAT), and
+    # additionally enters 'pending' when an approver exists at this scope.
     if body.status is not None and body.status != prior_status:
         if body.status == "done":
             payload["closed_at"] = now_iso
-        elif prior_status == "done":
-            payload["closed_at"] = None
+            payload["approval_state"] = (
+                "pending" if _scope_has_approver(sb, task_id, "task") else "none"
+            )
+        else:
+            if prior_status == "done":
+                payload["closed_at"] = None
+            payload["approval_state"] = "none"
 
     result = sb.table("tasks").update(payload).eq("id", task_id).execute()
     updated = result.data[0] if result.data else {}
@@ -500,8 +508,14 @@ def update_task_status(
         ent_payload: dict = {"per_entity_status": body.status, "updated_at": now}
         if body.status == "done":
             ent_payload["closed_at"] = now
+            ent_payload["approval_state"] = (
+                "pending"
+                if _scope_has_approver(sb, task_id, "entity", entity_id=body.entity_id)
+                else "none"
+            )
         else:
             ent_payload["closed_at"] = None
+            ent_payload["approval_state"] = "none"
         result = sb.table("task_entities").update(ent_payload).eq(
             "task_id", task_id).eq("entity_id", body.entity_id).execute()
         if not result.data:
@@ -513,7 +527,14 @@ def update_task_status(
         update_payload: dict = {"status": body.status, "updated_at": now}
         if body.blocker_reason is not None:
             update_payload["blocker_reason"] = body.blocker_reason
-        update_payload["closed_at"] = now if body.status == "done" else None
+        if body.status == "done":
+            update_payload["closed_at"] = now
+            update_payload["approval_state"] = (
+                "pending" if _scope_has_approver(sb, task_id, "task") else "none"
+            )
+        else:
+            update_payload["closed_at"] = None
+            update_payload["approval_state"] = "none"
         result = sb.table("tasks").update(update_payload).eq("id", task_id).execute()
         if not result.data:
             raise HTTPException(
@@ -584,6 +605,45 @@ def _assert_stakeholder(sb: Client, task_id: str, user_id: str):
     s = sb.table("task_stakeholders").select("user_id").eq("task_id", task_id).eq("user_id", user_id).execute().data
     if not s:
         raise HTTPException(status_code=403, detail="Only a task stakeholder can manage followers/approvers")
+
+
+def _scope_has_approver(sb: Client, task_id: str, scope_type: str,
+                        *, subtask_id=None, entity_id=None) -> bool:
+    """True if at least one approver is assigned at the given scope.
+
+    When true, marking that item Done routes it through approval_state='pending'
+    instead of closing outright.
+    """
+    q = (
+        sb.table("item_watchers")
+        .select("id")
+        .eq("task_id", task_id)
+        .eq("scope_type", scope_type)
+        .eq("role", "approver")
+    )
+    if scope_type == "subtask":
+        q = q.eq("subtask_id", subtask_id)
+    elif scope_type == "entity":
+        q = q.eq("entity_id", entity_id)
+    return bool(q.limit(1).execute().data)
+
+
+def _is_scope_approver(sb: Client, task_id: str, user_id: str, scope_type: str,
+                       *, subtask_id=None, entity_id=None) -> bool:
+    """True if this user is an approver on that exact scope."""
+    q = (
+        sb.table("item_watchers")
+        .select("id")
+        .eq("task_id", task_id)
+        .eq("scope_type", scope_type)
+        .eq("role", "approver")
+        .eq("user_id", user_id)
+    )
+    if scope_type == "subtask":
+        q = q.eq("subtask_id", subtask_id)
+    elif scope_type == "entity":
+        q = q.eq("entity_id", entity_id)
+    return bool(q.limit(1).execute().data)
 
 
 @router.get("/{task_id}/watchers")
@@ -667,6 +727,136 @@ def remove_watcher(
 ):
     _assert_stakeholder(sb, task_id, user["id"])
     sb.table("item_watchers").delete().eq("id", watcher_id).eq("task_id", task_id).execute()
+
+
+# ---------------------------------------------------------------------------
+# Approve / Reject — an approver finalises a 'pending' item. First action wins.
+# ---------------------------------------------------------------------------
+
+class ApprovalAction(BaseModel):
+    scope_type: Literal["task", "subtask", "entity"]
+    action: Literal["approve", "reject"]
+    reason: Optional[str] = None
+    subtask_id: Optional[str] = None
+    entity_id: Optional[str] = None
+
+
+@router.post("/{task_id}/approvals", status_code=201)
+@router.post("/{task_id}/approvals/", status_code=201, include_in_schema=False)
+def act_on_approval(
+    task_id: str,
+    body: ApprovalAction,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    uid = user["id"]
+    if not _is_scope_approver(
+        sb, task_id, uid, body.scope_type,
+        subtask_id=body.subtask_id, entity_id=body.entity_id,
+    ):
+        raise HTTPException(status_code=403, detail="You are not an approver on this item")
+
+    # Resolve the target row and its current approval_state.
+    if body.scope_type == "task":
+        rows = sb.table("tasks").select("approval_state").eq("id", task_id).execute().data
+    elif body.scope_type == "subtask":
+        if not body.subtask_id:
+            raise HTTPException(status_code=422, detail="subtask_id required")
+        rows = (
+            sb.table("subtasks").select("approval_state")
+            .eq("id", body.subtask_id).eq("task_id", task_id).execute().data
+        )
+    else:
+        if not body.entity_id:
+            raise HTTPException(status_code=422, detail="entity_id required")
+        rows = (
+            sb.table("task_entities").select("approval_state")
+            .eq("task_id", task_id).eq("entity_id", body.entity_id).execute().data
+        )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Target item not found")
+
+    # First-action-wins: a later approver finds it already resolved.
+    if rows[0].get("approval_state") != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Item is not awaiting approval (state: {rows[0].get('approval_state')})",
+        )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    c_entity = body.entity_id if body.scope_type == "entity" else None
+    c_subtask = body.subtask_id if body.scope_type == "subtask" else None
+
+    if body.action == "reject":
+        reason = (body.reason or "").strip()
+        if not reason:
+            raise HTTPException(status_code=422, detail="A reason is required to reject")
+        if body.scope_type == "task":
+            sb.table("tasks").update({
+                "approval_state": "rejected", "status": "reopened",
+                "closed_at": None, "updated_at": now_iso,
+            }).eq("id", task_id).execute()
+        elif body.scope_type == "subtask":
+            sb.table("subtasks").update({
+                "approval_state": "rejected", "status": "reopened",
+                "closed_at": None, "updated_at": now_iso,
+            }).eq("id", body.subtask_id).eq("task_id", task_id).execute()
+        else:
+            sb.table("task_entities").update({
+                "approval_state": "rejected", "per_entity_status": "reopened",
+                "closed_at": None, "updated_at": now_iso,
+            }).eq("task_id", task_id).eq("entity_id", body.entity_id).execute()
+        # Required reason lands in the item's own thread, red-highlighted.
+        _create_comment_scoped(
+            sb, task_id, uid, reason,
+            entity_id=c_entity, subtask_id=c_subtask, kind="rejection",
+        )
+    else:  # approve — TAT/closed_at stay put; only the approval layer changes.
+        if body.scope_type == "task":
+            sb.table("tasks").update({
+                "approval_state": "approved", "updated_at": now_iso,
+            }).eq("id", task_id).execute()
+        elif body.scope_type == "subtask":
+            sb.table("subtasks").update({
+                "approval_state": "approved", "updated_at": now_iso,
+            }).eq("id", body.subtask_id).eq("task_id", task_id).execute()
+        else:
+            sb.table("task_entities").update({
+                "approval_state": "approved", "updated_at": now_iso,
+            }).eq("task_id", task_id).eq("entity_id", body.entity_id).execute()
+        _create_comment_scoped(
+            sb, task_id, uid, (body.reason or "").strip() or "Approved.",
+            entity_id=c_entity, subtask_id=c_subtask, kind="approval",
+        )
+
+    sb.table("approval_log").insert({
+        "task_id": task_id,
+        "scope_type": body.scope_type,
+        "subtask_id": c_subtask,
+        "entity_id": c_entity,
+        "actor_id": uid,
+        "action": body.action,
+        "reason": (body.reason or "").strip() or None,
+        "created_at": now_iso,
+    }).execute()
+
+    # Notify the task owner that their item was approved/rejected.
+    owner_rows = sb.table("tasks").select("primary_stakeholder_id, title").eq("id", task_id).execute().data
+    if owner_rows:
+        owner_id = owner_rows[0].get("primary_stakeholder_id")
+        if owner_id and owner_id != uid:
+            verb = "approved" if body.action == "approve" else "rejected"
+            send_push_to_user(
+                sb, owner_id,
+                f"Item {verb}",
+                owner_rows[0].get("title") or "Your task",
+                {"task_id": task_id},
+            )
+
+    return {
+        "ok": True,
+        "approval_state": "approved" if body.action == "approve" else "rejected",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -986,8 +1176,15 @@ def update_task_entity(
     if body.per_entity_status is not None and body.per_entity_status != prior_status:
         if body.per_entity_status == "done":
             payload["closed_at"] = now_iso
-        elif prior_status == "done":
-            payload["closed_at"] = None
+            payload["approval_state"] = (
+                "pending"
+                if _scope_has_approver(sb, task_id, "entity", entity_id=entity_id)
+                else "none"
+            )
+        else:
+            if prior_status == "done":
+                payload["closed_at"] = None
+            payload["approval_state"] = "none"
 
     result = (
         sb.table("task_entities")
@@ -1034,8 +1231,15 @@ def update_subtask(
         if body.status != prior_status:
             if body.status == "done":
                 payload["closed_at"] = now_iso
-            elif prior_status == "done":
-                payload["closed_at"] = None
+                payload["approval_state"] = (
+                    "pending"
+                    if _scope_has_approver(sb, task_id, "subtask", subtask_id=subtask_id)
+                    else "none"
+                )
+            else:
+                if prior_status == "done":
+                    payload["closed_at"] = None
+                payload["approval_state"] = "none"
 
     result = sb.table("subtasks").update(payload).eq("id", subtask_id).eq("task_id", task_id).execute()
     return result.data[0] if result.data else {}
@@ -1204,7 +1408,7 @@ def _list_comments_scoped(sb: Client, task_id: str, *, entity_id=None, subtask_i
 
 
 def _create_comment_scoped(sb: Client, task_id: str, user_id: str, content: str,
-                           *, entity_id=None, subtask_id=None):
+                           *, entity_id=None, subtask_id=None, kind: str = "note"):
     """Insert a comment for a given scope and return it with author name."""
     if not content.strip():
         raise HTTPException(status_code=422, detail="Comment content cannot be empty")
@@ -1213,6 +1417,7 @@ def _create_comment_scoped(sb: Client, task_id: str, user_id: str, content: str,
         "task_id": task_id,
         "user_id": user_id,
         "content": content.strip(),
+        "kind": kind,
         "created_at": now,
         "updated_at": now,
     }
