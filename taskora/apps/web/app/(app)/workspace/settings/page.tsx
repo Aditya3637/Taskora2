@@ -39,6 +39,7 @@ type Member = {
   name: string;
   role: "owner" | "admin" | "member";
   joined_at: string;
+  can_view_people_board?: boolean;
 };
 
 type Invite = {
@@ -131,6 +132,23 @@ export default function WorkspaceSettingsPage() {
         prev.map((m) => (m.user_id === targetUserId ? { ...m, role: newRole } : m))
       );
       showToast("Role updated");
+    } catch (e: any) {
+      showToast(`Error: ${e.message}`);
+    }
+  }
+
+  async function handlePeopleBoardToggle(targetUserId: string, next: boolean) {
+    try {
+      await apiFetch(
+        `/api/v1/businesses/${businessId}/members/${targetUserId}/permissions`,
+        { method: "PATCH", body: JSON.stringify({ can_view_people_board: next }) }
+      );
+      setMembers((prev) =>
+        prev.map((m) =>
+          m.user_id === targetUserId ? { ...m, can_view_people_board: next } : m
+        )
+      );
+      showToast(next ? "People board access granted" : "Access revoked");
     } catch (e: any) {
       showToast(`Error: ${e.message}`);
     }
@@ -243,6 +261,33 @@ export default function WorkspaceSettingsPage() {
                   className={`text-xs px-2.5 py-1 rounded-full font-medium border ${ROLE_BADGE[m.role] ?? ROLE_BADGE.member}`}
                 >
                   {m.role.charAt(0).toUpperCase() + m.role.slice(1)}
+                </span>
+              )}
+
+              {/* People board access */}
+              {m.role === "member" ? (
+                <button
+                  onClick={() =>
+                    handlePeopleBoardToggle(
+                      m.user_id,
+                      !m.can_view_people_board
+                    )
+                  }
+                  title="Access to the People management board"
+                  className={`text-[11px] px-2.5 py-1 rounded-full font-medium border transition-colors flex-shrink-0 ${
+                    m.can_view_people_board
+                      ? "bg-purple-50 text-purple-700 border-purple-200"
+                      : "bg-mist text-steel border-pebble hover:border-steel"
+                  }`}
+                >
+                  People board {m.can_view_people_board ? "on" : "off"}
+                </button>
+              ) : (
+                <span
+                  className="text-[11px] text-steel/60 flex-shrink-0"
+                  title="Owners and admins always have access"
+                >
+                  People board: always
                 </span>
               )}
 

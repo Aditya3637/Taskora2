@@ -28,6 +28,9 @@ export interface QueueTask {
   pending_approvers?: string[];
   last_comment?: { snippet: string; at?: string; author_name?: string } | null;
   link?: WRLink;
+  // Set by the People focus endpoint:
+  column?: string;
+  role_of_person?: "primary" | "approver" | "contributor";
   task_entities?: {
     entity_id: string;
     entity_name?: string;
