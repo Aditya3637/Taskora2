@@ -1,7 +1,113 @@
 "use client";
 import Link from "next/link";
 import { wrLinkHref, type QueueTask } from "@/components/war-room/types";
-import { initials, type FocusResp, type PersonCounts } from "./types";
+import {
+  initials,
+  type FocusResp,
+  type NeedsPushGroup,
+  type PersonCounts,
+} from "./types";
+
+const REASON_TONE: Record<string, string> = {
+  overdue: "bg-red-50 text-red-700",
+  blocked: "bg-amber-50 text-amber-700",
+  pending_decision: "bg-purple-50 text-purple-700",
+  reopened: "bg-sky-50 text-ocean",
+};
+const REASON_LABEL: Record<string, string> = {
+  overdue: "overdue",
+  blocked: "blocked",
+  pending_decision: "to decide",
+  reopened: "reopened",
+};
+
+function NeedsPush({ groups }: { groups: NeedsPushGroup[] }) {
+  if (!groups.length) return null;
+  const total = groups.reduce((n, g) => n + g.count, 0);
+  return (
+    <section>
+      <h2 className="text-[12px] font-semibold text-steel uppercase tracking-wide mb-3">
+        🎯 Needs a push{" "}
+        <span className="text-steel/50 normal-case">
+          · {total} item{total === 1 ? "" : "s"} with {groups.length} owner
+          {groups.length === 1 ? "" : "s"}
+        </span>
+      </h2>
+      <div className="grid gap-3 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
+        {groups.map((g) => (
+          <div
+            key={g.user_id ?? "__un__"}
+            className="bg-white rounded-xl border border-pebble p-3"
+          >
+            <div className="flex items-center gap-2 mb-2">
+              {g.user_id ? (
+                <div className="w-6 h-6 rounded-full bg-mist text-steel grid place-items-center text-[10px] font-semibold">
+                  {initials(g.name)}
+                </div>
+              ) : (
+                <div className="w-6 h-6 rounded-full bg-mist text-steel/60 grid place-items-center text-[11px]">
+                  ?
+                </div>
+              )}
+              <span className="text-midnight text-sm font-medium truncate flex-1">
+                {g.name}
+              </span>
+              <span className="text-[11px] font-semibold text-steel bg-mist px-1.5 py-0.5 rounded-full">
+                {g.count}
+              </span>
+            </div>
+            <ul className="space-y-1.5">
+              {g.items.map((it) => {
+                const href = wrLinkHref(it.link);
+                const row = (
+                  <div className="flex items-start gap-1.5">
+                    <span
+                      className={`mt-0.5 text-[9px] uppercase font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0 ${
+                        REASON_TONE[it.reason] ?? "bg-mist text-steel"
+                      }`}
+                    >
+                      {REASON_LABEL[it.reason] ?? it.reason}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="text-[12px] text-midnight">
+                        {it.title}
+                      </span>
+                      {it.kind !== "task" && (
+                        <span className="text-[10px] text-steel/60 ml-1">
+                          ({it.kind})
+                        </span>
+                      )}
+                      {it.initiative_name && (
+                        <span className="block text-[10px] text-steel/60 truncate">
+                          {it.program_name && `${it.program_name} › `}
+                          {it.initiative_name}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                );
+                return (
+                  <li key={`${it.kind}-${it.id}`}>
+                    {href ? (
+                      <Link
+                        href={href}
+                        className="block hover:bg-mist rounded-md p-1 -m-1"
+                      >
+                        {row}
+                      </Link>
+                    ) : (
+                      row
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
 
 const COUNTER_PILLS: { key: keyof PersonCounts; label: string; tone: string }[] = [
   { key: "open", label: "open", tone: "bg-mist text-steel" },
@@ -108,6 +214,7 @@ export function FocusBoard({
 
       {/* Program ▸ Initiative swimlanes */}
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
+        <NeedsPush groups={focus.needs_push ?? []} />
         {focus.programs.length === 0 && (
           <p className="text-steel text-sm text-center py-12">
             No work on this person right now.

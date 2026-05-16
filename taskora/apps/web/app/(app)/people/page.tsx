@@ -73,9 +73,13 @@ export default function PeoplePage() {
   return (
     <div className="h-[calc(100vh-3.5rem)] md:h-screen flex flex-col bg-mist overflow-hidden">
       <div className="bg-white border-b border-pebble px-5 py-3 flex-shrink-0">
-        <h1 className="text-midnight font-semibold text-lg">People</h1>
+        <h1 className="text-midnight font-semibold text-lg">
+          {board?.mode === "self" ? "Your board" : "People"}
+        </h1>
         <p className="text-xs text-steel">
-          {t
+          {board?.mode === "self"
+            ? "Your work, and who you're waiting on."
+            : t
             ? `${t.people} people · ${t.overdue} overdue · ${t.blocked} blocked · ${t.awaiting_their_approval} awaiting their approval`
             : "Who to push, on what — ranked by where attention is needed."}
         </p>

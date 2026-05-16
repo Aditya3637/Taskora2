@@ -1,4 +1,4 @@
-import type { QueueTask } from "@/components/war-room/types";
+import type { QueueTask, WRLink } from "@/components/war-room/types";
 
 export interface PersonCounts {
   open: number;
@@ -24,8 +24,29 @@ export interface PersonSummary {
 
 export interface BoardResp {
   generated_at: string;
+  mode: "full" | "self";
   people: PersonSummary[];
   totals: PersonCounts & { people: number };
+}
+
+export interface NeedsPushItem {
+  kind: "task" | "subtask" | "entity";
+  id: string;
+  title: string;
+  reason: "overdue" | "blocked" | "pending_decision" | "reopened";
+  task_id: string;
+  link?: WRLink;
+  days_overdue?: number;
+  initiative_name?: string | null;
+  program_name?: string | null;
+}
+
+export interface NeedsPushGroup {
+  user_id: string | null;
+  name: string;
+  avatar_url?: string | null;
+  count: number;
+  items: NeedsPushItem[];
 }
 
 export interface FocusInitiative {
@@ -56,6 +77,7 @@ export interface FocusResp {
   push_score: number;
   columns: { key: string; label: string }[];
   programs: FocusProgram[];
+  needs_push: NeedsPushGroup[];
 }
 
 export function initials(name: string): string {
