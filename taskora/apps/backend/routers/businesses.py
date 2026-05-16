@@ -67,18 +67,12 @@ def create_business(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail="Business created but failed to assign owner membership")
 
-    # Auto-provision 60-day free trial subscription
-    now = datetime.now(timezone.utc)
-    sb.table("subscriptions").upsert({
-        "business_id": biz["id"],
-        "plan": "free",
-        "status": "trialing",
-        "trial_start": now.isoformat(),
-        "trial_end": (now + timedelta(days=60)).isoformat(),
-        "billing_cycle": "monthly",
-        "amount_inr": 0,
-    }, on_conflict="business_id").execute()
-
+    # The 60-day free-trial subscription is auto-provisioned by the
+    # `trg_create_trial` AFTER INSERT trigger on businesses
+    # (create_trial_subscription()). The previous app-level upsert here was
+    # redundant AND broken — it referenced a non-existent `amount_inr` column
+    # and used on_conflict="business_id" with no matching unique constraint,
+    # so it 500'd and blocked workspace creation for every new customer.
     return biz
 
 
