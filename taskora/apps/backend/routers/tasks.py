@@ -74,6 +74,55 @@ class StakeholderAdd(BaseModel):
     role: Literal["primary", "secondary", "follower"] = "secondary"
 
 
+def _watchers_for_tasks(sb: Client, task_ids: list):
+    """Batch-load item_watchers for a set of tasks, grouped by scope.
+
+    Returns three maps with resolved user name/email:
+      by_task    : {task_id: [watcher, ...]}                (scope_type='task')
+      by_entity  : {(task_id, entity_id): [watcher, ...]}    (scope_type='entity')
+      by_subtask : {subtask_id: [watcher, ...]}              (scope_type='subtask')
+    """
+    if not task_ids:
+        return {}, {}, {}
+    rows = (
+        sb.table("item_watchers")
+        .select("id, task_id, scope_type, subtask_id, entity_type, entity_id, user_id, role, created_at")
+        .in_("task_id", task_ids)
+        .execute()
+        .data
+    )
+    uids = list({r["user_id"] for r in rows if r.get("user_id")})
+    nmap: dict = {}
+    if uids:
+        for u in sb.table("users").select("id, name, email").in_("id", uids).execute().data:
+            nmap[u["id"]] = {"name": u.get("name") or "", "email": u.get("email") or ""}
+
+    by_task: dict = {}
+    by_entity: dict = {}
+    by_subtask: dict = {}
+    for r in rows:
+        info = nmap.get(r["user_id"], {})
+        w = {
+            "id": r["id"],
+            "user_id": r["user_id"],
+            "name": info.get("name", ""),
+            "email": info.get("email", ""),
+            "role": r["role"],
+            "scope_type": r["scope_type"],
+            "subtask_id": r.get("subtask_id"),
+            "entity_id": r.get("entity_id"),
+            "entity_type": r.get("entity_type"),
+        }
+        st = r["scope_type"]
+        if st == "task":
+            by_task.setdefault(r["task_id"], []).append(w)
+        elif st == "entity":
+            by_entity.setdefault((r["task_id"], r.get("entity_id")), []).append(w)
+        elif st == "subtask":
+            by_subtask.setdefault(r.get("subtask_id"), []).append(w)
+    return by_task, by_entity, by_subtask
+
+
 def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
     """Attach task_entities (with resolved building/client names) to each task."""
     if not tasks:
@@ -115,7 +164,7 @@ def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
     # Latest comment per scope (task-level and per-entity), batched.
     c_rows = (
         sb.table("comments")
-        .select("task_id, entity_id, subtask_id, content, user_id, created_at")
+        .select("task_id, entity_id, subtask_id, content, kind, user_id, created_at")
         .in_("task_id", task_ids)
         .order("created_at", desc=True)
         .execute()
@@ -132,6 +181,7 @@ def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
         tid, eid, sid = c.get("task_id"), c.get("entity_id"), c.get("subtask_id")
         preview = {
             "content": c["content"],
+            "kind": c.get("kind") or "note",
             "author_name": c_name_map.get(c.get("user_id") or "", ""),
             "created_at": c["created_at"],
         }
@@ -139,6 +189,9 @@ def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
             latest_entity_comment.setdefault((tid, eid), preview)
         elif not sid:
             latest_task_comment.setdefault(tid, preview)
+
+    # Followers / approvers per scope (task + entity rows), batched.
+    w_by_task, w_by_entity, _ = _watchers_for_tasks(sb, task_ids)
 
     for task in tasks:
         entities = entities_by_task.get(task["id"], [])
@@ -150,9 +203,11 @@ def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
             e["latest_comment"] = latest_entity_comment.get(
                 (task["id"], e["entity_id"])
             )
+            e["watchers"] = w_by_entity.get((task["id"], e["entity_id"]), [])
         task["task_entities"] = entities
         task["date_change_count"] = task_change_count.get(task["id"], 0)
         task["latest_comment"] = latest_task_comment.get(task["id"])
+        task["watchers"] = w_by_task.get(task["id"], [])
     return tasks
 
 
@@ -167,7 +222,9 @@ def get_my_tasks(
     uid = user["id"]
     primary_ids = [r["id"] for r in sb.table("tasks").select("id").eq("primary_stakeholder_id", uid).execute().data]
     secondary_ids = [r["task_id"] for r in sb.table("task_stakeholders").select("task_id").eq("user_id", uid).execute().data]
-    all_ids = list(set(primary_ids + secondary_ids))
+    # A follower/approver at any scope sees the whole parent task.
+    watcher_ids = [r["task_id"] for r in sb.table("item_watchers").select("task_id").eq("user_id", uid).execute().data]
+    all_ids = list(set(primary_ids + secondary_ids + watcher_ids))
     if not all_ids:
         return []
     tasks = sb.table("tasks").select("*").in_("id", all_ids).order("created_at", desc=True).execute().data
@@ -198,7 +255,12 @@ def get_my_tasks_page(
         r["task_id"]
         for r in sb.table("task_stakeholders").select("task_id").eq("user_id", uid).execute().data
     ]
-    all_ids = list(set(primary_ids + secondary_ids))
+    # A follower/approver at any scope sees the whole parent task.
+    watcher_ids = [
+        r["task_id"]
+        for r in sb.table("item_watchers").select("task_id").eq("user_id", uid).execute().data
+    ]
+    all_ids = list(set(primary_ids + secondary_ids + watcher_ids))
     if not all_ids:
         return {"items": [], "next_cursor": None}
 
@@ -305,7 +367,9 @@ def get_task(
         stakeholders = task.get("task_stakeholders") or []
         is_stakeholder = any(s.get("user_id") == user["id"] for s in stakeholders)
         if not is_stakeholder:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+            w_rows = sb.table("item_watchers").select("id").eq("task_id", task_id).eq("user_id", user["id"]).limit(1).execute().data
+            if not w_rows:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
     # Resolve entity names
     entities = task.get("task_entities") or []
@@ -495,6 +559,117 @@ def remove_stakeholder(
 
 
 # ---------------------------------------------------------------------------
+# Followers & Approvers (item_watchers) — one scope-parameterised CRUD set
+# covering task / subtask / entity (building or client) scopes.
+# ---------------------------------------------------------------------------
+
+class WatcherCreate(BaseModel):
+    scope_type: Literal["task", "subtask", "entity"]
+    role: Literal["follower", "approver"]
+    user_id: str
+    subtask_id: Optional[str] = None
+    entity_type: Optional[Literal["building", "client"]] = None
+    entity_id: Optional[str] = None
+
+
+def _assert_stakeholder(sb: Client, task_id: str, user_id: str):
+    """Write-gate for watcher management: caller must be the primary stakeholder
+    or in task_stakeholders. Followers/approvers themselves cannot edit the roster.
+    """
+    rows = sb.table("tasks").select("primary_stakeholder_id").eq("id", task_id).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if rows[0]["primary_stakeholder_id"] == user_id:
+        return
+    s = sb.table("task_stakeholders").select("user_id").eq("task_id", task_id).eq("user_id", user_id).execute().data
+    if not s:
+        raise HTTPException(status_code=403, detail="Only a task stakeholder can manage followers/approvers")
+
+
+@router.get("/{task_id}/watchers")
+@router.get("/{task_id}/watchers/", include_in_schema=False)
+def list_watchers(
+    task_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """All followers/approvers across every scope of this task tree."""
+    _assert_task_access(sb, task_id, user["id"])
+    by_task, by_entity, by_subtask = _watchers_for_tasks(sb, [task_id])
+    flat: list = []
+    for v in by_task.values():
+        flat.extend(v)
+    for v in by_entity.values():
+        flat.extend(v)
+    for v in by_subtask.values():
+        flat.extend(v)
+    return flat
+
+
+@router.post("/{task_id}/watchers", status_code=201)
+@router.post("/{task_id}/watchers/", status_code=201, include_in_schema=False)
+def add_watcher(
+    task_id: str,
+    body: WatcherCreate,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    _assert_stakeholder(sb, task_id, user["id"])
+
+    row: dict = {
+        "task_id": task_id,
+        "scope_type": body.scope_type,
+        "user_id": body.user_id,
+        "role": body.role,
+    }
+    if body.scope_type == "subtask":
+        if not body.subtask_id:
+            raise HTTPException(status_code=422, detail="subtask_id required for subtask scope")
+        st = sb.table("subtasks").select("id").eq("id", body.subtask_id).eq("task_id", task_id).execute().data
+        if not st:
+            raise HTTPException(status_code=404, detail="Subtask not found on this task")
+        row["subtask_id"] = body.subtask_id
+    elif body.scope_type == "entity":
+        if not body.entity_id or not body.entity_type:
+            raise HTTPException(status_code=422, detail="entity_type and entity_id required for entity scope")
+        row["entity_type"] = body.entity_type
+        row["entity_id"] = body.entity_id
+
+    # Idempotent: the unique index would reject a dupe — surface the existing row.
+    existing_q = (
+        sb.table("item_watchers")
+        .select("*")
+        .eq("task_id", task_id)
+        .eq("scope_type", body.scope_type)
+        .eq("user_id", body.user_id)
+        .eq("role", body.role)
+    )
+    if body.scope_type == "subtask":
+        existing_q = existing_q.eq("subtask_id", body.subtask_id)
+    elif body.scope_type == "entity":
+        existing_q = existing_q.eq("entity_id", body.entity_id)
+    existing = existing_q.execute().data
+    if existing:
+        return existing[0]
+
+    result = sb.table("item_watchers").insert(row).execute()
+    if not result.data:
+        raise HTTPException(status_code=500, detail="Failed to add watcher")
+    return result.data[0]
+
+
+@router.delete("/{task_id}/watchers/{watcher_id}", status_code=204)
+def remove_watcher(
+    task_id: str,
+    watcher_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    _assert_stakeholder(sb, task_id, user["id"])
+    sb.table("item_watchers").delete().eq("id", watcher_id).eq("task_id", task_id).execute()
+
+
+# ---------------------------------------------------------------------------
 # New endpoints
 # ---------------------------------------------------------------------------
 
@@ -581,7 +756,10 @@ def _assert_task_access(sb: Client, task_id: str, user_id: str):
     if not is_primary:
         s_rows = sb.table("task_stakeholders").select("user_id").eq("task_id", task_id).eq("user_id", user_id).execute().data
         if not s_rows:
-            raise HTTPException(status_code=403, detail="Access denied")
+            # Follower/approver at any scope still gets full task-tree read.
+            w_rows = sb.table("item_watchers").select("id").eq("task_id", task_id).eq("user_id", user_id).limit(1).execute().data
+            if not w_rows:
+                raise HTTPException(status_code=403, detail="Access denied")
 
 
 @router.get("/{task_id}/subtasks")
@@ -595,7 +773,7 @@ def list_subtasks(
     query = (
         sb.table("subtasks")
         .select(
-            "id, title, status, assignee_id, created_at, closed_at, "
+            "id, title, status, approval_state, assignee_id, created_at, closed_at, "
             "scoped_entity_id, scoped_entity_type, parent_subtask_id"
         )
         .eq("task_id", task_id)
@@ -612,8 +790,10 @@ def list_subtasks(
     if assignee_ids:
         for r in sb.table("users").select("id, name").in_("id", assignee_ids).execute().data:
             name_map[r["id"]] = r["name"]
+    _, _, w_by_subtask = _watchers_for_tasks(sb, [task_id])
     for s in subtasks:
         s["assignee_name"] = name_map.get(s.get("assignee_id") or "", "")
+        s["watchers"] = w_by_subtask.get(s["id"], [])
     return subtasks
 
 
@@ -635,7 +815,7 @@ def list_subtasks_grouped(
     rows = (
         sb.table("subtasks")
         .select(
-            "id, title, status, assignee_id, created_at, closed_at, "
+            "id, title, status, approval_state, assignee_id, created_at, closed_at, "
             "scoped_entity_id, scoped_entity_type, parent_subtask_id"
         )
         .eq("task_id", task_id)
@@ -659,7 +839,7 @@ def list_subtasks_grouped(
     if sub_ids:
         c_rows = (
             sb.table("comments")
-            .select("subtask_id, content, user_id, created_at")
+            .select("subtask_id, content, kind, user_id, created_at")
             .in_("subtask_id", sub_ids)
             .order("created_at", desc=True)
             .execute()
@@ -675,11 +855,14 @@ def list_subtasks_grouped(
             if sid:
                 latest_sub_comment.setdefault(sid, {
                     "content": c["content"],
+                    "kind": c.get("kind") or "note",
                     "author_name": c_names.get(c.get("user_id") or "", ""),
                     "created_at": c["created_at"],
                 })
+    _, _, w_by_subtask = _watchers_for_tasks(sb, [task_id])
     for s in rows:
         s["latest_comment"] = latest_sub_comment.get(s["id"])
+        s["watchers"] = w_by_subtask.get(s["id"], [])
 
     by_entity: dict = {}
     task_flat: list = []
