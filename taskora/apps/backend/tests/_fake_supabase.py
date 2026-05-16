@@ -211,6 +211,8 @@ class _Query:
             return _Result(res)
 
         if self._op in ("insert", "upsert"):
+            if self._t in self._c.fail_inserts:
+                raise ConstraintError(f"simulated insert failure on {self._t}")
             payload = self._payload
             many = isinstance(payload, list)
             items = payload if many else [payload]
@@ -264,6 +266,9 @@ class _Query:
 class FakeSupabase:
     def __init__(self, store=None):
         self.store = store or {}
+        # Tables whose next insert should raise (simulate a mid-flow failure
+        # to exercise compensating-cleanup paths).
+        self.fail_inserts: set = set()
 
     def table(self, name):
         return _Query(self, name)

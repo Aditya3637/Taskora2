@@ -1,0 +1,64 @@
+name: CI
+
+# Quality gate. Added 2026-05-16 after several broken changes reached
+# production (unauthenticated status endpoint; a non-existent
+# subscriptions.amount_inr column that 500'd workspace creation for every
+# new customer). Nothing ran pytest/tsc on push before this.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    name: backend (pytest + compile)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: taskora/apps/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r requirements-dev.txt
+      - name: Syntax check (all modules)
+        run: |
+          python -m compileall -q routers *.py tasks
+      - name: Strict gate — trustworthy suites must pass
+        # These are the maintained suites incl. the full approval-workflow
+        # E2E. They must be green for the build to pass.
+        run: |
+          python -m pytest -q \
+            tests/test_tasks.py \
+            tests/test_approval_workflow.py \
+            tests/test_initiatives.py \
+            tests/test_decisions.py
+      - name: Full suite (informational)
+        # Legacy tests/test_auth.py, test_businesses.py, test_daily_brief.py
+        # are brittle (assert pre-`redirect_slashes=False` status codes /
+        # build bad headers). Surfaced here but not blocking until rewritten.
+        run: python -m pytest -q || true
+
+  web:
+    name: web (tsc + lint)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: taskora/apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: taskora/apps/web/package-lock.json
+      - name: Install deps
+        run: npm ci
+      - name: Type check (blocking)
+        run: npx tsc --noEmit
+      - name: Lint (informational)
+        run: npm run lint || true

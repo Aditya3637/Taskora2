@@ -58,14 +58,35 @@ def create_business(
                             detail="Failed to create business")
     biz = biz_result.data[0]
 
-    member_result = sb.table("business_members").insert({
-        "business_id": biz["id"],
-        "user_id": user["id"],
-        "role": "owner",
-    }).execute()
-    if not member_result.data:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail="Business created but failed to assign owner membership")
+    # No DB transaction spans these PostgREST calls, so compensate by hand: if
+    # the owner-membership insert fails, delete the business we just made.
+    # Otherwise the user is left with an orphaned workspace that makes every
+    # later create_business 409 ("you already have a workspace") with no way
+    # back. (This is exactly the partial-state failure we hit in production.)
+    try:
+        member_result = sb.table("business_members").insert({
+            "business_id": biz["id"],
+            "user_id": user["id"],
+            "role": "owner",
+        }).execute()
+        if not member_result.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Business created but failed to assign owner membership",
+            )
+    except Exception as exc:
+        try:
+            sb.table("businesses").delete().eq("id", biz["id"]).execute()
+        except Exception:
+            pass  # best effort — surface the original error regardless
+        if isinstance(exc, HTTPException):
+            raise
+        # A raw driver/constraint error would otherwise bubble out as an
+        # unhandled 500 with no body — normalise it to a clean response.
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Business created but failed to assign owner membership",
+        ) from exc
 
     # The 60-day free-trial subscription is auto-provisioned by the
     # `trg_create_trial` AFTER INSERT trigger on businesses
