@@ -10,6 +10,26 @@ export interface PersonCounts {
   awaiting_their_approval: number;
 }
 
+export interface SpotlightTask {
+  id: string;
+  title: string;
+  status: string;
+  column: string;
+  days_overdue: number;
+  initiative_name?: string | null;
+  link?: WRLink;
+}
+
+export interface PersonInitiative {
+  initiative_id: string;
+  name: string;
+  leads: boolean;
+  completion_pct: number;
+  open: number;
+  overdue: number;
+  blocked: number;
+}
+
 export interface PersonSummary {
   user_id: string;
   name: string;
@@ -20,6 +40,16 @@ export interface PersonSummary {
   push_score: number;
   initiatives_led: number;
   programs_touched: number;
+  last_active?: string | null;
+  workload: {
+    overdue: number;
+    blocked: number;
+    pending_decision: number;
+    open: number;
+    done: number;
+  };
+  spotlight: SpotlightTask[];
+  initiatives: PersonInitiative[];
 }
 
 export interface BoardResp {
@@ -78,6 +108,17 @@ export interface FocusResp {
   columns: { key: string; label: string }[];
   programs: FocusProgram[];
   needs_push: NeedsPushGroup[];
+}
+
+export function relativeTime(iso?: string | null): string {
+  if (!iso) return "no activity";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "no activity";
+  const d = Math.floor((Date.now() - t) / 86400000);
+  if (d <= 0) return "active today";
+  if (d === 1) return "active 1d ago";
+  if (d < 30) return `active ${d}d ago`;
+  return `active ${Math.floor(d / 30)}mo ago`;
 }
 
 export function initials(name: string): string {
