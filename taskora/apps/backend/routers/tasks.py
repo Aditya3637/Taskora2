@@ -502,6 +502,9 @@ def update_task_status(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
+    # Was previously unauthenticated — any user could drive any task/entity to
+    # done (and thus into approval/closure). Gate it like other state writes.
+    _assert_task_write(sb, task_id, user["id"])
     now = datetime.now(timezone.utc).isoformat()
 
     if body.entity_id is not None:
@@ -593,18 +596,58 @@ class WatcherCreate(BaseModel):
     entity_id: Optional[str] = None
 
 
-def _assert_stakeholder(sb: Client, task_id: str, user_id: str):
-    """Write-gate for watcher management: caller must be the primary stakeholder
-    or in task_stakeholders. Followers/approvers themselves cannot edit the roster.
+def _assert_task_write(sb: Client, task_id: str, user_id: str):
+    """Write-gate for state-changing endpoints (status, subtasks, entities,
+    watcher roster). Caller must be the primary stakeholder, a task_stakeholder,
+    or a workspace owner/admin. Deliberately does NOT include item_watchers —
+    followers/approvers get full *read* via _assert_task_access but must not be
+    able to mutate task state just by being on the watch list.
     """
-    rows = sb.table("tasks").select("primary_stakeholder_id").eq("id", task_id).execute().data
+    rows = (
+        sb.table("tasks")
+        .select("primary_stakeholder_id, initiative_id")
+        .eq("id", task_id)
+        .execute()
+        .data
+    )
     if not rows:
         raise HTTPException(status_code=404, detail="Task not found")
-    if rows[0]["primary_stakeholder_id"] == user_id:
+    t = rows[0]
+    if t["primary_stakeholder_id"] == user_id:
         return
-    s = sb.table("task_stakeholders").select("user_id").eq("task_id", task_id).eq("user_id", user_id).execute().data
-    if not s:
-        raise HTTPException(status_code=403, detail="Only a task stakeholder can manage followers/approvers")
+    s = (
+        sb.table("task_stakeholders")
+        .select("user_id")
+        .eq("task_id", task_id)
+        .eq("user_id", user_id)
+        .execute()
+        .data
+    )
+    if s:
+        return
+    # Workspace owner/admin fallback — matches delete_task and the frontend's
+    # canManageWatchers affordance so the UI and API agree.
+    if t.get("initiative_id"):
+        init_row = (
+            sb.table("initiatives")
+            .select("business_id")
+            .eq("id", t["initiative_id"])
+            .execute()
+            .data
+        )
+        if init_row and get_member_role(
+            sb, init_row[0]["business_id"], user_id
+        ) in ("owner", "admin"):
+            return
+    raise HTTPException(
+        status_code=403,
+        detail="Only a task stakeholder or workspace admin can modify this task",
+    )
+
+
+def _assert_stakeholder(sb: Client, task_id: str, user_id: str):
+    """Back-compat alias — watcher-roster management uses the same write-gate."""
+    _assert_task_write(sb, task_id, user_id)
 
 
 def _scope_has_approver(sb: Client, task_id: str, scope_type: str,
@@ -1072,7 +1115,7 @@ def create_subtask(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    _assert_task_access(sb, task_id, user["id"])
+    _assert_task_write(sb, task_id, user["id"])
     now = datetime.now(timezone.utc).isoformat()
     row: dict = {
         "task_id": task_id,
@@ -1149,7 +1192,7 @@ def update_task_entity(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    _assert_task_access(sb, task_id, user["id"])
+    _assert_task_write(sb, task_id, user["id"])
 
     prior = (
         sb.table("task_entities")
@@ -1217,7 +1260,7 @@ def update_subtask(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    _assert_task_access(sb, task_id, user["id"])
+    _assert_task_write(sb, task_id, user["id"])
     payload = {k: v for k, v in body.model_dump().items() if v is not None}
     if not payload:
         raise HTTPException(status_code=422, detail="No fields to update")
