@@ -26,6 +26,10 @@ class MemberRoleUpdate(BaseModel):
     role: Literal["member", "admin"]
 
 
+class MemberPermissionUpdate(BaseModel):
+    can_view_people_board: bool
+
+
 @router.post("/", status_code=201)
 @router.post("", status_code=201, include_in_schema=False)
 def create_business(
@@ -177,7 +181,7 @@ def list_business_members(
     require_member(sb, business_id, user["id"])
     members = (
         sb.table("business_members")
-        .select("user_id, role, joined_at")
+        .select("user_id, role, joined_at, can_view_people_board")
         .eq("business_id", business_id)
         .execute()
         .data
@@ -232,6 +236,38 @@ def update_member_role(
     result = (
         sb.table("business_members")
         .update({"role": body.role})
+        .eq("business_id", business_id)
+        .eq("user_id", target_user_id)
+        .execute()
+    )
+    return result.data[0] if result.data else {}
+
+
+@router.patch("/{business_id}/members/{target_user_id}/permissions")
+def update_member_permissions(
+    business_id: str,
+    target_user_id: str,
+    body: MemberPermissionUpdate,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Grant/revoke a member's access to the People board. Owner/admin only."""
+    require_admin_or_owner(sb, business_id, user["id"])
+
+    target_rows = (
+        sb.table("business_members")
+        .select("role")
+        .eq("business_id", business_id)
+        .eq("user_id", target_user_id)
+        .execute()
+        .data
+    )
+    if not target_rows:
+        raise HTTPException(status_code=404, detail="Member not found")
+
+    result = (
+        sb.table("business_members")
+        .update({"can_view_people_board": body.can_view_people_board})
         .eq("business_id", business_id)
         .eq("user_id", target_user_id)
         .execute()

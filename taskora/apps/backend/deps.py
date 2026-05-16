@@ -58,6 +58,31 @@ def require_admin_or_owner(sb: Client, business_id: str, user_id: str) -> str:
     return role
 
 
+def people_board_access_ok(sb: Client, business_id: str, user_id: str) -> bool:
+    """True if the user may see the People board for this business: owner/admin
+    always, or a member explicitly granted via can_view_people_board."""
+    result = (
+        sb.table("business_members")
+        .select("role, can_view_people_board")
+        .eq("business_id", business_id)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    if not result.data:
+        return False
+    row = result.data[0]
+    return row.get("role") in ("owner", "admin") or bool(row.get("can_view_people_board"))
+
+
+def require_people_board_access(sb: Client, business_id: str, user_id: str) -> None:
+    """Raise HTTP 403 unless the user may see the People board for this business."""
+    if not people_board_access_ok(sb, business_id, user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="People board access required",
+        )
+
+
 def get_member_role(sb: Client, business_id: str, user_id: str) -> str | None:
     """Return the user's role in the business, or None if not a member."""
     result = (
