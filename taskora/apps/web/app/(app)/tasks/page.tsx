@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
@@ -53,6 +53,18 @@ type MyInitiative = {
   target_end_date?: string;
 };
 
+type Watcher = {
+  id: string;
+  user_id: string;
+  name?: string;
+  email?: string;
+  role: "follower" | "approver";
+  scope_type: "task" | "subtask" | "entity";
+  subtask_id?: string | null;
+  entity_id?: string | null;
+  entity_type?: string | null;
+};
+
 type TaskEntity = {
   entity_id: string;
   entity_name?: string;
@@ -60,6 +72,8 @@ type TaskEntity = {
   per_entity_status?: string;
   per_entity_end_date?: string;
   closed_at?: string | null;
+  approval_state?: string;
+  watchers?: Watcher[];
   date_change_count?: number;
   latest_comment?: LatestComment;
 };
@@ -83,6 +97,8 @@ type Task = {
   primary_stakeholder_id?: string;
   created_at?: string;
   closed_at?: string | null;
+  approval_state?: string;
+  watchers?: Watcher[];
   date_change_count?: number;
   latest_comment?: LatestComment;
 };
@@ -97,6 +113,8 @@ type Subtask = {
   scoped_entity_id?: string | null;
   scoped_entity_type?: string | null;
   closed_at?: string | null;
+  approval_state?: string;
+  watchers?: Watcher[];
   latest_comment?: LatestComment;
 };
 
@@ -125,12 +143,14 @@ type Comment = {
   content: string;
   author_name?: string;
   author_id?: string;
+  kind?: string;
   created_at: string;
 };
 
 type LatestComment = {
   content: string;
   author_name?: string;
+  kind?: string;
   created_at: string;
 } | null;
 
@@ -145,6 +165,7 @@ const TASK_STATUS_ORDER = [
   "pending_decision",
   "blocked",
   "done",
+  "reopened",
   "archived",
 ] as const;
 
@@ -156,6 +177,7 @@ const SUBTASK_STATUS_ORDER = [
   "pending_decision",
   "blocked",
   "done",
+  "reopened",
 ] as const;
 
 const STATUS_LABELS: Record<string, string> = {
@@ -165,6 +187,7 @@ const STATUS_LABELS: Record<string, string> = {
   pending_decision: "Pending Decision",
   blocked: "Blocked",
   done: "Done",
+  reopened: "Reopened",
   archived: "Archived",
 };
 
@@ -175,6 +198,7 @@ const STATUS_COLORS: Record<string, string> = {
   pending_decision: "bg-amber-100 text-amber-800",
   blocked: "bg-red-100 text-red-800",
   done: "bg-green-100 text-green-800",
+  reopened: "bg-red-100 text-red-800",
   archived: "bg-gray-100 text-gray-400",
 };
 
@@ -211,7 +235,38 @@ const STATUSES = [
   "pending_decision",
   "blocked",
   "done",
+  "approval_pending",
+  "reopened",
 ];
+
+// Two pills don't map to a plain tasks.status value — they're driven by
+// approval_state and applied client-side over the fetched page.
+const FILTER_LABELS: Record<string, string> = {
+  ...STATUS_LABELS,
+  All: "All",
+  approval_pending: "Sent for Approval",
+  reopened: "Reopened",
+};
+
+// Approval-aware predicate for the special filter pills.
+function matchesApprovalFilter(t: Task, filter: string): boolean {
+  if (filter === "approval_pending") {
+    return (
+      t.approval_state === "pending" ||
+      (t.task_entities ?? []).some((e) => e.approval_state === "pending")
+    );
+  }
+  if (filter === "reopened") {
+    return (
+      t.status === "reopened" ||
+      t.approval_state === "rejected" ||
+      (t.task_entities ?? []).some(
+        (e) => e.approval_state === "rejected" || e.per_entity_status === "reopened"
+      )
+    );
+  }
+  return true;
+}
 
 // ── Subtask Row (recursive: supports one level of child sub-subtasks) ────────
 
@@ -221,6 +276,7 @@ function SubtaskRow({
   taskId,
   members,
   currentUserId,
+  canManage,
   onChanged,
 }: {
   subtask: Subtask;
@@ -228,6 +284,7 @@ function SubtaskRow({
   taskId: string;
   members: Member[];
   currentUserId: string;
+  canManage: boolean;
   onChanged: () => void;
 }) {
   const [updating, setUpdating] = useState(false);
@@ -239,6 +296,14 @@ function SubtaskRow({
   const isChild = !!subtask.parent_subtask_id;
   const hasChildren = children.length > 0;
   const canAddChild = !isChild;
+
+  const scope: WatcherScope = { scope_type: "subtask", subtask_id: subtask.id };
+  const watchers = subtask.watchers ?? [];
+  const isApprover = watchers.some(
+    (w) => w.role === "approver" && w.user_id === currentUserId
+  );
+  const isRejected =
+    subtask.approval_state === "rejected" || subtask.status === "reopened";
 
   async function setStatus(next: string) {
     if (next === subtask.status) return;
@@ -264,7 +329,13 @@ function SubtaskRow({
 
   return (
     <div>
-      <div className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-mist/30 group">
+      <div
+        className={`flex items-center gap-2 py-1.5 px-2 rounded group ${
+          isRejected
+            ? "bg-red-50 border border-red-200 hover:bg-red-100/60"
+            : "hover:bg-mist/30"
+        }`}
+      >
         {/* Chevron — only on top-level rows; placeholder keeps alignment */}
         {!isChild ? (
           <button
@@ -333,6 +404,24 @@ function SubtaskRow({
 
         <ClosedStamp at={subtask.closed_at} />
 
+        <ApprovalControls
+          taskId={taskId}
+          scope={scope}
+          approvalState={subtask.approval_state}
+          isApprover={isApprover}
+          onActed={() => onChanged()}
+          onOpenThread={() => setShowComments(true)}
+        />
+
+        <WatcherStrip
+          taskId={taskId}
+          scope={scope}
+          watchers={watchers}
+          members={members}
+          canManage={canManage}
+          onChanged={onChanged}
+        />
+
         {/* Comments — every subtask & sub-subtask; shows latest inline */}
         <LatestCommentButton
           latest={subtask.latest_comment}
@@ -366,6 +455,7 @@ function SubtaskRow({
               taskId={taskId}
               members={members}
               currentUserId={currentUserId}
+              canManage={canManage}
               onChanged={onChanged}
             />
           ))}
@@ -556,16 +646,313 @@ function LatestCommentButton({
           ? `${latest.author_name || "Someone"}: ${latest.content}`
           : "Comments"
       }
-      className="flex items-center gap-1 text-steel/50 hover:text-ocean transition-colors min-w-0 flex-shrink"
+      className={`flex items-center gap-1 transition-colors min-w-0 flex-shrink ${
+        latest?.kind === "rejection"
+          ? "text-red-600 hover:text-red-700"
+          : "text-steel/50 hover:text-ocean"
+      }`}
     >
       <MessageSquare className="w-3.5 h-3.5 flex-shrink-0" />
       {latest && (
-        <span className="text-[10px] text-steel/70 truncate max-w-[160px]">
+        <span
+          className={`text-[10px] truncate max-w-[160px] ${
+            latest.kind === "rejection"
+              ? "text-red-600 font-medium"
+              : "text-steel/70"
+          }`}
+        >
           {latest.content}
         </span>
       )}
     </button>
   );
+}
+
+// ── Followers / Approvers + Approval controls ────────────────────────────────
+
+type WatcherScope = {
+  scope_type: "task" | "subtask" | "entity";
+  subtask_id?: string;
+  entity_id?: string;
+  entity_type?: string;
+};
+
+function scopeBody(scope: WatcherScope) {
+  if (scope.scope_type === "subtask") return { subtask_id: scope.subtask_id };
+  if (scope.scope_type === "entity")
+    return { entity_id: scope.entity_id, entity_type: scope.entity_type };
+  return {};
+}
+
+// Compact follower (eye) / approver (shield) chips + add control. Reused at
+// task, building/client, subtask and sub-subtask scope.
+function WatcherStrip({
+  taskId,
+  scope,
+  watchers,
+  members,
+  canManage,
+  onChanged,
+}: {
+  taskId: string;
+  scope: WatcherScope;
+  watchers: Watcher[];
+  members: Member[];
+  canManage: boolean;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [addRole, setAddRole] = useState<"" | "follower" | "approver">("");
+  const [addUser, setAddUser] = useState("");
+
+  async function add() {
+    if (!addUser || !addRole) return;
+    setBusy(true);
+    try {
+      await apiFetch(`/api/v1/tasks/${taskId}/watchers`, {
+        method: "POST",
+        body: JSON.stringify({
+          scope_type: scope.scope_type,
+          role: addRole,
+          user_id: addUser,
+          ...scopeBody(scope),
+        }),
+      });
+      setAddUser("");
+      setAddRole("");
+      onChanged();
+    } catch {
+      /* silent */
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(id: string) {
+    setBusy(true);
+    try {
+      await apiFetch(`/api/v1/tasks/${taskId}/watchers/${id}`, { method: "DELETE" });
+      onChanged();
+    } catch {
+      /* silent */
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (watchers.length === 0 && !canManage) return null;
+
+  return (
+    <span className="inline-flex items-center gap-1 flex-wrap">
+      {watchers.map((w) => (
+        <span
+          key={w.id}
+          className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] border ${
+            w.role === "approver"
+              ? "bg-violet-50 text-violet-700 border-violet-200"
+              : "bg-gray-50 text-steel border-pebble"
+          }`}
+          title={`${w.role === "approver" ? "Approver" : "Follower"}: ${
+            w.name || w.email || "Member"
+          }`}
+        >
+          {w.role === "approver" ? (
+            <ShieldCheck className="w-3 h-3 flex-shrink-0" />
+          ) : (
+            <Eye className="w-3 h-3 flex-shrink-0" />
+          )}
+          <span className="max-w-[70px] truncate">
+            {w.name || w.email || "Member"}
+          </span>
+          {canManage && (
+            <button
+              type="button"
+              onClick={() => remove(w.id)}
+              disabled={busy}
+              className="ml-0.5 text-steel/40 hover:text-red-500 leading-none"
+            >
+              ×
+            </button>
+          )}
+        </span>
+      ))}
+
+      {canManage && (
+        <span className="inline-flex items-center gap-1">
+          <select
+            value={addRole}
+            onChange={(e) => setAddRole(e.target.value as any)}
+            className="text-[10px] border border-pebble rounded px-1 py-0.5 text-steel focus:outline-none focus:border-ocean"
+          >
+            <option value="">+ watcher</option>
+            <option value="follower">Follower</option>
+            <option value="approver">Approver</option>
+          </select>
+          {addRole && (
+            <>
+              <select
+                value={addUser}
+                onChange={(e) => setAddUser(e.target.value)}
+                className="text-[10px] border border-pebble rounded px-1 py-0.5 text-steel max-w-[110px] focus:outline-none focus:border-ocean"
+              >
+                <option value="">Person…</option>
+                {members
+                  .filter(
+                    (m) =>
+                      !watchers.some(
+                        (w) => w.user_id === m.user_id && w.role === addRole
+                      )
+                  )
+                  .map((m) => (
+                    <option key={m.user_id} value={m.user_id}>
+                      {m.name || m.email}
+                    </option>
+                  ))}
+              </select>
+              {addUser && (
+                <button
+                  type="button"
+                  onClick={add}
+                  disabled={busy}
+                  className="text-[10px] px-1.5 py-0.5 bg-taskora-red text-white rounded font-medium disabled:opacity-50"
+                >
+                  Add
+                </button>
+              )}
+            </>
+          )}
+        </span>
+      )}
+    </span>
+  );
+}
+
+// "Sent for Approval" / "Approved" / "Rejected" badge + approver actions.
+// Reject reason is required and is posted as a red comment into the item's
+// own thread (clicking the Rejected badge opens that thread).
+function ApprovalControls({
+  taskId,
+  scope,
+  approvalState,
+  isApprover,
+  onActed,
+  onOpenThread,
+}: {
+  taskId: string;
+  scope: WatcherScope;
+  approvalState?: string;
+  isApprover: boolean;
+  onActed: (action: "approve" | "reject") => void;
+  onOpenThread: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
+
+  async function act(action: "approve" | "reject") {
+    if (action === "reject" && !reason.trim()) return;
+    setBusy(true);
+    try {
+      await apiFetch(`/api/v1/tasks/${taskId}/approvals`, {
+        method: "POST",
+        body: JSON.stringify({
+          scope_type: scope.scope_type,
+          action,
+          ...(action === "reject" ? { reason: reason.trim() } : {}),
+          ...scopeBody(scope),
+        }),
+      });
+      setRejecting(false);
+      setReason("");
+      onActed(action);
+    } catch (e: any) {
+      alert(e?.message ?? "Action failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (approvalState === "approved") {
+    return (
+      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-800 font-medium whitespace-nowrap flex-shrink-0">
+        ✓ Approved
+      </span>
+    );
+  }
+
+  if (approvalState === "rejected") {
+    return (
+      <button
+        type="button"
+        onClick={onOpenThread}
+        title="View rejection reason"
+        className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 font-medium whitespace-nowrap flex-shrink-0 hover:bg-red-200"
+      >
+        ✕ Rejected
+      </button>
+    );
+  }
+
+  if (approvalState === "pending") {
+    return (
+      <span className="inline-flex items-center gap-1 flex-wrap">
+        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-medium whitespace-nowrap flex-shrink-0">
+          ⏳ Sent for Approval
+        </span>
+        {isApprover && !rejecting && (
+          <>
+            <button
+              type="button"
+              onClick={() => act("approve")}
+              disabled={busy}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-green-600 text-white font-medium hover:opacity-90 disabled:opacity-50"
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              onClick={() => setRejecting(true)}
+              disabled={busy}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-red-600 text-white font-medium hover:opacity-90 disabled:opacity-50"
+            >
+              Reject
+            </button>
+          </>
+        )}
+        {isApprover && rejecting && (
+          <span className="inline-flex items-center gap-1">
+            <input
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Reason (required)"
+              autoFocus
+              className="text-[10px] border border-red-300 rounded px-1.5 py-0.5 focus:outline-none focus:border-red-500 max-w-[160px]"
+            />
+            <button
+              type="button"
+              onClick={() => act("reject")}
+              disabled={busy || !reason.trim()}
+              className="text-[10px] px-1.5 py-0.5 rounded bg-red-600 text-white font-medium disabled:opacity-50"
+            >
+              Send
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setRejecting(false);
+                setReason("");
+              }}
+              className="text-[10px] px-1 py-0.5 text-steel/60 hover:text-midnight"
+            >
+              Cancel
+            </button>
+          </span>
+        )}
+      </span>
+    );
+  }
+
+  return null;
 }
 
 // ── Date Change Log Popup ─────────────────────────────────────────────────────
@@ -768,10 +1155,29 @@ function CommentsPopup({
           )}
           {!loading &&
             [...comments].reverse().map((c) => (
-              <div key={c.id} className="bg-mist/50 rounded-lg px-3 py-2.5">
+              <div
+                key={c.id}
+                className={`rounded-lg px-3 py-2.5 ${
+                  c.kind === "rejection"
+                    ? "bg-red-50 border border-red-200"
+                    : c.kind === "approval"
+                    ? "bg-green-50 border border-green-200"
+                    : "bg-mist/50"
+                }`}
+              >
                 <div className="flex items-center justify-between gap-2 mb-1">
                   <span className="text-xs font-semibold text-midnight">
                     {c.author_name ?? "Team member"}
+                    {c.kind === "rejection" && (
+                      <span className="ml-1.5 text-[10px] font-bold text-red-700 uppercase">
+                        Rejected
+                      </span>
+                    )}
+                    {c.kind === "approval" && (
+                      <span className="ml-1.5 text-[10px] font-bold text-green-700 uppercase">
+                        Approved
+                      </span>
+                    )}
                   </span>
                   <span className="text-[10px] text-steel/50 flex-shrink-0">
                     {new Date(c.created_at).toLocaleString(undefined, {
@@ -821,6 +1227,7 @@ function EntitySubtaskRow({
   taskId,
   members,
   currentUserId,
+  canManage,
   subtasks,
   subtasksLoading,
   onEntityUpdate,
@@ -830,6 +1237,7 @@ function EntitySubtaskRow({
   taskId: string;
   members: Member[];
   currentUserId: string;
+  canManage: boolean;
   // B4: subtasks now come from a single parent-level fetch instead of one
   // request per entity. Empty array = no subtasks (not "not loaded yet").
   subtasks: Subtask[];
@@ -917,9 +1325,53 @@ function EntitySubtaskRow({
       : "bg-sky-50 text-sky-700 border-sky-200";
   const statusCls = STATUS_COLORS[entityStatus] ?? "bg-gray-100 text-gray-600";
 
+  const scope: WatcherScope = {
+    scope_type: "entity",
+    entity_id: entity.entity_id,
+    entity_type: entity.entity_type,
+  };
+  const watchers = entity.watchers ?? [];
+  const isApprover = watchers.some(
+    (w) => w.role === "approver" && w.user_id === currentUserId
+  );
+  const isRejected =
+    entity.approval_state === "rejected" || entityStatus === "reopened";
+
+  async function refreshEntityWatchers() {
+    try {
+      const all = await apiFetch(`/api/v1/tasks/${taskId}/watchers`);
+      const w = (Array.isArray(all) ? all : []).filter(
+        (x: Watcher) =>
+          x.scope_type === "entity" && x.entity_id === entity.entity_id
+      );
+      onEntityUpdate?.(entity.entity_id, { watchers: w });
+    } catch {
+      /* silent */
+    }
+  }
+
+  function handleApprovalActed(action: "approve" | "reject") {
+    if (action === "approve") {
+      onEntityUpdate?.(entity.entity_id, { approval_state: "approved" });
+    } else {
+      setEntityStatus("reopened");
+      onEntityUpdate?.(entity.entity_id, {
+        approval_state: "rejected",
+        per_entity_status: "reopened",
+        closed_at: null,
+      });
+    }
+  }
+
   return (
     <div className="mb-1.5">
-      <div className="flex items-center gap-2 px-2 py-2 rounded hover:bg-mist/30 flex-wrap">
+      <div
+        className={`flex items-center gap-2 px-2 py-2 rounded flex-wrap ${
+          isRejected
+            ? "bg-red-50 border border-red-200 hover:bg-red-100/60"
+            : "hover:bg-mist/30"
+        }`}
+      >
         {/* Entity name badge */}
         <span className={`text-xs px-2 py-0.5 rounded border font-medium flex-shrink-0 max-w-[120px] truncate ${colorCls}`}>
           {entity.entity_name ?? entity.entity_id}
@@ -963,6 +1415,24 @@ function EntitySubtaskRow({
         {/* Closure stamp */}
         <ClosedStamp at={entity.closed_at} />
 
+        <ApprovalControls
+          taskId={taskId}
+          scope={scope}
+          approvalState={entity.approval_state}
+          isApprover={isApprover}
+          onActed={handleApprovalActed}
+          onOpenThread={() => setShowComments(true)}
+        />
+
+        <WatcherStrip
+          taskId={taskId}
+          scope={scope}
+          watchers={watchers}
+          members={members}
+          canManage={canManage}
+          onChanged={refreshEntityWatchers}
+        />
+
         {/* Comments — shows latest inline */}
         <LatestCommentButton
           latest={entity.latest_comment}
@@ -997,6 +1467,7 @@ function EntitySubtaskRow({
               taskId={taskId}
               members={members}
               currentUserId={currentUserId}
+              canManage={canManage}
               onChanged={onSubtasksChanged}
             />
           ))}
@@ -1038,6 +1509,7 @@ function EntitySubtaskRow({
               latest_comment: {
                 content: c.content,
                 author_name: c.author_name,
+                kind: c.kind,
                 created_at: c.created_at,
               },
             })
@@ -1142,12 +1614,54 @@ function TaskCard({
   // without waiting for the next page load.
   const [taskLatest, setTaskLatest] = useState<LatestComment>(task.latest_comment ?? null);
   const [dateChangeCount, setDateChangeCount] = useState(task.date_change_count ?? 0);
+  const [taskWatchers, setTaskWatchers] = useState<Watcher[]>(
+    (task.watchers ?? []).filter((w) => w.scope_type === "task")
+  );
+  const [taskApproval, setTaskApproval] = useState<string | undefined>(
+    task.approval_state
+  );
 
   useEffect(() => {
     setLocalEnts(task.task_entities ?? []);
     setTaskLatest(task.latest_comment ?? null);
     setDateChangeCount(task.date_change_count ?? 0);
+    setTaskWatchers((task.watchers ?? []).filter((w) => w.scope_type === "task"));
+    setTaskApproval(task.approval_state);
   }, [task.id]);
+
+  const canManageWatchers =
+    task.primary_stakeholder_id === currentUserId ||
+    myRole === "owner" ||
+    myRole === "admin" ||
+    stakeholders.some((s) => s.user_id === currentUserId);
+
+  const isApproverTask = taskWatchers.some(
+    (w) => w.role === "approver" && w.user_id === currentUserId
+  );
+  const taskRejected =
+    task.status === "reopened" || taskApproval === "rejected";
+
+  async function refreshTaskWatchers() {
+    try {
+      const all = await apiFetch(`/api/v1/tasks/${task.id}/watchers`);
+      setTaskWatchers(
+        (Array.isArray(all) ? all : []).filter(
+          (w: Watcher) => w.scope_type === "task"
+        )
+      );
+    } catch {
+      /* silent */
+    }
+  }
+
+  function handleTaskApprovalActed(action: "approve" | "reject") {
+    if (action === "approve") {
+      setTaskApproval("approved");
+    } else {
+      setTaskApproval("rejected");
+      onStatusChange(task.id, "reopened");
+    }
+  }
 
   function handleEntityUpdate(entityId: string, updates: Partial<TaskEntity>) {
     setLocalEnts((prev) =>
@@ -1262,9 +1776,13 @@ function TaskCard({
 
   return (
     <div
-      className={`bg-white rounded-xl border border-l-4 ${
+      className={`rounded-xl border border-l-4 shadow-sm ${
         PRIORITY_BORDER[task.priority] ?? "border-l-gray-300"
-      } border-pebble shadow-sm`}
+      } ${
+        taskRejected
+          ? "bg-red-50 border-red-200"
+          : "bg-white border-pebble"
+      }`}
     >
       <div className="p-4">
         <div className="flex items-start justify-between gap-3">
@@ -1286,6 +1804,15 @@ function TaskCard({
                   Needs Update
                 </span>
               )}
+
+              <ApprovalControls
+                taskId={task.id}
+                scope={{ scope_type: "task" }}
+                approvalState={taskApproval}
+                isApprover={isApproverTask}
+                onActed={handleTaskApprovalActed}
+                onOpenThread={() => setShowComments(true)}
+              />
             </div>
 
 
@@ -1404,6 +1931,21 @@ function TaskCard({
             </div>
           </div>
 
+          {/* ── Task-level followers / approvers ── */}
+          <div className="flex items-center gap-1.5 pb-2 mb-2 border-b border-pebble/30 flex-wrap text-xs">
+            <span className="text-steel font-medium flex-shrink-0">
+              Watchers:
+            </span>
+            <WatcherStrip
+              taskId={task.id}
+              scope={{ scope_type: "task" }}
+              watchers={taskWatchers}
+              members={members}
+              canManage={canManageWatchers}
+              onChanged={refreshTaskWatchers}
+            />
+          </div>
+
           {localEnts.length > 0 ? (
             /* Entity tasks: each building/client is a collapsible row, subtasks come from the single grouped fetch */
             <>
@@ -1414,6 +1956,7 @@ function TaskCard({
                   taskId={task.id}
                   members={members}
                   currentUserId={currentUserId}
+                  canManage={canManageWatchers}
                   subtasks={grouped.by_entity[e.entity_id] ?? []}
                   subtasksLoading={loadingSubtasks}
                   onEntityUpdate={handleEntityUpdate}
@@ -1435,6 +1978,7 @@ function TaskCard({
                   taskId={task.id}
                   members={members}
                   currentUserId={currentUserId}
+                  canManage={canManageWatchers}
                   onChanged={loadSubtasksGrouped}
                 />
               ))}
@@ -1475,6 +2019,7 @@ function TaskCard({
             setTaskLatest({
               content: c.content,
               author_name: c.author_name,
+              kind: c.kind,
               created_at: c.created_at,
             })
           }
@@ -2502,7 +3047,12 @@ function TasksPageInner() {
     async (statusFilter: string, cursor: string | null, append: boolean) => {
       const params = new URLSearchParams({ limit: String(PAGE_SIZE) });
       if (cursor) params.set("cursor", cursor);
-      if (statusFilter !== "All") params.set("status", statusFilter);
+      // The approval pills aren't plain tasks.status values — fetch the full
+      // page and filter them client-side via matchesApprovalFilter.
+      const isApprovalPill =
+        statusFilter === "approval_pending" || statusFilter === "reopened";
+      if (statusFilter !== "All" && !isApprovalPill)
+        params.set("status", statusFilter);
       const page = await apiFetch(`/api/v1/tasks/my/page?${params.toString()}`);
       const items: Task[] = Array.isArray(page?.items) ? page.items : [];
       setTasks((prev) => (append ? [...prev, ...items] : items));
@@ -2611,9 +3161,13 @@ function TasksPageInner() {
     setTasks((prev) => prev.filter((t) => t.initiative_id !== initiativeId));
   }
 
-  // Server filters the page by status now (B5), so the on-screen list is
-  // already filtered. Keep this alias for the grouping logic below.
-  const filtered = tasks;
+  // Server filters the page by status now (B5). The two approval pills are
+  // applied client-side over the fetched page.
+  const isApprovalPill =
+    filter === "approval_pending" || filter === "reopened";
+  const filtered = isApprovalPill
+    ? tasks.filter((t) => matchesApprovalFilter(t, filter))
+    : tasks;
 
   // Group tasks by initiative
   const initiativeMap = Object.fromEntries(
@@ -2679,7 +3233,7 @@ function TasksPageInner() {
                   : "bg-white border border-pebble text-steel hover:text-midnight"
               }`}
             >
-              {s === "All" ? "All" : STATUS_LABELS[s] ?? s}
+              {FILTER_LABELS[s] ?? s}
             </button>
           ))}
         </div>
