@@ -25,7 +25,6 @@ async function apiFetch(path: string, opts?: RequestInit) {
 
 const coreNavItems = [
   { href: "/daily-brief", label: "Daily Brief", icon: "☀️" },
-  { href: "/war-room",    label: "War Room",    icon: "⚡" },
   { href: "/people",      label: "People",      icon: "👥" },
   { href: "/programs",    label: "Programs",    icon: "🗂️" },
   { href: "/tasks",       label: "Tasks",       icon: "✅" },

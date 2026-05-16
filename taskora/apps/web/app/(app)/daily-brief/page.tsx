@@ -232,6 +232,8 @@ function DailyBriefInner() {
   const [brief, setBrief] = useState<Brief | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [programFilter, setProgramFilter] = useState("");
+  const [userFilter, setUserFilter] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
@@ -255,8 +257,32 @@ function DailyBriefInner() {
   if (error) return <div className="p-8 text-red-600">{error} <button onClick={load} className="ml-2 underline">Retry</button></div>;
   if (!brief) return null;
 
-  const empty = <p className="text-sm text-steel italic bg-white rounded-lg p-3 border border-pebble">All clear ✓</p>;
-  const rows = (list?: Task[]) => (!list || list.length === 0 ? empty : list.map((t) => <DecisionCard key={t.id} task={t} onActed={load} />));
+  const allTasks: Task[] = [
+    ...brief.pending_decisions, ...brief.overdue_tasks, ...brief.stale_tasks,
+    ...brief.due_this_week, ...brief.blocked_tasks,
+    ...(brief.awaiting_approval ?? []), ...(brief.tat_breaches ?? []),
+  ];
+  const uniqSorted = (xs: (string | undefined)[]) =>
+    Array.from(new Set(xs.filter((x): x is string => !!x))).sort((a, b) => a.localeCompare(b));
+  const programOptions = uniqSorted(allTasks.map((t) => t.program_name));
+  const userOptions = uniqSorted(allTasks.map((t) => t.primary_stakeholder_name));
+  const filtersActive = !!programFilter || !!userFilter;
+  const matches = (t: Task) =>
+    (!programFilter || t.program_name === programFilter) &&
+    (!userFilter || t.primary_stakeholder_name === userFilter);
+
+  const empty = (
+    <p className="text-sm text-steel italic bg-white rounded-lg p-3 border border-pebble">
+      {filtersActive ? "No matching items" : "All clear ✓"}
+    </p>
+  );
+  const rows = (list?: Task[]) => {
+    const f = (list ?? []).filter(matches);
+    return f.length === 0 ? empty : f.map((t) => <DecisionCard key={t.id} task={t} onActed={load} />);
+  };
+  const initProgress = brief.initiative_progress.filter(
+    (p) => !programFilter || p.program_name === programFilter,
+  );
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
@@ -282,6 +308,31 @@ function DailyBriefInner() {
             {g === "none" ? "No grouping" : `By ${g}`}
           </button>
         ))}
+        <span className="w-px bg-pebble mx-1" />
+        <select
+          value={programFilter}
+          onChange={(e) => setProgramFilter(e.target.value)}
+          className={`px-3 py-1 rounded-full border bg-white ${programFilter ? "border-taskora-red text-taskora-red" : "border-pebble text-steel hover:border-steel"}`}
+          aria-label="Filter by program"
+        >
+          <option value="">All programs</option>
+          {programOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select
+          value={userFilter}
+          onChange={(e) => setUserFilter(e.target.value)}
+          className={`px-3 py-1 rounded-full border bg-white ${userFilter ? "border-taskora-red text-taskora-red" : "border-pebble text-steel hover:border-steel"}`}
+          aria-label="Filter by primary user"
+        >
+          <option value="">All users</option>
+          {userOptions.map((u) => <option key={u} value={u}>{u}</option>)}
+        </select>
+        {filtersActive && (
+          <button onClick={() => { setProgramFilter(""); setUserFilter(""); }}
+            className="px-3 py-1 rounded-full border border-pebble text-steel hover:border-steel">
+            Clear ✕
+          </button>
+        )}
       </div>
 
       {brief.quick_stats && (
@@ -329,10 +380,10 @@ function DailyBriefInner() {
       <Section title="📅 Due This Week" count={brief.due_this_week.length} color="bg-blue-500">{rows(brief.due_this_week)}</Section>
       <Section title="🚫 Blocked" count={brief.blocked_tasks.length} color="bg-red-500">{rows(brief.blocked_tasks)}</Section>
 
-      {brief.initiative_progress.length > 0 && (
-        <Section title="🚀 Initiative Progress" count={brief.initiative_progress.length} color="bg-midnight">
+      {initProgress.length > 0 && (
+        <Section title="🚀 Initiative Progress" count={initProgress.length} color="bg-midnight">
           <div className="space-y-3">
-            {brief.initiative_progress.map((p) => {
+            {initProgress.map((p) => {
               const pct = Math.round(p.completion_pct ?? 0);
               const href = linkHref(p.link);
               return (
