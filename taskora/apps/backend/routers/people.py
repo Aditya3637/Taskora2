@@ -22,7 +22,7 @@ from supabase import Client
 
 from auth import get_current_user
 from deps import get_supabase, people_board_access_ok
-from routers._decision_context import enrich_task_items
+from routers._decision_context import enrich_task_items, make_link
 
 router = APIRouter(prefix="/api/v1/people", tags=["people"])
 
@@ -57,29 +57,35 @@ def _column_of(task: dict) -> str:
     return "todo"  # backlog, todo, anything else
 
 
-def _accessible_biz_ids(sb: Client, uid: str) -> list[str]:
-    rows = (
-        sb.table("business_members")
-        .select("business_id")
-        .eq("user_id", uid)
-        .execute()
-        .data
-    )
+def _member_biz_ids(sb: Client, uid: str) -> list[str]:
     return [
         r["business_id"]
-        for r in rows
-        if people_board_access_ok(sb, r["business_id"], uid)
+        for r in (
+            sb.table("business_members")
+            .select("business_id")
+            .eq("user_id", uid)
+            .execute()
+            .data
+        )
     ]
 
 
 def _scope(sb: Client, uid: str):
-    """(accessible_biz_ids, init_meta, tasks). Raises 403 if no access."""
-    biz_ids = _accessible_biz_ids(sb, uid)
-    if not biz_ids:
+    """(mode, biz_ids, init_meta, tasks). Raises 403 if no access.
+
+    mode='full' — owner/admin or explicitly granted in ≥1 business: sees the
+    whole roster. mode='self' — no full access but the caller owns work
+    (a task's primary, or an initiative owner/primary): sees only themselves.
+    """
+    member = _member_biz_ids(sb, uid)
+    if not member:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="People board access required",
         )
+    full = [b for b in member if people_board_access_ok(sb, b, uid)]
+    biz_ids = full if full else member
+
     init_meta: dict = {}
     for r in (
         sb.table("initiatives")
@@ -100,7 +106,22 @@ def _scope(sb: Client, uid: str):
             .execute()
             .data
         )
-    return biz_ids, init_meta, tasks
+
+    if full:
+        return "full", biz_ids, init_meta, tasks
+
+    owns_work = (
+        any(t.get("primary_stakeholder_id") == uid for t in tasks)
+        or any(i.get("owner_id") == uid
+               or i.get("primary_stakeholder_id") == uid
+               for i in init_meta.values())
+    )
+    if not owns_work:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="People board access required",
+        )
+    return "self", biz_ids, init_meta, tasks
 
 
 def _empty_counts() -> dict:
@@ -159,6 +180,19 @@ def _approver_ids_by_task(sb: Client, task_ids: list[str]) -> dict:
     return out
 
 
+_PUSH_STATES = ("pending_decision", "blocked", "reopened")
+
+
+def _needs_push(status: str | None, due: str | None, today: str) -> str | None:
+    """Reason this item needs a push, or None. Overdue takes precedence so the
+    most actionable label wins."""
+    if due and due < today and status not in _DONE:
+        return "overdue"
+    if status in _PUSH_STATES:
+        return status
+    return None
+
+
 @router.get("/board")
 def get_board(
     user: dict = Depends(get_current_user),
@@ -166,7 +200,7 @@ def get_board(
 ):
     """Gallery: people who own work, each with load counters + push-score."""
     uid = user["id"]
-    biz_ids, init_meta, tasks = _scope(sb, uid)
+    mode, biz_ids, init_meta, tasks = _scope(sb, uid)
 
     task_ids = [t["id"] for t in tasks if t.get("id")]
     stk_rows = (
@@ -189,6 +223,10 @@ def get_board(
         if i.get("primary_stakeholder_id"):
             owner_ids.add(i["primary_stakeholder_id"])
     owner_ids.discard(None)
+
+    # Self mode: a work-owner without full access sees only their own card.
+    if mode == "self":
+        owner_ids = {uid} & owner_ids
 
     # Per-person resolved metadata
     name_map, avatar_map = {}, {}
@@ -251,7 +289,7 @@ def get_board(
     totals["people"] = len(people)
 
     return {"generated_at": date.today().isoformat(),
-            "people": people, "totals": totals}
+            "mode": mode, "people": people, "totals": totals}
 
 
 @router.get("/board/{target_user_id}")
@@ -263,7 +301,12 @@ def get_person_focus(
     """Focus: one person's full picture — tasks grouped Program > Initiative,
     each pre-bucketed into a Kanban column."""
     uid = user["id"]
-    biz_ids, init_meta, all_tasks = _scope(sb, uid)
+    mode, biz_ids, init_meta, all_tasks = _scope(sb, uid)
+    if mode == "self" and target_user_id != uid:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="People board access required",
+        )
 
     all_ids = [t["id"] for t in all_tasks if t.get("id")]
     stk_for = {
@@ -363,6 +406,120 @@ def get_person_focus(
     owned = [t for t in tasks if t.get("primary_stakeholder_id") == target_user_id]
     counts = _count(owned, pending_appr)
 
+    # ── Needs a push ────────────────────────────────────────────────────────
+    # Across this person's owned tasks, what is stalled
+    # (overdue/blocked/pending_decision/reopened) and pending with *someone
+    # else* — a sub-task assignee, a secondary stakeholder, or a stuck
+    # building/client row. Grouped by the person it is pending with so
+    # management knows who to push, and how many items.
+    today = date.today().isoformat()
+    owned_ids = [t["id"] for t in owned]
+    by_id = {t["id"]: t for t in owned}
+
+    subs = (
+        sb.table("subtasks")
+        .select("id, task_id, title, status, assignee_id")
+        .in_("task_id", owned_ids)
+        .execute()
+        .data
+        if owned_ids else []
+    )
+    sec_by_task: dict = {}
+    for r in (
+        sb.table("task_stakeholders")
+        .select("task_id, user_id, role")
+        .in_("task_id", owned_ids)
+        .execute()
+        .data
+        if owned_ids else []
+    ):
+        if r.get("role") == "secondary" and r["user_id"] != target_user_id:
+            sec_by_task.setdefault(r["task_id"], []).append(r["user_id"])
+    ents = (
+        sb.table("task_entities")
+        .select("task_id, entity_id, entity_type, per_entity_status, "
+                "per_entity_end_date")
+        .in_("task_id", owned_ids)
+        .execute()
+        .data
+        if owned_ids else []
+    )
+    ent_name: dict = {}
+    b_ids = [e["entity_id"] for e in ents if e.get("entity_type") == "building"]
+    c_ids = [e["entity_id"] for e in ents if e.get("entity_type") == "client"]
+    if b_ids:
+        for r in sb.table("buildings").select("id, name").in_("id", b_ids).execute().data:
+            ent_name[r["id"]] = r["name"]
+    if c_ids:
+        for r in sb.table("clients").select("id, name").in_("id", c_ids).execute().data:
+            ent_name[r["id"]] = r["name"]
+
+    UNASSIGNED = "__unassigned__"
+    push_groups: dict = {}
+
+    def _add(owner_id, item):
+        key = owner_id or UNASSIGNED
+        push_groups.setdefault(key, []).append(item)
+
+    for t in owned:
+        tr = _needs_push(t.get("status"), t.get("due_date"), today)
+        secs = sec_by_task.get(t["id"], [])
+        ctx = {"task_id": t["id"],
+               "initiative_name": t.get("initiative_name"),
+               "program_name": t.get("program_name")}
+        if tr and secs:
+            for s in secs:
+                _add(s, {"kind": "task", "id": t["id"],
+                         "title": t.get("title") or "Untitled",
+                         "reason": tr, "link": make_link(t),
+                         "days_overdue": t.get("days_overdue", 0), **ctx})
+        for e in (e for e in ents if e["task_id"] == t["id"]):
+            er = _needs_push(e.get("per_entity_status"),
+                             e.get("per_entity_end_date"), today)
+            if not er:
+                continue
+            owner = secs[0] if len(secs) == 1 else None
+            _add(owner, {"kind": "entity", "id": e["entity_id"],
+                         "title": ent_name.get(e["entity_id"],
+                                               e.get("entity_type") or "Item"),
+                         "reason": er, "link": make_link(t),
+                         "days_overdue": 0, **ctx})
+        for st in (s for s in subs if s["task_id"] == t["id"]):
+            if st.get("status") in _DONE:
+                continue
+            sr = _needs_push(st.get("status"), None, today) or tr
+            if not sr:
+                continue
+            if st.get("assignee_id") == target_user_id:
+                continue
+            _add(st.get("assignee_id"),
+                 {"kind": "subtask", "id": st["id"],
+                  "title": st.get("title") or "Untitled",
+                  "reason": sr, "link": make_link(t, subtask_id=st["id"]),
+                  "days_overdue": 0, **ctx})
+
+    push_uids = [k for k in push_groups if k != UNASSIGNED]
+    pname, pavatar = {}, {}
+    if push_uids:
+        for r in (
+            sb.table("users").select("id, name, avatar_url")
+            .in_("id", push_uids).execute().data
+        ):
+            pname[r["id"]] = r.get("name") or ""
+            pavatar[r["id"]] = r.get("avatar_url")
+    needs_push = []
+    for key, items in push_groups.items():
+        is_un = key == UNASSIGNED
+        needs_push.append({
+            "user_id": None if is_un else key,
+            "name": "Unassigned" if is_un else pname.get(key, ""),
+            "avatar_url": None if is_un else pavatar.get(key),
+            "count": len(items),
+            "items": items,
+        })
+    needs_push.sort(key=lambda g: (g["user_id"] is None, -g["count"],
+                                   (g["name"] or "").lower()))
+
     urow = (
         sb.table("users").select("id, name, avatar_url")
         .eq("id", target_user_id).execute().data
@@ -392,4 +549,5 @@ def get_person_focus(
         "push_score": _push_score(counts),
         "columns": COLUMNS,
         "programs": programs,
+        "needs_push": needs_push,
     }

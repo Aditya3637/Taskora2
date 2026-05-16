@@ -41,6 +41,7 @@ def _seed():
             {"id": CAROL, "name": "Carol Cleared", "email": "c@x.io", "avatar_url": None},
         ],
         "businesses": [{"id": "BIZ", "name": "Acme", "type": "building"}],
+        "buildings": [{"id": "B1", "name": "Tower B"}],
         "business_members": [
             {"business_id": "BIZ", "user_id": OWNER, "role": "owner"},
             {"business_id": "BIZ", "user_id": MGR, "role": "admin"},
@@ -86,9 +87,24 @@ def _seed():
         ],
         "task_stakeholders": [
             {"task_id": "T5", "user_id": ALICE, "role": "contributor"},
+            # Bob is a secondary on Alice's blocked task → push lands on Bob.
+            {"task_id": "T2", "user_id": BOB, "role": "secondary"},
         ],
-        "task_entities": [],
-        "subtasks": [],
+        "task_entities": [
+            # Stuck building under Alice's pending-decision task, no secondary
+            # → Unassigned bucket.
+            {"task_id": "T3", "entity_id": "B1", "entity_type": "building",
+             "per_entity_status": "blocked", "per_entity_end_date": None},
+        ],
+        "subtasks": [
+            # Under Alice's overdue T1: parent overdue makes these "needs push".
+            {"id": "ST1", "task_id": "T1", "title": "Wire panel",
+             "status": "in_progress", "assignee_id": CAROL},
+            {"id": "ST2", "task_id": "T1", "title": "Alice's own bit",
+             "status": "in_progress", "assignee_id": ALICE},
+            {"id": "ST3", "task_id": "T1", "title": "Orphan step",
+             "status": "reopened", "assignee_id": None},
+        ],
         "comments": [],
         "item_watchers": [
             {"id": "W1", "task_id": "T6", "user_id": ALICE, "role": "approver",
@@ -221,3 +237,56 @@ def test_permission_patch_gating_and_effect(sb):
     _CUR["u"] = OWNER
     assert client.patch("/api/v1/businesses/BIZ/members/u-nope/permissions",
                          json={"can_view_people_board": True}).status_code == 404
+
+
+# ── Self view (work-owner, no grant) ─────────────────────────────────────────
+
+def test_self_view_only_own_card_and_focus(sb):
+    _CUR["u"] = ALICE  # member, not granted, but owns work
+    b = client.get("/api/v1/people/board")
+    assert b.status_code == 200
+    body = b.json()
+    assert body["mode"] == "self"
+    assert {p["user_id"] for p in body["people"]} == {ALICE}
+
+    # Can open own focus, but not anyone else's.
+    assert client.get(f"/api/v1/people/board/{ALICE}").status_code == 200
+    assert client.get(f"/api/v1/people/board/{OWNER}").status_code == 403
+
+    # Full-access viewer still sees everyone.
+    _CUR["u"] = OWNER
+    assert client.get("/api/v1/people/board").json()["mode"] == "full"
+
+
+# ── Needs a push ─────────────────────────────────────────────────────────────
+
+def test_needs_push_grouping_and_attribution(sb):
+    _CUR["u"] = OWNER
+    f = client.get(f"/api/v1/people/board/{ALICE}").json()
+    groups = {g["user_id"]: g for g in f["needs_push"]}
+
+    # Bob: secondary on Alice's blocked T2 → one task item.
+    assert groups[BOB]["count"] == 1
+    bi = groups[BOB]["items"][0]
+    assert bi["kind"] == "task" and bi["id"] == "T2" and bi["reason"] == "blocked"
+
+    # Carol: assignee of a subtask under the overdue T1 → inherits "overdue".
+    assert groups[CAROL]["count"] == 1
+    ci = groups[CAROL]["items"][0]
+    assert ci["kind"] == "subtask" and ci["id"] == "ST1"
+    assert ci["reason"] == "overdue" and ci["link"]["subtask_id"] == "ST1"
+
+    # Unassigned: orphan reopened subtask + stuck building (resolved name).
+    un = groups[None]
+    assert un["name"] == "Unassigned" and un["count"] == 2
+    kinds = {i["kind"] for i in un["items"]}
+    assert kinds == {"subtask", "entity"}
+    ent = next(i for i in un["items"] if i["kind"] == "entity")
+    assert ent["title"] == "Tower B" and ent["reason"] == "blocked"
+
+    # Alice's own subtask (ST2, assignee=Alice) is never "pending with others".
+    all_ids = {i["id"] for g in f["needs_push"] for i in g["items"]}
+    assert "ST2" not in all_ids
+
+    # Unassigned group always sorts last.
+    assert f["needs_push"][-1]["user_id"] is None
