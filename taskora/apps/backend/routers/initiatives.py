@@ -610,10 +610,13 @@ def get_initiative_gantt(
         )
     subtasks.sort(key=lambda s: s.get("created_at") or "")
 
+    # milestones is polymorphic: (parent_type, parent_id) + name + uniform_date
+    # (no title/due_date/initiative_id columns).
     milestones = (
         sb.table("milestones")
-        .select("id, title, due_date")
-        .eq("initiative_id", initiative_id)
+        .select("id, name, uniform_date")
+        .eq("parent_type", "initiative")
+        .eq("parent_id", initiative_id)
         .execute()
         .data
     )
@@ -721,11 +724,11 @@ def get_initiative_gantt(
             "kind": "milestone",
             "parent_id": None,
             "depth": 0,
-            "title": m["title"],
+            "title": m["name"],
             "status": None,
             "priority": None,
             "start_date": None,
-            "end_date": m.get("due_date"),
+            "end_date": m.get("uniform_date"),
             "is_milestone": True,
             "depends_on": [],
             "entities": [],

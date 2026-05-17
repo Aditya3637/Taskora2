@@ -50,8 +50,8 @@ def _store():
         "buildings": [{"id": "B1", "name": "Tower A"}],
         "clients": [{"id": "C1", "name": "Acme"}],
         "milestones": [
-            {"id": "M1", "title": "Launch", "due_date": "2026-06-15",
-             "initiative_id": INIT},
+            {"id": "M1", "name": "Launch", "uniform_date": "2026-06-15",
+             "parent_type": "initiative", "parent_id": INIT},
         ],
     }
 
