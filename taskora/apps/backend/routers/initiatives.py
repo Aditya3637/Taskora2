@@ -124,7 +124,7 @@ def list_initiatives_for_business(
     require_member(sb, business_id, user["id"])
     initiatives = (
         sb.table("initiatives")
-        .select("*, initiative_entities(*), programs(id, name), themes(id, name, color, program_id)")
+        .select("*, initiative_entities(*), programs(id, name), themes!fk_initiative_theme(id, name, color, program_id)")
         .eq("business_id", business_id)
         .neq("status", "cancelled")
         .execute()
@@ -149,7 +149,7 @@ def get_initiative(
 ):
     data = (
         sb.table("initiatives")
-        .select("*, initiative_entities(*), programs(id, name), themes(id, name, color, program_id)")
+        .select("*, initiative_entities(*), programs(id, name), themes!fk_initiative_theme(id, name, color, program_id)")
         .eq("id", initiative_id)
         .execute()
         .data
