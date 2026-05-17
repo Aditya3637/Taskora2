@@ -709,10 +709,13 @@ export default function ProgramsPage() {
       }
       setBusinessId(bizId);
 
-      const data = await apiFetch(`/api/v1/programs?business_id=${bizId}`);
+      // Independent calls — fetch the program list and the caller's role in
+      // parallel instead of serially.
+      const [data, roleData] = await Promise.all([
+        apiFetch(`/api/v1/programs?business_id=${bizId}`),
+        apiFetch(`/api/v1/businesses/${bizId}/my-role`).catch(() => null),
+      ]);
       setPrograms(Array.isArray(data) ? data : []);
-
-      const roleData = await apiFetch(`/api/v1/businesses/${bizId}/my-role`).catch(() => null);
       if (roleData?.role === "owner" || roleData?.role === "admin") setCanEdit(true);
     } catch (err: any) {
       const msg = err?.message ?? err?.toString?.() ?? "Unknown error";

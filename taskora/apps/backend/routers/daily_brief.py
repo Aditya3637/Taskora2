@@ -164,10 +164,22 @@ def get_daily_brief(
         if prog_ids:
             for r in sb.table("programs").select("id, name").in_("id", prog_ids).execute().data:
                 prog_names[r["id"]] = r["name"]
+        # One batched fetch for every active initiative's tasks instead of a
+        # query-per-initiative (the previous N+1 — the dominant Daily Brief
+        # cost when a workspace had many active initiatives).
+        all_init_ids = [i["id"] for i in inits]
+        tasks_by_init: dict = {}
+        if all_init_ids:
+            for r in (
+                sb.table("tasks")
+                .select("id, status, due_date, approval_state, initiative_id")
+                .in_("initiative_id", all_init_ids)
+                .execute()
+                .data
+            ):
+                tasks_by_init.setdefault(r["initiative_id"], []).append(r)
         for init in inits:
-            it_rows = sb.table("tasks").select(
-                "id, status, due_date, approval_state"
-            ).eq("initiative_id", init["id"]).execute().data
+            it_rows = tasks_by_init.get(init["id"], [])
             it_total = len(it_rows)
             it_done  = sum(1 for t in it_rows if t["status"] == "done")
             initiative_progress.append({

@@ -1,4 +1,5 @@
 from typing import List, Literal, Optional
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -9,6 +10,24 @@ from deps import get_supabase, get_member_role, require_member
 from notifications import send_push_to_user
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
+
+
+def _parallel(*thunks):
+    """Run independent zero-arg DB thunks concurrently; results in input order.
+
+    Supabase calls are blocking HTTP round-trips. FastAPI already runs this
+    sync endpoint in a worker thread, and the underlying httpx client is
+    thread-safe for concurrent requests, so fanning a set of *independent*
+    queries across a small pool turns N serial round-trips into ~1 wall-clock
+    round-trip. Only pass thunks with no data dependency on each other.
+    """
+    if not thunks:
+        return []
+    if len(thunks) == 1:
+        return [thunks[0]()]
+    with ThreadPoolExecutor(max_workers=min(len(thunks), 8)) as ex:
+        futs = [ex.submit(t) for t in thunks]
+        return [f.result() for f in futs]
 
 # Valid status values shared by task-level and per-entity updates.
 # Source of truth — matches the CHECK constraint on tasks.status (migration 002)
@@ -129,29 +148,38 @@ def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
     if not tasks:
         return tasks
     task_ids = [t["id"] for t in tasks]
-    all_entities = sb.table("task_entities").select("*").in_("task_id", task_ids).execute().data
+
+    # Wave 1: every query below depends only on task_ids and is independent of
+    # the others, so fan them out concurrently instead of 4 serial round-trips.
+    all_entities, log_rows, c_rows, (w_by_task, w_by_entity, _) = _parallel(
+        lambda: sb.table("task_entities").select("*").in_("task_id", task_ids).execute().data,
+        lambda: sb.table("task_date_change_log").select("task_id, entity_id").in_("task_id", task_ids).execute().data,
+        lambda: sb.table("comments")
+            .select("task_id, entity_id, subtask_id, content, kind, user_id, created_at")
+            .in_("task_id", task_ids).order("created_at", desc=True).execute().data,
+        lambda: _watchers_for_tasks(sb, task_ids),
+    )
     entities_by_task: dict = {}
     for e in all_entities:
         entities_by_task.setdefault(e["task_id"], []).append(e)
 
+    # Wave 2: name lookups that each depend on a Wave-1 result but not on each
+    # other (building/client names ← entities, comment authors ← comments).
     building_ids = list({e["entity_id"] for e in all_entities if e.get("entity_type") == "building"})
     client_ids = list({e["entity_id"] for e in all_entities if e.get("entity_type") == "client"})
-    name_map: dict = {}
-    if building_ids:
-        for r in sb.table("buildings").select("id, name").in_("id", building_ids).execute().data:
-            name_map[r["id"]] = r["name"]
-    if client_ids:
-        for r in sb.table("clients").select("id, name").in_("id", client_ids).execute().data:
-            name_map[r["id"]] = r["name"]
-
-    # Batch the due-date-change counts: task-level (entity_id NULL) and per-entity.
-    log_rows = (
-        sb.table("task_date_change_log")
-        .select("task_id, entity_id")
-        .in_("task_id", task_ids)
-        .execute()
-        .data
+    c_user_ids = list({c["user_id"] for c in c_rows if c.get("user_id")})
+    building_rows, client_rows, c_user_rows = _parallel(
+        lambda: sb.table("buildings").select("id, name").in_("id", building_ids).execute().data if building_ids else [],
+        lambda: sb.table("clients").select("id, name").in_("id", client_ids).execute().data if client_ids else [],
+        lambda: sb.table("users").select("id, name").in_("id", c_user_ids).execute().data if c_user_ids else [],
     )
+    name_map: dict = {}
+    for r in building_rows:
+        name_map[r["id"]] = r["name"]
+    for r in client_rows:
+        name_map[r["id"]] = r["name"]
+
+    # Due-date-change counts: task-level (entity_id NULL) and per-entity.
     task_change_count: dict = {}
     entity_change_count: dict = {}
     for lr in log_rows:
@@ -162,20 +190,9 @@ def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
         elif tid:
             task_change_count[tid] = task_change_count.get(tid, 0) + 1
 
-    # Latest comment per scope (task-level and per-entity), batched.
-    c_rows = (
-        sb.table("comments")
-        .select("task_id, entity_id, subtask_id, content, kind, user_id, created_at")
-        .in_("task_id", task_ids)
-        .order("created_at", desc=True)
-        .execute()
-        .data
-    )
-    c_user_ids = list({c["user_id"] for c in c_rows if c.get("user_id")})
-    c_name_map: dict = {}
-    if c_user_ids:
-        for u in sb.table("users").select("id, name").in_("id", c_user_ids).execute().data:
-            c_name_map[u["id"]] = u.get("name") or ""
+    # Latest comment per scope (task-level and per-entity). c_rows / watchers
+    # were fetched in Wave 1, comment-author names in Wave 2.
+    c_name_map: dict = {u["id"]: (u.get("name") or "") for u in c_user_rows}
     latest_task_comment: dict = {}
     latest_entity_comment: dict = {}
     for c in c_rows:  # already newest-first
@@ -190,9 +207,6 @@ def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
             latest_entity_comment.setdefault((tid, eid), preview)
         elif not sid:
             latest_task_comment.setdefault(tid, preview)
-
-    # Followers / approvers per scope (task + entity rows), batched.
-    w_by_task, w_by_entity, _ = _watchers_for_tasks(sb, task_ids)
 
     for task in tasks:
         entities = entities_by_task.get(task["id"], [])
@@ -221,10 +235,16 @@ def get_my_tasks(
     For the paginated web flow, see /my/page.
     """
     uid = user["id"]
-    primary_ids = [r["id"] for r in sb.table("tasks").select("id").eq("primary_stakeholder_id", uid).execute().data]
-    secondary_ids = [r["task_id"] for r in sb.table("task_stakeholders").select("task_id").eq("user_id", uid).execute().data]
-    # A follower/approver at any scope sees the whole parent task.
-    watcher_ids = [r["task_id"] for r in sb.table("item_watchers").select("task_id").eq("user_id", uid).execute().data]
+    # The three membership lookups are independent — run them concurrently.
+    primary_rows, secondary_rows, watcher_rows = _parallel(
+        lambda: sb.table("tasks").select("id").eq("primary_stakeholder_id", uid).execute().data,
+        lambda: sb.table("task_stakeholders").select("task_id").eq("user_id", uid).execute().data,
+        # A follower/approver at any scope sees the whole parent task.
+        lambda: sb.table("item_watchers").select("task_id").eq("user_id", uid).execute().data,
+    )
+    primary_ids = [r["id"] for r in primary_rows]
+    secondary_ids = [r["task_id"] for r in secondary_rows]
+    watcher_ids = [r["task_id"] for r in watcher_rows]
     all_ids = list(set(primary_ids + secondary_ids + watcher_ids))
     if not all_ids:
         return []
@@ -248,19 +268,16 @@ def get_my_tasks_page(
     Returns: {"items": [...tasks], "next_cursor": "<iso>" | None}
     """
     uid = user["id"]
-    primary_ids = [
-        r["id"]
-        for r in sb.table("tasks").select("id").eq("primary_stakeholder_id", uid).execute().data
-    ]
-    secondary_ids = [
-        r["task_id"]
-        for r in sb.table("task_stakeholders").select("task_id").eq("user_id", uid).execute().data
-    ]
-    # A follower/approver at any scope sees the whole parent task.
-    watcher_ids = [
-        r["task_id"]
-        for r in sb.table("item_watchers").select("task_id").eq("user_id", uid).execute().data
-    ]
+    # The three membership lookups are independent — run them concurrently.
+    primary_rows, secondary_rows, watcher_rows = _parallel(
+        lambda: sb.table("tasks").select("id").eq("primary_stakeholder_id", uid).execute().data,
+        lambda: sb.table("task_stakeholders").select("task_id").eq("user_id", uid).execute().data,
+        # A follower/approver at any scope sees the whole parent task.
+        lambda: sb.table("item_watchers").select("task_id").eq("user_id", uid).execute().data,
+    )
+    primary_ids = [r["id"] for r in primary_rows]
+    secondary_ids = [r["task_id"] for r in secondary_rows]
+    watcher_ids = [r["task_id"] for r in watcher_rows]
     all_ids = list(set(primary_ids + secondary_ids + watcher_ids))
     if not all_ids:
         return {"items": [], "next_cursor": None}
