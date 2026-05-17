@@ -560,17 +560,56 @@ def update_initiative_attachment(
     return result.data[0] if result.data else {}
 
 
-@router.post("/{initiative_id}/gantt")
+@router.get("/{initiative_id}/gantt")
 def get_initiative_gantt(
     initiative_id: str,
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    """Return gantt-ready data for the initiative."""
+    """Return a flat, ordered, hierarchical row list for the initiative Gantt.
+
+    Rows = tasks → their (recursively nested) subtasks → milestones. Every
+    task/subtask is emitted even when it has no date, so the chart shows the
+    label row with no bar. When date_mode='per_entity', the parent row gets no
+    bar of its own and one child row per entity (building & client) is emitted
+    using that entity's per_entity_end_date. Since there is no planned-start
+    column, a row's start is derived from the initiative start (clamped to be
+    on/before the row's end); a row with no end gets no start either.
+    """
     initiative = _get_initiative_or_404(sb, initiative_id)
     require_member(sb, initiative["business_id"], user["id"])
 
-    # Milestones
+    init_start = initiative.get("start_date")
+
+    def _derive_start(end):
+        """Initiative start, but never after the row's end. None if no end."""
+        if not end or not init_start:
+            return None
+        return init_start if init_start <= end else None
+
+    tasks = (
+        sb.table("tasks")
+        .select("id, title, due_date, status, priority, depends_on, date_mode, "
+                "created_at, task_entities(entity_type, entity_id, per_entity_end_date)")
+        .eq("initiative_id", initiative_id)
+        .execute()
+        .data
+    )
+    tasks.sort(key=lambda t: t.get("created_at") or "")
+    task_ids = [t["id"] for t in tasks]
+
+    subtasks = []
+    if task_ids:
+        subtasks = (
+            sb.table("subtasks")
+            .select("id, title, status, task_id, parent_subtask_id, date_mode, "
+                    "created_at, subtask_entities(entity_type, entity_id, per_entity_end_date)")
+            .in_("task_id", task_ids)
+            .execute()
+            .data
+        )
+    subtasks.sort(key=lambda s: s.get("created_at") or "")
+
     milestones = (
         sb.table("milestones")
         .select("id, title, due_date")
@@ -579,56 +618,127 @@ def get_initiative_gantt(
         .data
     )
 
-    # Tasks with entities
-    tasks = (
-        sb.table("tasks")
-        .select("id, title, due_date, status, priority, depends_on, task_entities(entity_type, entity_id)")
-        .eq("initiative_id", initiative_id)
-        .execute()
-        .data
-    )
-
-    # Collect all entity IDs to resolve names in bulk
-    building_ids: list = []
-    client_ids: list = []
-    for task in tasks:
-        for te in task.get("task_entities") or []:
-            if te.get("entity_type") == "building":
-                building_ids.append(te["entity_id"])
-            elif te.get("entity_type") == "client":
-                client_ids.append(te["entity_id"])
-
+    # Resolve building + client names in bulk (across task AND subtask entities).
+    building_ids: set = set()
+    client_ids: set = set()
+    for holder in (*tasks, *subtasks):
+        ents = holder.get("task_entities") or holder.get("subtask_entities") or []
+        for e in ents:
+            if e.get("entity_type") == "building":
+                building_ids.add(e["entity_id"])
+            elif e.get("entity_type") == "client":
+                client_ids.add(e["entity_id"])
     name_map: dict = {}
     if building_ids:
-        for r in sb.table("buildings").select("id, name").in_("id", list(set(building_ids))).execute().data:
+        for r in sb.table("buildings").select("id, name").in_("id", list(building_ids)).execute().data:
             name_map[r["id"]] = r["name"]
     if client_ids:
-        for r in sb.table("clients").select("id, name").in_("id", list(set(client_ids))).execute().data:
+        for r in sb.table("clients").select("id, name").in_("id", list(client_ids)).execute().data:
             name_map[r["id"]] = r["name"]
 
-    gantt_tasks = []
-    for task in tasks:
-        entity_names = [
-            name_map.get(te["entity_id"], te["entity_id"])
-            for te in (task.get("task_entities") or [])
+    def _entities(holder):
+        ents = holder.get("task_entities") or holder.get("subtask_entities") or []
+        return [
+            {
+                "type": e.get("entity_type"),
+                "name": name_map.get(e["entity_id"], e["entity_id"]),
+                "end_date": e.get("per_entity_end_date"),
+            }
+            for e in ents
         ]
-        gantt_tasks.append({
-            "id": task["id"],
-            "title": task["title"],
-            "due_date": task.get("due_date"),
-            "status": task.get("status"),
-            "priority": task.get("priority"),
-            "entity_names": entity_names,
-            "depends_on": task.get("depends_on") or [],
+
+    rows: list = []
+
+    def _emit(holder, *, kind, parent_id, depth, inherited_end):
+        """Append a node's row (+ per-entity child rows) and return its end."""
+        ents = _entities(holder)
+        if kind == "task":
+            own_end = holder.get("due_date")
+        else:  # subtask: no date column — use per-entity max, else inherit task
+            per = [e["end_date"] for e in ents if e.get("end_date")]
+            own_end = max(per) if per else inherited_end
+
+        per_entity = holder.get("date_mode") == "per_entity" and any(
+            e.get("end_date") for e in ents
+        )
+        # In per-entity mode the parent itself spans nothing; entity rows carry
+        # the dates. Otherwise the parent row holds the bar.
+        row_end = None if per_entity else own_end
+        rows.append({
+            "id": holder["id"],
+            "kind": kind,
+            "parent_id": parent_id,
+            "depth": depth,
+            "title": holder["title"],
+            "status": holder.get("status"),
+            "priority": holder.get("priority"),
+            "start_date": _derive_start(row_end),
+            "end_date": row_end,
+            "is_milestone": False,
+            "depends_on": holder.get("depends_on") or [],
+            "entities": ents,
+        })
+        if per_entity:
+            for e in ents:
+                if not e.get("end_date"):
+                    continue
+                rows.append({
+                    "id": f"{holder['id']}::{e['type']}:{e['name']}",
+                    "kind": "entity",
+                    "parent_id": holder["id"],
+                    "depth": depth + 1,
+                    "title": e["name"],
+                    "status": holder.get("status"),
+                    "priority": holder.get("priority"),
+                    "start_date": _derive_start(e["end_date"]),
+                    "end_date": e["end_date"],
+                    "is_milestone": False,
+                    "depends_on": [],
+                    "entities": [e],
+                })
+        return own_end
+
+    # Index subtasks by their parent (task id or parent_subtask_id) for nesting.
+    kids_of: dict = {}
+    for s in subtasks:
+        key = s.get("parent_subtask_id") or s["task_id"]
+        kids_of.setdefault(key, []).append(s)
+
+    def _emit_subtree(node_id, depth, inherited_end):
+        for s in kids_of.get(node_id, []):
+            _emit(s, kind="subtask", parent_id=node_id, depth=depth,
+                   inherited_end=inherited_end)
+            _emit_subtree(s["id"], depth + 1, inherited_end)
+
+    for t in tasks:
+        task_end = _emit(t, kind="task", parent_id=None, depth=0,
+                         inherited_end=None)
+        _emit_subtree(t["id"], 1, task_end)
+
+    for m in milestones:
+        rows.append({
+            "id": m["id"],
+            "kind": "milestone",
+            "parent_id": None,
+            "depth": 0,
+            "title": m["title"],
+            "status": None,
+            "priority": None,
+            "start_date": None,
+            "end_date": m.get("due_date"),
+            "is_milestone": True,
+            "depends_on": [],
+            "entities": [],
         })
 
     return {
         "initiative": {
             "id": initiative["id"],
             "title": initiative["name"],
-            "start_date": initiative.get("start_date"),
+            "start_date": init_start,
             "end_date": initiative.get("target_end_date"),
         },
-        "milestones": milestones,
-        "tasks": gantt_tasks,
+        "start_date": init_start,
+        "end_date": initiative.get("target_end_date"),
+        "rows": rows,
     }

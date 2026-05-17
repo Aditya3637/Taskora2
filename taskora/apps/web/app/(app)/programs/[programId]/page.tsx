@@ -1,7 +1,8 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Plus, User, X, ChevronDown, ChevronRight } from "lucide-react";
+import { ArrowLeft, Plus, User, X, ChevronDown, ChevronRight, GanttChartSquare } from "lucide-react";
+import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
@@ -345,6 +346,15 @@ function InitiativeCard({ init }: { init: Initiative }) {
               📅 {init.target_end_date}
             </span>
           )}
+          <Link
+            href={`/gantt?initiative=${init.id}`}
+            title="Open Gantt chart"
+            className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-medium border border-pebble text-steel hover:border-ocean hover:text-ocean transition-colors whitespace-nowrap ${
+              init.target_end_date ? "" : "ml-auto"
+            }`}
+          >
+            <GanttChartSquare className="w-3.5 h-3.5" /> Gantt
+          </Link>
         </div>
 
         <h3 className="font-semibold text-midnight text-base mb-2">{init.name}</h3>
