@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import { X } from "lucide-react";
 
@@ -73,6 +73,12 @@ export function addDays(date: Date, n: number) {
   return d;
 }
 
+function startOfDay(d: Date) {
+  const x = new Date(d);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
 const KIND_ICON: Record<string, string> = {
   task: "▸",
   subtask: "•",
@@ -80,11 +86,16 @@ const KIND_ICON: Record<string, string> = {
   milestone: "◆",
 };
 
-const LABEL_W = 280;
-const ROW_H = 34;
-const ROW_GAP = 4;
-const HEADER_H = 40;
-const DAY_W = 24;
+// Compact geometry. Day width is computed adaptively (see GanttSVG) so a
+// ~30–45 day plan fits the viewport without horizontal scrolling.
+const LABEL_W = 196;
+const ROW_H = 24;
+const ROW_GAP = 3;
+const MONTH_H = 17;
+const DAY_H = 17;
+const HEADER_H = MONTH_H + DAY_H;
+const MIN_DAY_W = 11;
+const MAX_DAY_W = 38;
 
 interface TooltipState { x: number; y: number; row: GanttRow }
 
@@ -98,145 +109,214 @@ function entityLabel(row: GanttRow) {
   return ents.length > 2 ? `${shown} +${ents.length - 2}` : shown;
 }
 
-/** Compute a sensible [start,end] window for a set of rows. */
+/** Sensible, tight [start,end] window for a set of rows. */
 export function ganttRange(rows: GanttRow[], baseStart?: string | null, baseEnd?: string | null) {
   const today = new Date();
-  let start = addDays(today, -5);
-  let end = addDays(today, 30);
+  let start = addDays(today, -3);
+  let end = addDays(today, 24);
   const s = parseDate(baseStart);
   const e = parseDate(baseEnd);
-  if (s) start = addDays(s, -2);
-  if (e) end = addDays(e, 5);
+  if (s) start = addDays(s, -1);
+  if (e) end = addDays(e, 2);
   rows.forEach((r) => {
     const rs = parseDate(r.start_date);
     const re = parseDate(r.end_date);
-    if (rs && rs < start) start = addDays(rs, -2);
-    if (re && re > end) end = addDays(re, 5);
+    if (rs && rs < start) start = addDays(rs, -1);
+    if (re && re > end) end = addDays(re, 2);
   });
-  return { start, end };
+  return { start: startOfDay(start), end: startOfDay(end) };
 }
 
 export function GanttSVG({ rows, ganttStart, ganttEnd }: { rows: GanttRow[]; ganttStart: Date; ganttEnd: Date }) {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [containerW, setContainerW] = useState(0);
 
-  const totalDays = Math.max(1, Math.ceil((ganttEnd.getTime() - ganttStart.getTime()) / 86400000));
-  const svgW = LABEL_W + totalDays * DAY_W;
-  const svgH = HEADER_H + rows.length * (ROW_H + ROW_GAP) + 20;
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const update = () => setContainerW(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    window.addEventListener("resize", update);
+    return () => { ro.disconnect(); window.removeEventListener("resize", update); };
+  }, []);
 
-  const today = new Date();
-  const todayOffset = Math.ceil((today.getTime() - ganttStart.getTime()) / 86400000);
+  const s0 = startOfDay(ganttStart);
+  const e0 = startOfDay(ganttEnd);
+  const totalDays = Math.max(1, Math.round((e0.getTime() - s0.getTime()) / 86400000) + 1);
 
-  const idToIdx: Record<string, number> = {};
-  rows.forEach((r, i) => { idToIdx[r.id] = i; });
+  // Fit the whole window into the available width when feasible; only fall
+  // back to scrolling for very long ranges (clamped at MIN_DAY_W).
+  const avail = Math.max(360, (containerW || 960) - LABEL_W - 6);
+  const dayW = Math.min(MAX_DAY_W, Math.max(MIN_DAY_W, Math.floor(avail / totalDays)));
 
-  function dayX(date: Date) {
-    const d = Math.ceil((date.getTime() - ganttStart.getTime()) / 86400000);
-    return LABEL_W + d * DAY_W;
+  const svgW = LABEL_W + totalDays * dayW;
+  const svgH = HEADER_H + rows.length * (ROW_H + ROW_GAP) + 10;
+
+  const days: Date[] = [];
+  for (let i = 0; i < totalDays; i++) days.push(addDays(s0, i));
+
+  function colX(date: Date) {
+    return LABEL_W + Math.round((startOfDay(date).getTime() - s0.getTime()) / 86400000) * dayW;
   }
   function rowY(i: number) {
     return HEADER_H + i * (ROW_H + ROW_GAP);
   }
 
-  const ticks: { x: number; label: string }[] = [];
-  const cur = new Date(ganttStart);
-  while (cur <= ganttEnd) {
-    if (cur.getDate() === 1 || cur.getTime() === ganttStart.getTime()) {
-      ticks.push({
-        x: dayX(cur),
-        label: cur.toLocaleDateString("en-IN", { month: "short", day: "numeric" }),
+  const today = new Date();
+  const todayX = colX(today) + dayW / 2;
+  const todayIn = today >= s0 && today <= addDays(e0, 1);
+
+  // Month segments for the top band.
+  const months: { x0: number; x1: number; label: string; key: string }[] = [];
+  days.forEach((d, i) => {
+    const key = `${d.getFullYear()}-${d.getMonth()}`;
+    const x0 = LABEL_W + i * dayW;
+    const last = months[months.length - 1];
+    if (!last || last.key !== key) {
+      const showYear = d.getMonth() === 0 || months.length === 0;
+      months.push({
+        x0,
+        x1: x0 + dayW,
+        key,
+        label:
+          d.toLocaleDateString("en-IN", { month: "short" }) +
+          (showYear ? ` ’${String(d.getFullYear()).slice(2)}` : ""),
       });
+    } else {
+      last.x1 = x0 + dayW;
     }
-    cur.setDate(cur.getDate() + 7);
+  });
+
+  // Day-label cadence: denser when columns are wide enough to be legible.
+  function showDayLabel(d: Date) {
+    if (dayW >= 20) return true;
+    if (dayW >= 14) return d.getDate() % 2 === 1;
+    return d.getDay() === 1 || d.getDate() === 1; // weekly (Mon) + month start
   }
 
+  const idToIdx: Record<string, number> = {};
+  rows.forEach((r, i) => { idToIdx[r.id] = i; });
+
   return (
-    <div className="overflow-x-auto">
-      <svg width={svgW} height={svgH} className="font-sans" onMouseLeave={() => setTooltip(null)}>
+    <div ref={wrapRef} className="overflow-x-auto w-full">
+      <svg width={svgW} height={svgH} className="font-sans select-none" onMouseLeave={() => setTooltip(null)}>
+        {/* Weekend shading + faint day gridlines */}
+        {days.map((d, i) => {
+          const x = LABEL_W + i * dayW;
+          const weekend = d.getDay() === 0 || d.getDay() === 6;
+          return (
+            <g key={`c${i}`}>
+              {weekend && (
+                <rect x={x} y={HEADER_H} width={dayW} height={svgH - HEADER_H} fill="#F4F1F7" opacity={0.5} />
+              )}
+              <line x1={x} y1={HEADER_H} x2={x} y2={svgH}
+                stroke={d.getDate() === 1 ? "#CBD5E0" : "#EDEFF3"}
+                strokeWidth={d.getDate() === 1 ? 1 : 0.5} />
+            </g>
+          );
+        })}
+
+        {/* Zebra rows */}
         {rows.map((_, i) => (
-          <rect key={i} x={0} y={rowY(i)} width={svgW} height={ROW_H}
-            fill={i % 2 === 0 ? "#F7F8FA" : "#FFFFFF"} />
+          <rect key={`r${i}`} x={LABEL_W} y={rowY(i)} width={svgW - LABEL_W} height={ROW_H}
+            fill={i % 2 === 0 ? "#FAFBFC" : "#FFFFFF"} />
         ))}
 
-        <rect x={0} y={0} width={svgW} height={HEADER_H} fill="#1a1a2e" />
-        {ticks.map((t) => (
-          <g key={t.x}>
-            <line x1={t.x} y1={HEADER_H} x2={t.x} y2={svgH} stroke="#E2E8F0" strokeWidth={1} />
-            <text x={t.x + 4} y={HEADER_H / 2 + 5} fill="#FFFFFF" fontSize={10} fontWeight={600}>{t.label}</text>
-          </g>
-        ))}
-
-        {todayOffset >= 0 && todayOffset <= totalDays && (
+        {/* Today */}
+        {todayIn && (
           <>
-            <line x1={LABEL_W + todayOffset * DAY_W} y1={HEADER_H}
-              x2={LABEL_W + todayOffset * DAY_W} y2={svgH}
-              stroke="#E53E3E" strokeWidth={1.5} strokeDasharray="4 3" />
-            <text x={LABEL_W + todayOffset * DAY_W + 3} y={HEADER_H - 8}
-              fill="#E53E3E" fontSize={9} fontWeight={700}>TODAY</text>
+            <line x1={todayX} y1={HEADER_H} x2={todayX} y2={svgH} stroke="#E53E3E" strokeWidth={1.5} strokeDasharray="3 3" />
+            <circle cx={todayX} cy={HEADER_H} r={3} fill="#E53E3E" />
           </>
         )}
 
-        <rect x={0} y={HEADER_H} width={LABEL_W} height={svgH - HEADER_H} fill="white" />
-        <rect x={0} y={0} width={LABEL_W} height={HEADER_H} fill="#1a1a2e" />
-        <text x={12} y={HEADER_H / 2 + 5} fill="#FFFFFF" fontSize={11} fontWeight={700}>TASK / SUBTASK</text>
-        <line x1={LABEL_W} y1={0} x2={LABEL_W} y2={svgH} stroke="#E2E8F0" strokeWidth={1} />
+        {/* ── Two-tier header ── */}
+        <rect x={LABEL_W} y={0} width={svgW - LABEL_W} height={MONTH_H} fill="#1a1a2e" />
+        <rect x={LABEL_W} y={MONTH_H} width={svgW - LABEL_W} height={DAY_H} fill="#2d2d44" />
+        {months.map((m, i) => (
+          <g key={`m${i}`}>
+            {i > 0 && <line x1={m.x0} y1={0} x2={m.x0} y2={svgH} stroke="#CBD5E0" strokeWidth={1} />}
+            <text x={(Math.max(m.x0, LABEL_W) + m.x1) / 2} y={MONTH_H / 2 + 4}
+              fill="#FFFFFF" fontSize={10} fontWeight={700} textAnchor="middle">
+              {m.label}
+            </text>
+          </g>
+        ))}
+        {days.map((d, i) =>
+          showDayLabel(d) ? (
+            <text key={`d${i}`} x={LABEL_W + i * dayW + dayW / 2} y={MONTH_H + DAY_H / 2 + 3.5}
+              fill="#C7CBD9" fontSize={dayW < 16 ? 7.5 : 9} textAnchor="middle">
+              {d.getDate()}
+            </text>
+          ) : null,
+        )}
 
+        {/* Left label column header */}
+        <rect x={0} y={0} width={LABEL_W} height={HEADER_H} fill="#1a1a2e" />
+        <text x={10} y={HEADER_H / 2 + 4} fill="#FFFFFF" fontSize={10} fontWeight={700}>TASK / SUBTASK</text>
+        <rect x={0} y={HEADER_H} width={LABEL_W} height={svgH - HEADER_H} fill="#FFFFFF" />
+        <line x1={LABEL_W} y1={0} x2={LABEL_W} y2={svgH} stroke="#CBD5E0" strokeWidth={1} />
+
+        {/* Rows */}
         {rows.map((row, i) => {
           const y = rowY(i);
           const cy = y + ROW_H / 2;
-          const indent = 12 + row.depth * 16;
+          const indent = 8 + row.depth * 13;
           const startD = parseDate(row.start_date);
           const endD = parseDate(row.end_date);
 
           let barEl: React.ReactNode = null;
           if (row.is_milestone && endD) {
-            const mx = dayX(endD);
-            const s = 7;
+            const mx = colX(endD) + dayW / 2;
+            const sz = 6;
             barEl = (
-              <polygon points={`${mx},${cy - s} ${mx + s},${cy} ${mx},${cy + s} ${mx - s},${cy}`}
-                fill={rowColor(row)} opacity={0.95}
-                onMouseMove={(e) => setTooltip({ x: e.clientX, y: e.clientY, row })}
+              <polygon points={`${mx},${cy - sz} ${mx + sz},${cy} ${mx},${cy + sz} ${mx - sz},${cy}`}
+                fill={rowColor(row)} onMouseMove={(e) => setTooltip({ x: e.clientX, y: e.clientY, row })}
                 className="cursor-pointer" />
             );
           } else if (startD && endD) {
-            const bx = dayX(startD);
-            const bw = Math.max(DAY_W, (endD.getTime() - startD.getTime()) / 86400000 * DAY_W);
+            const bx = colX(startD);
+            const days2 = Math.max(1, Math.round((startOfDay(endD).getTime() - startOfDay(startD).getTime()) / 86400000) + 1);
             barEl = (
-              <rect x={bx} y={y + 7} width={bw} height={ROW_H - 14} rx={4}
-                fill={rowColor(row)} opacity={row.kind === "subtask" || row.kind === "entity" ? 0.6 : 0.85}
+              <rect x={bx} y={y + 4} width={Math.max(dayW, days2 * dayW)} height={ROW_H - 8} rx={3}
+                fill={rowColor(row)} opacity={row.kind === "subtask" || row.kind === "entity" ? 0.6 : 0.9}
                 onMouseMove={(e) => setTooltip({ x: e.clientX, y: e.clientY, row })}
                 className="cursor-pointer" />
             );
           } else if (endD) {
-            const mx = dayX(endD);
-            const s = 6;
+            const mx = colX(endD) + dayW / 2;
+            const sz = 5;
             barEl = (
-              <polygon points={`${mx},${cy - s} ${mx + s},${cy} ${mx},${cy + s} ${mx - s},${cy}`}
+              <polygon points={`${mx},${cy - sz} ${mx + sz},${cy} ${mx},${cy + sz} ${mx - sz},${cy}`}
                 fill={rowColor(row)} opacity={0.8}
                 onMouseMove={(e) => setTooltip({ x: e.clientX, y: e.clientY, row })}
                 className="cursor-pointer" />
             );
           }
 
-          const maxChars = Math.max(8, 30 - row.depth * 3);
-          const titleText = row.title.length > maxChars ? row.title.slice(0, maxChars - 1) + "…" : row.title;
           const ents = entityLabel(row);
+          const budget = Math.max(6, Math.floor((LABEL_W - indent - 6) / 6) - (ents ? 2 : 0));
+          let label = `${KIND_ICON[row.kind]} ${row.title}`;
+          if (ents) label += `  ${ents}`;
+          if (label.length > budget) label = label.slice(0, budget - 1) + "…";
 
           return (
             <g key={row.id}>
-              <text x={indent} y={cy - (ents ? 2 : -4)}
+              <text x={indent} y={cy + 3.5}
                 fill={row.kind === "milestone" ? MILESTONE_COLOR : "#1a1a2e"}
-                fontSize={row.depth === 0 ? 11 : 10}
-                fontWeight={row.depth === 0 ? 600 : 500}>
-                <tspan fill="#A0AEC0">{KIND_ICON[row.kind]} </tspan>{titleText}
+                fontSize={row.depth === 0 ? 10.5 : 9.5}
+                fontWeight={row.depth === 0 ? 600 : 400}>
+                {label}
               </text>
-              {ents && (
-                <text x={indent + 10} y={cy + 11} fill="#718096" fontSize={9}>{ents}</text>
-              )}
               {barEl}
             </g>
           );
         })}
 
+        {/* Dependency arrows */}
         {rows.flatMap((row) =>
           (row.depends_on ?? []).map((depId) => {
             const fromIdx = idToIdx[depId];
@@ -245,14 +325,14 @@ export function GanttSVG({ rows, ganttStart, ganttEnd }: { rows: GanttRow[]; gan
             const fromEnd = parseDate(rows[fromIdx].end_date);
             const toStart = parseDate(row.start_date) ?? parseDate(row.end_date);
             if (!fromEnd || !toStart) return null;
-            const x1 = dayX(fromEnd);
+            const x1 = colX(fromEnd) + dayW;
             const y1 = rowY(fromIdx) + ROW_H / 2;
-            const x2 = dayX(toStart);
+            const x2 = colX(toStart);
             const y2 = rowY(toIdx) + ROW_H / 2;
             return (
               <path key={`${depId}->${row.id}`}
-                d={`M ${x1} ${y1} C ${x1 + 20} ${y1}, ${x2 - 20} ${y2}, ${x2} ${y2}`}
-                fill="none" stroke="#A0AEC0" strokeWidth={1.5} markerEnd="url(#arrow)" />
+                d={`M ${x1} ${y1} C ${x1 + 16} ${y1}, ${x2 - 16} ${y2}, ${x2} ${y2}`}
+                fill="none" stroke="#A0AEC0" strokeWidth={1.25} markerEnd="url(#arrow)" />
             );
           })
         )}
@@ -344,7 +424,7 @@ export function GanttModal({
           </button>
         </div>
 
-        <div className="overflow-auto flex-1">
+        <div className="overflow-auto flex-1 p-3">
           {loading ? (
             <div className="flex items-center justify-center h-48">
               <div className="w-8 h-8 border-4 border-pebble border-t-taskora-red rounded-full animate-spin" />
