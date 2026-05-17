@@ -29,8 +29,6 @@ const coreNavItems = [
   { href: "/programs",    label: "Programs",    icon: "🗂️" },
   { href: "/tasks",       label: "Tasks",       icon: "✅" },
   { href: "/gantt",       label: "Gantt",       icon: "📊" },
-  { href: "/reports",     label: "Reports",     icon: "📄" },
-  { href: "/templates",   label: "Templates",   icon: "📋" },
   { href: "/analytics",   label: "Analytics",   icon: "📈" },
 ];
 
