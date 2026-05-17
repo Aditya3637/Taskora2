@@ -2,8 +2,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, Plus, User, X, ChevronDown, ChevronRight, GanttChartSquare } from "lucide-react";
-import Link from "next/link";
 import { supabase } from "@/lib/supabase";
+import { GanttModal } from "../../gantt/GanttChart";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -320,6 +320,7 @@ function AddInitiativeModal({
 
 function InitiativeCard({ init }: { init: Initiative }) {
   const [expanded, setExpanded] = useState(false);
+  const [showGantt, setShowGantt] = useState(false);
   const cat = getCategoryMeta(init.impact_category);
   const hasDetails = !!(init.description || init.impact_metric);
 
@@ -346,15 +347,15 @@ function InitiativeCard({ init }: { init: Initiative }) {
               📅 {init.target_end_date}
             </span>
           )}
-          <Link
-            href={`/gantt?initiative=${init.id}`}
+          <button
+            onClick={() => setShowGantt(true)}
             title="Open Gantt chart"
             className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-medium border border-pebble text-steel hover:border-ocean hover:text-ocean transition-colors whitespace-nowrap ${
               init.target_end_date ? "" : "ml-auto"
             }`}
           >
             <GanttChartSquare className="w-3.5 h-3.5" /> Gantt
-          </Link>
+          </button>
         </div>
 
         <h3 className="font-semibold text-midnight text-base mb-2">{init.name}</h3>
@@ -417,6 +418,14 @@ function InitiativeCard({ init }: { init: Initiative }) {
           </div>
         )}
       </div>
+
+      {showGantt && (
+        <GanttModal
+          initiativeId={init.id}
+          initiativeName={init.name}
+          onClose={() => setShowGantt(false)}
+        />
+      )}
     </div>
   );
 }

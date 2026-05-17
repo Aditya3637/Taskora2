@@ -1,8 +1,9 @@
 "use client";
 import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck, GanttChartSquare } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { GanttModal } from "../gantt/GanttChart";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -2525,6 +2526,7 @@ function InitiativeBanner({
   onDeleted: (id: string) => void;
 }) {
   const [showBreakdown, setShowBreakdown] = useState(false);
+  const [showGantt, setShowGantt] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const cat = initiative.impact_category ?? "others";
 
@@ -2594,6 +2596,13 @@ function InitiativeBanner({
             </button>
           )}
           <button
+            onClick={() => setShowGantt(true)}
+            title="View Gantt chart"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-pebble text-steel hover:border-ocean hover:text-ocean transition-colors"
+          >
+            <GanttChartSquare className="w-3.5 h-3.5" /> Gantt
+          </button>
+          <button
             onClick={() => setShowBreakdown(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-taskora-red text-white text-xs font-semibold rounded-lg hover:opacity-90"
           >
@@ -2612,6 +2621,14 @@ function InitiativeBanner({
             onTaskCreated();
             setShowBreakdown(false);
           }}
+        />
+      )}
+
+      {showGantt && (
+        <GanttModal
+          initiativeId={initiative.id}
+          initiativeName={initiative.name}
+          onClose={() => setShowGantt(false)}
         />
       )}
     </div>
