@@ -147,6 +147,14 @@ class _Query:
         self._filters.append(("lt", col, val))
         return self
 
+    def gte(self, col, val):
+        self._filters.append(("gte", col, val))
+        return self
+
+    def neq(self, col, val):
+        self._filters.append(("neq", col, val))
+        return self
+
     def cs(self, col, val):
         self._filters.append(("cs", col, val))
         return self
@@ -179,6 +187,14 @@ class _Query:
                         break
                 elif kind == "lt":
                     if not (r.get(col) is not None and r.get(col) < val):
+                        ok = False
+                        break
+                elif kind == "gte":
+                    if not (r.get(col) is not None and r.get(col) >= val):
+                        ok = False
+                        break
+                elif kind == "neq":
+                    if r.get(col) == val:
                         ok = False
                         break
                 elif kind == "cs":

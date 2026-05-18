@@ -41,22 +41,41 @@ type MyPerf = {
 };
 type EntityProgress = { entity_id: string; entity_name: string; completion_pct: number; total: number; done: number; blocked: number };
 type BizAnalytics = {
-  total_tasks?: number; completed_count?: number; stale_count?: number;
+  total_tasks?: number; total_subtasks?: number; total_items?: number;
+  completed_count?: number; stale_count?: number;
   blocked_count?: number; pending_decision_count?: number; entity_progress?: EntityProgress[];
 };
 type PeopleRow = {
-  user_id: string; user_name: string; tasks_owned: number; tasks_completed: number;
-  tasks_overdue: number; tasks_blocked: number; avg_tat_days: number | null;
+  user_id: string; user_name: string;
+  tasks_owned: number; subtasks_owned: number;
+  tasks_completed: number; subtasks_completed: number;
+  on_time_count: number; late_count: number;
+  tasks_overdue: number; blocked_count: number;
+  reopened_count: number; pending_approval_count: number;
+  avg_tat_days: number | null; avg_delay_days: number | null;
 };
 type InitRow = {
   initiative_id: string; initiative_name: string; status: string | null;
+  owner_name: string | null; target_end_date: string | null;
+  schedule_health: "on_track" | "overdue" | "no_date" | "closed";
   total_tasks: number; done_tasks: number; completion_pct: number;
   overdue_count: number; blocked_count: number;
+  milestones_total: number; milestones_overdue: number;
 };
 type ProgramBlock = {
   program_id: string | null; program_name: string; status: string | null;
+  lead_name: string | null;
   total_tasks: number; done_tasks: number; completion_pct: number;
-  overdue_count: number; blocked_count: number; initiatives: InitRow[];
+  overdue_count: number; blocked_count: number;
+  initiatives_overdue: number; milestones_total: number; milestones_overdue: number;
+  initiatives: InitRow[];
+};
+
+const SCHED_BADGE: Record<string, string> = {
+  on_track: "bg-green-50 text-green-700 border-green-200",
+  overdue: "bg-red-50 text-red-700 border-red-200",
+  no_date: "bg-mist text-steel border-pebble",
+  closed: "bg-mist text-steel border-pebble",
 };
 
 type Tab = "my" | "business" | "people" | "programs";
@@ -257,12 +276,16 @@ export default function AnalyticsPage() {
           {bizData && (
             <div className="space-y-10">
               <div>
-                <h2 className="text-base font-semibold text-midnight mb-4">Business-wide Metrics</h2>
+                <h2 className="text-base font-semibold text-midnight mb-1">Business-wide Metrics</h2>
+                <p className="text-xs text-steel mb-4">
+                  Completed / Stale / Blocked / Pending include subtasks as well as tasks.
+                </p>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                  <MetricCard label="Total Tasks" value={fmt(bizData.total_tasks)}/>
+                  <MetricCard label="Tasks" value={fmt(bizData.total_tasks)}/>
+                  <MetricCard label="Subtasks" value={fmt(bizData.total_subtasks)}/>
                   <MetricCard label="Completed" value={fmt(bizData.completed_count)}/>
                   <MetricCard label="Pending Decisions" value={fmt(bizData.pending_decision_count)} variant="warn"/>
-                  <MetricCard label="Stale Tasks" value={fmt(bizData.stale_count)} variant="warn"/>
+                  <MetricCard label="Stale" value={fmt(bizData.stale_count)} variant="warn"/>
                   <MetricCard label="Blocked" value={fmt(bizData.blocked_count)} variant="danger"/>
                 </div>
               </div>
@@ -311,23 +334,31 @@ export default function AnalyticsPage() {
           )}
           {peopleRows && peopleRows.length > 0 && (
             <div className="bg-white border border-pebble rounded-xl overflow-x-auto">
-              <table className="w-full text-sm min-w-[640px]">
+              <table className="w-full text-sm min-w-[920px]">
                 <thead className="bg-mist border-b border-pebble">
                   <tr>
-                    {["Person", "Owned", "Completed", "Overdue", "Blocked", "Avg TAT (days)"].map((h, i) => (
-                      <th key={h} className={`px-5 py-3 text-xs font-semibold text-steel uppercase tracking-wider ${i === 0 ? "text-left" : "text-right"}`}>{h}</th>
+                    {["Person", "Tasks", "Subtasks", "Completed", "On-time", "Late",
+                      "Overdue", "Blocked", "Reopened", "Pending appr.",
+                      "Avg TAT (d)", "Avg delay (d)"].map((h, i) => (
+                      <th key={h} className={`px-4 py-3 text-xs font-semibold text-steel uppercase tracking-wider ${i === 0 ? "text-left" : "text-right"}`}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-pebble">
                   {peopleRows.map(r => (
                     <tr key={r.user_id} className="hover:bg-mist/50">
-                      <td className="px-5 py-3 font-medium text-midnight">{r.user_name}</td>
-                      <td className="px-5 py-3 text-right text-steel font-mono">{r.tasks_owned}</td>
-                      <td className="px-5 py-3 text-right text-green-700 font-mono">{r.tasks_completed}</td>
-                      <td className={`px-5 py-3 text-right font-mono ${r.tasks_overdue ? "text-red-700" : "text-steel"}`}>{r.tasks_overdue}</td>
-                      <td className={`px-5 py-3 text-right font-mono ${r.tasks_blocked ? "text-red-700" : "text-steel"}`}>{r.tasks_blocked}</td>
-                      <td className="px-5 py-3 text-right text-steel font-mono">{r.avg_tat_days ?? "—"}</td>
+                      <td className="px-4 py-3 font-medium text-midnight whitespace-nowrap">{r.user_name}</td>
+                      <td className="px-4 py-3 text-right text-steel font-mono">{r.tasks_owned}</td>
+                      <td className="px-4 py-3 text-right text-steel font-mono">{r.subtasks_owned}</td>
+                      <td className="px-4 py-3 text-right text-green-700 font-mono">{r.tasks_completed + r.subtasks_completed}</td>
+                      <td className="px-4 py-3 text-right text-green-700 font-mono">{r.on_time_count}</td>
+                      <td className={`px-4 py-3 text-right font-mono ${r.late_count ? "text-amber-700" : "text-steel"}`}>{r.late_count}</td>
+                      <td className={`px-4 py-3 text-right font-mono ${r.tasks_overdue ? "text-red-700" : "text-steel"}`}>{r.tasks_overdue}</td>
+                      <td className={`px-4 py-3 text-right font-mono ${r.blocked_count ? "text-red-700" : "text-steel"}`}>{r.blocked_count}</td>
+                      <td className={`px-4 py-3 text-right font-mono ${r.reopened_count ? "text-amber-700" : "text-steel"}`}>{r.reopened_count}</td>
+                      <td className={`px-4 py-3 text-right font-mono ${r.pending_approval_count ? "text-amber-700" : "text-steel"}`}>{r.pending_approval_count}</td>
+                      <td className="px-4 py-3 text-right text-steel font-mono">{r.avg_tat_days ?? "—"}</td>
+                      <td className="px-4 py-3 text-right text-steel font-mono">{r.avg_delay_days ?? "—"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -349,11 +380,16 @@ export default function AnalyticsPage() {
                 <div key={pb.program_id ?? "unassigned"} className="bg-white border border-pebble rounded-xl overflow-hidden">
                   <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 bg-mist border-b border-pebble">
                     <div>
-                      <h2 className="text-base font-semibold text-midnight">{pb.program_name}</h2>
+                      <h2 className="text-base font-semibold text-midnight">
+                        {pb.program_name}
+                        {pb.lead_name && <span className="ml-2 text-xs font-normal text-steel">· Lead: {pb.lead_name}</span>}
+                      </h2>
                       <p className="text-xs text-steel mt-0.5">
-                        {pb.initiatives.length} initiative{pb.initiatives.length === 1 ? "" : "s"} ·
+                        {pb.initiatives.length} initiative{pb.initiatives.length === 1 ? "" : "s"}
+                        {" "}({pb.initiatives_overdue} overdue) ·
                         {" "}{pb.done_tasks}/{pb.total_tasks} tasks done ·
-                        {" "}{pb.overdue_count} overdue · {pb.blocked_count} blocked
+                        {" "}{pb.overdue_count} overdue · {pb.blocked_count} blocked ·
+                        {" "}{pb.milestones_overdue}/{pb.milestones_total} milestones overdue
                       </p>
                     </div>
                     <div className="flex items-center gap-3 min-w-[160px]">
@@ -364,27 +400,38 @@ export default function AnalyticsPage() {
                     </div>
                   </div>
                   {pb.initiatives.length > 0 ? (
-                    <table className="w-full text-sm">
+                    <div className="overflow-x-auto">
+                    <table className="w-full text-sm min-w-[820px]">
                       <thead className="border-b border-pebble">
                         <tr>
-                          {["Initiative", "Status", "Done/Total", "Completion", "Overdue", "Blocked"].map((h, i) => (
-                            <th key={h} className={`px-5 py-2.5 text-xs font-semibold text-steel uppercase tracking-wider ${i === 0 ? "text-left" : "text-right"}`}>{h}</th>
+                          {["Initiative", "Owner", "Status", "Target end", "Schedule",
+                            "Done/Total", "Completion", "Overdue", "Blocked", "Milestones"].map((h, i) => (
+                            <th key={h} className={`px-4 py-2.5 text-xs font-semibold text-steel uppercase tracking-wider ${i === 0 ? "text-left" : "text-right"}`}>{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-pebble">
                         {pb.initiatives.map(it => (
                           <tr key={it.initiative_id} className="hover:bg-mist/50">
-                            <td className="px-5 py-3 font-medium text-midnight">{it.initiative_name}</td>
-                            <td className="px-5 py-3 text-right text-steel capitalize">{(it.status ?? "").replace("_", " ") || "—"}</td>
-                            <td className="px-5 py-3 text-right text-steel font-mono">{it.done_tasks}/{it.total_tasks}</td>
-                            <td className="px-5 py-3 text-right font-mono text-steel">{it.completion_pct}%</td>
-                            <td className={`px-5 py-3 text-right font-mono ${it.overdue_count ? "text-red-700" : "text-steel"}`}>{it.overdue_count}</td>
-                            <td className={`px-5 py-3 text-right font-mono ${it.blocked_count ? "text-red-700" : "text-steel"}`}>{it.blocked_count}</td>
+                            <td className="px-4 py-3 font-medium text-midnight whitespace-nowrap">{it.initiative_name}</td>
+                            <td className="px-4 py-3 text-right text-steel whitespace-nowrap">{it.owner_name ?? "—"}</td>
+                            <td className="px-4 py-3 text-right text-steel capitalize">{(it.status ?? "").replace("_", " ") || "—"}</td>
+                            <td className="px-4 py-3 text-right text-steel font-mono">{it.target_end_date ?? "—"}</td>
+                            <td className="px-4 py-3 text-right">
+                              <span className={`inline-block px-2 py-0.5 rounded-full border text-xs font-semibold ${SCHED_BADGE[it.schedule_health] ?? SCHED_BADGE.no_date}`}>
+                                {it.schedule_health.replace("_", " ")}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-right text-steel font-mono">{it.done_tasks}/{it.total_tasks}</td>
+                            <td className="px-4 py-3 text-right font-mono text-steel">{it.completion_pct}%</td>
+                            <td className={`px-4 py-3 text-right font-mono ${it.overdue_count ? "text-red-700" : "text-steel"}`}>{it.overdue_count}</td>
+                            <td className={`px-4 py-3 text-right font-mono ${it.blocked_count ? "text-red-700" : "text-steel"}`}>{it.blocked_count}</td>
+                            <td className={`px-4 py-3 text-right font-mono ${it.milestones_overdue ? "text-red-700" : "text-steel"}`}>{it.milestones_overdue}/{it.milestones_total}</td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
+                    </div>
                   ) : (
                     <p className="px-5 py-4 text-sm text-steel">No initiatives in this program.</p>
                   )}
