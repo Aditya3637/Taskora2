@@ -45,11 +45,15 @@ NUDGE_SCHEDULE: dict[int, tuple[str, str]] = {
 
 
 def _send_email(to_email: str, subject: str, body: str) -> None:
-    """Send an email via the configured provider. Logs only — plug in SendGrid/Resend/SES here."""
-    logger.info("[EMAIL] to=%s subject=%r", to_email, subject)
-    # TODO: replace with actual email provider call
-    print(f"[EMAIL] To: {to_email} | Subject: {subject}")
-    print(f"        {body[:120]}")
+    """Send a plain nudge email via the shared Resend sender (no-op if unconfigured)."""
+    from email_send import send_email
+
+    send_email(
+        to=to_email,
+        subject=subject,
+        html=f"<p>{body.replace(chr(10), '<br>')}</p>",
+        text=body,
+    )
 
 
 def send_trial_nudges() -> None:

@@ -824,7 +824,23 @@ export default function OnboardingPage() {
           else if (!res.step3_done) { setStep(3); }
           else { router.replace("/war-room"); }
         }
-      } catch { /* first-time user, no business yet */ }
+      } catch {
+        // No business. An invited user must join the existing workspace,
+        // not create a new one here — bounce them to their pending invite.
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session) {
+            const inv = await fetch(`${API}/api/v1/invites/pending-for-me`, {
+              headers: { Authorization: `Bearer ${session.access_token}` },
+            });
+            const invData = inv.ok ? await inv.json() : null;
+            if (invData?.token) {
+              router.replace(`/invite/${invData.token}`);
+              return;
+            }
+          }
+        } catch { /* genuine first-time user — continue to step 1 */ }
+      }
       finally { setChecking(false); }
     })();
   }, [router]);

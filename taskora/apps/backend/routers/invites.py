@@ -35,7 +35,7 @@ def create_invite(
 
     row = {
         "business_id": body.business_id,
-        "invited_email": body.invited_email,
+        "invited_email": str(body.invited_email).lower(),
         "role": body.role,
         "invited_by": user["id"],
         "token": token,
@@ -47,12 +47,78 @@ def create_invite(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create invite")
 
     invite = result.data[0]
-    invite_url = f"{settings.frontend_url}/invites/{token}"
+    # Route is /invite/[token] (singular) — must match or the link 404s.
+    invite_url = f"{settings.frontend_url}/invite/{token}"
+
+    biz = sb.table("businesses").select("name").eq("id", body.business_id).execute().data
+    business_name = (biz[0]["name"] if biz else None) or "a Taskora workspace"
+    inviter_rows = sb.table("users").select("name").eq("id", user["id"]).execute().data
+    inviter_name = (inviter_rows[0].get("name") if inviter_rows else None) or "A teammate"
+
+    _send_invite_email(body.invited_email, inviter_name, business_name, body.role, invite_url)
+
     return {
         "id": invite["id"],
         "token": token,
         "invite_url": invite_url,
     }
+
+
+def _send_invite_email(
+    to: str, inviter_name: str, business_name: str, role: str, invite_url: str
+) -> None:
+    from email_send import send_email
+
+    subject = f"{inviter_name} invited you to {business_name} on Taskora"
+    html = f"""\
+<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;color:#1a1a2e">
+  <h1 style="font-size:20px;margin:0 0 4px">You've been invited to Taskora</h1>
+  <p style="color:#5a6072;font-size:14px;line-height:1.6;margin:16px 0">
+    <strong>{inviter_name}</strong> has invited you to join
+    <strong>{business_name}</strong> as <strong>{role}</strong>.
+  </p>
+  <a href="{invite_url}" style="display:inline-block;background:#e23744;color:#fff;
+     text-decoration:none;font-weight:600;font-size:14px;padding:12px 24px;
+     border-radius:8px;margin:12px 0">Accept invitation</a>
+  <p style="color:#9aa0ad;font-size:12px;line-height:1.6;margin:20px 0 0">
+    Or paste this link into your browser:<br>
+    <a href="{invite_url}" style="color:#5a6072">{invite_url}</a>
+  </p>
+  <p style="color:#9aa0ad;font-size:12px;margin:24px 0 0">
+    If you weren't expecting this, you can ignore this email.
+  </p>
+</div>"""
+    text = (
+        f"{inviter_name} invited you to join {business_name} on Taskora as {role}.\n\n"
+        f"Accept: {invite_url}\n\nIf you weren't expecting this, ignore this email."
+    )
+    send_email(to=to, subject=subject, html=html, text=text)
+
+
+@router.get("/pending-for-me")
+def pending_invite_for_me(
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Latest pending invite addressed to the current user's email, if any.
+
+    Used to keep an invited user out of business-creating onboarding: if
+    they have a pending invite, route them to accept it instead.
+    """
+    email = (user.get("email") or "").lower()
+    if not email:
+        return {"token": None}
+    rows = (
+        sb.table("workspace_invites")
+        .select("token, business_id, created_at")
+        .eq("invited_email", email)
+        .eq("status", "pending")
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+        .data
+    )
+    return {"token": rows[0]["token"] if rows else None}
 
 
 @router.get("/{token}")
