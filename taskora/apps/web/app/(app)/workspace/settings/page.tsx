@@ -51,6 +51,13 @@ type Invite = {
   created_at: string;
 };
 
+type JoinRequest = {
+  id: string;
+  requester_name: string | null;
+  requester_email: string | null;
+  created_at: string;
+};
+
 const ROLE_BADGE: Record<string, string> = {
   owner: "bg-purple-100 text-purple-700 border-purple-200",
   admin: "bg-blue-100 text-blue-700 border-blue-200",
@@ -63,6 +70,7 @@ export default function WorkspaceSettingsPage() {
   const [myRole, setMyRole] = useState<string>("");
   const [members, setMembers] = useState<Member[]>([]);
   const [invites, setInvites] = useState<Invite[]>([]);
+  const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
@@ -74,10 +82,11 @@ export default function WorkspaceSettingsPage() {
 
   const loadData = useCallback(async (bId: string) => {
     try {
-      const [membersData, roleData, invitesData] = await Promise.all([
+      const [membersData, roleData, invitesData, joinData] = await Promise.all([
         apiFetch(`/api/v1/businesses/${bId}/members`),
         apiFetch(`/api/v1/businesses/${bId}/my-role`),
         apiFetch(`/api/v1/invites?business_id=${bId}`),
+        apiFetch(`/api/v1/join/requests?business_id=${bId}`).catch(() => []),
       ]);
       setMembers(Array.isArray(membersData) ? membersData : []);
       setMyRole(roleData?.role ?? "member");
@@ -86,6 +95,7 @@ export default function WorkspaceSettingsPage() {
           (i: Invite) => i.status === "pending"
         )
       );
+      setJoinRequests(Array.isArray(joinData) ? joinData : []);
     } catch (e: any) {
       setError(e.message);
     }
@@ -173,6 +183,19 @@ export default function WorkspaceSettingsPage() {
       await apiFetch(`/api/v1/invites/revoke/${inviteId}`, { method: "DELETE" });
       setInvites((prev) => prev.filter((i) => i.id !== inviteId));
       showToast("Invite revoked");
+    } catch (e: any) {
+      showToast(`Error: ${e.message}`);
+    }
+  }
+
+  async function handleJoinDecision(id: string, approve: boolean) {
+    try {
+      await apiFetch(`/api/v1/join/requests/${id}/${approve ? "approve" : "decline"}`, {
+        method: "POST",
+      });
+      setJoinRequests((prev) => prev.filter((r) => r.id !== id));
+      showToast(approve ? "Request approved — member added" : "Request declined");
+      if (approve && businessId) loadData(businessId);
     } catch (e: any) {
       showToast(`Error: ${e.message}`);
     }
@@ -347,6 +370,48 @@ export default function WorkspaceSettingsPage() {
 
       {invites.length === 0 && (
         <p className="text-sm text-steel/60 text-center py-2">No pending invitations.</p>
+      )}
+
+      {/* Join Requests (Entry 2: same-domain signups asking to join) */}
+      {joinRequests.length > 0 && (
+        <div className="bg-white rounded-2xl border border-pebble shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-pebble">
+            <h2 className="font-semibold text-midnight">
+              Join Requests{" "}
+              <span className="text-steel font-normal text-sm ml-1">({joinRequests.length})</span>
+            </h2>
+            <p className="text-xs text-steel mt-0.5">
+              People who signed up with your company email domain and asked to join.
+            </p>
+          </div>
+
+          <div className="divide-y divide-pebble/50">
+            {joinRequests.map((r) => (
+              <div key={r.id} className="flex items-center gap-4 px-6 py-4">
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-midnight text-sm truncate">
+                    {r.requester_name || r.requester_email || "Unknown user"}
+                  </p>
+                  {r.requester_email && (
+                    <p className="text-xs text-steel mt-0.5 truncate">{r.requester_email}</p>
+                  )}
+                </div>
+                <button
+                  onClick={() => handleJoinDecision(r.id, false)}
+                  className="text-xs px-3 py-1.5 border border-pebble text-steel rounded-lg hover:bg-mist font-medium flex-shrink-0"
+                >
+                  Decline
+                </button>
+                <button
+                  onClick={() => handleJoinDecision(r.id, true)}
+                  className="text-xs px-3 py-1.5 bg-taskora-red text-white rounded-lg hover:opacity-90 font-semibold flex-shrink-0"
+                >
+                  Approve
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );

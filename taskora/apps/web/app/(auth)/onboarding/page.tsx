@@ -784,6 +784,85 @@ function DoneScreen() {
   );
 }
 
+// ── Entry 2: discovered workspaces on the user's email domain ────────────────
+type DiscoverWs = { business_id: string; business_name: string; request_status: string | null };
+
+function JoinOrCreate({
+  workspaces,
+  onCreateOwn,
+}: {
+  workspaces: DiscoverWs[];
+  onCreateOwn: () => void;
+}) {
+  const [rows, setRows] = useState<DiscoverWs[]>(workspaces);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  async function requestJoin(businessId: string) {
+    setBusyId(businessId); setError("");
+    try {
+      await apiFetch("/api/v1/join/requests", {
+        method: "POST",
+        body: JSON.stringify({ business_id: businessId }),
+      });
+      setRows((p) => p.map((w) =>
+        w.business_id === businessId ? { ...w, request_status: "pending" } : w));
+    } catch (e: any) {
+      setError(e.message ?? "Could not send request");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h1 className="text-2xl font-bold text-midnight mb-1">Your team is already on Taskora</h1>
+        <p className="text-steel text-sm">
+          We found {rows.length === 1 ? "a workspace" : "workspaces"} for your email domain.
+          Request access, or create your own.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        {rows.map((w) => (
+          <div key={w.business_id}
+            className="flex items-center justify-between border border-pebble rounded-xl px-4 py-3">
+            <div className="min-w-0">
+              <p className="font-semibold text-midnight truncate">{w.business_name}</p>
+              <p className="text-xs text-steel">Existing workspace</p>
+            </div>
+            {w.request_status === "pending" ? (
+              <span className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-3 py-1">
+                Request sent — awaiting approval
+              </span>
+            ) : w.request_status === "declined" ? (
+              <button onClick={() => requestJoin(w.business_id)} disabled={busyId === w.business_id}
+                className="text-xs font-semibold text-taskora-red border border-taskora-red/50 rounded-lg px-3 py-2 hover:bg-red-50 disabled:opacity-50">
+                {busyId === w.business_id ? "…" : "Request again"}
+              </button>
+            ) : (
+              <button onClick={() => requestJoin(w.business_id)} disabled={busyId === w.business_id}
+                className="text-xs font-semibold text-white bg-taskora-red rounded-lg px-4 py-2 hover:opacity-90 disabled:opacity-50">
+                {busyId === w.business_id ? "Sending…" : "Request to join"}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {error && <p className="text-red-600 text-sm">{error}</p>}
+
+      <div className="pt-2 border-t border-pebble">
+        <button onClick={onCreateOwn}
+          className="text-sm text-steel hover:text-midnight underline underline-offset-2">
+          None of these — create your own workspace
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Main wizard ──────────────────────────────────────────────────────────────
 export default function OnboardingPage() {
   const router = useRouter();
@@ -795,6 +874,8 @@ export default function OnboardingPage() {
     businessId: string;
   } | null>(null);
   const [checking, setChecking] = useState(true);
+  const [discover, setDiscover] = useState<DiscoverWs[] | null>(null);
+  const [createOwn, setCreateOwn] = useState(false);
 
   // If user already has a completed onboarding, redirect them
   useEffect(() => {
@@ -830,13 +911,19 @@ export default function OnboardingPage() {
         try {
           const { data: { session } } = await supabase.auth.getSession();
           if (session) {
-            const inv = await fetch(`${API}/api/v1/invites/pending-for-me`, {
-              headers: { Authorization: `Bearer ${session.access_token}` },
-            });
+            const auth = { Authorization: `Bearer ${session.access_token}` };
+            const inv = await fetch(`${API}/api/v1/invites/pending-for-me`, { headers: auth });
             const invData = inv.ok ? await inv.json() : null;
             if (invData?.token) {
               router.replace(`/invite/${invData.token}`);
               return;
+            }
+            // Entry 2: a company-domain signup may belong to an existing
+            // workspace — offer join-or-create instead of forcing creation.
+            const disc = await fetch(`${API}/api/v1/join/discover`, { headers: auth });
+            const discData = disc.ok ? await disc.json() : null;
+            if (discData?.workspaces?.length) {
+              setDiscover(discData.workspaces);
             }
           }
         } catch { /* genuine first-time user — continue to step 1 */ }
@@ -849,6 +936,16 @@ export default function OnboardingPage() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-mist">
         <div className="w-7 h-7 border-2 border-pebble border-t-taskora-red rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (discover && discover.length > 0 && !createOwn && !bizData) {
+    return (
+      <div className="min-h-screen bg-mist flex items-center justify-center px-4 py-12">
+        <div className="bg-white rounded-2xl shadow-lg w-full max-w-lg p-8">
+          <JoinOrCreate workspaces={discover} onCreateOwn={() => setCreateOwn(true)} />
+        </div>
       </div>
     );
   }

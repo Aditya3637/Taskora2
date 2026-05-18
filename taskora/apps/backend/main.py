@@ -7,7 +7,7 @@ from routers import (
     admin, analytics, billing, businesses, daily_brief, decisions,
     entities, initiatives, tasks, users, war_room,
     programs, activity, invites, whatsapp, themes, onboarding,
-    people,
+    people, join_requests,
 )
 
 settings = get_settings()
@@ -47,6 +47,7 @@ app.include_router(whatsapp.router)
 app.include_router(themes.router)
 app.include_router(onboarding.router)
 app.include_router(people.router)
+app.include_router(join_requests.router)
 
 
 @app.exception_handler(Exception)
