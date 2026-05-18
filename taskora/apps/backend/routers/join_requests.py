@@ -38,21 +38,36 @@ def _domain(email: Optional[str]) -> Optional[str]:
 
 
 def _candidate_businesses(sb: Client, domain: str) -> list[dict]:
-    """Businesses whose OWNER's email shares this (non-public) domain."""
-    owners = (
+    """Businesses where ANY member's email shares this (non-public) domain.
+
+    Member-domain heuristic (per product decision) — not owner-only: a
+    workspace whose owner signed up with a personal email but whose team
+    uses the company domain must still be discoverable.
+    """
+    domain_users = (
         sb.table("users")
         .select("id")
         .ilike("email", f"%@{domain}")
         .execute()
         .data
     )
-    owner_ids = [u["id"] for u in owners]
-    if not owner_ids:
+    user_ids = [u["id"] for u in domain_users]
+    if not user_ids:
+        return []
+    member_rows = (
+        sb.table("business_members")
+        .select("business_id")
+        .in_("user_id", user_ids)
+        .execute()
+        .data
+    )
+    biz_ids = list({m["business_id"] for m in member_rows})
+    if not biz_ids:
         return []
     return (
         sb.table("businesses")
         .select("id, name")
-        .in_("owner_id", owner_ids)
+        .in_("id", biz_ids)
         .order("created_at")
         .execute()
         .data
