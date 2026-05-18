@@ -569,6 +569,24 @@ function Step3({
     onSkip();
   }
 
+  // No buildings/clients to import, but the user still needs onboarding
+  // marked complete — otherwise step3_done stays false and they get routed
+  // back here forever.
+  async function handleFinishNoData() {
+    setImporting(true); setImportMsg("");
+    try {
+      await apiFetch("/api/v1/onboarding/step3/done", {
+        method: "POST",
+        body: JSON.stringify({ skipped: false }),
+      });
+      onFinish();
+    } catch (err: any) {
+      setImportMsg(`Error: ${err.message}`);
+    } finally {
+      setImporting(false);
+    }
+  }
+
   const hasData = bUploadStatus === "parsed" || manualBuildings.length > 0 || cUploadStatus === "parsed" || manualClients.length > 0;
 
   return (
@@ -744,7 +762,7 @@ function Step3({
           className="flex-1 h-10 border border-pebble text-steel text-sm rounded-lg hover:bg-mist">
           Skip for now
         </button>
-        <button onClick={hasData ? handleImport : onFinish} disabled={importing}
+        <button onClick={hasData ? handleImport : handleFinishNoData} disabled={importing}
           className="flex-1 h-10 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-50">
           {importing ? "Importing…" : hasData ? "Import & Finish" : "Finish Setup"}
         </button>

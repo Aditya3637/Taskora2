@@ -6,7 +6,18 @@ import { supabase } from "@/lib/supabase";
 const OWNER_EMAIL = "engineeradityasingh@gmail.com";
 const PERSONA_PASSWORD = "Taskora@2025!";
 const STORAGE_KEY = "taskora_owner_session";
-const FLAG_KEY = "taskora_owner_mode";
+const LEGACY_FLAG_KEY = "taskora_owner_mode";
+// Per-tab (NOT origin-wide) marker that the owner is actively impersonating
+// in THIS tab. sessionStorage so a different user signing up later — even on
+// the same browser — never inherits it.
+const PERSONA_ACTIVE_KEY = "taskora_persona_active";
+
+/** Remove every persisted trace of owner/persona state. */
+function clearPersonaState() {
+  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(LEGACY_FLAG_KEY);
+  sessionStorage.removeItem(PERSONA_ACTIVE_KEY);
+}
 
 type Persona = {
   name: string;
@@ -142,16 +153,16 @@ export default function PersonaSwitcher() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // Determine if we should show the panel
+  // Visibility is ALWAYS derived from the real authenticated identity — never
+  // a persisted flag. The switcher shows only if the current user is the
+  // owner, or the owner is actively impersonating in *this tab* (so they can
+  // reset back). Anything else: scrub stale state and stay hidden. This is
+  // why a brand-new signup no longer inherits a leaked owner flag.
   useEffect(() => {
     async function check() {
-      const ownerMode = localStorage.getItem(FLAG_KEY);
-      if (ownerMode === "true") { setVisible(true); return; }
-
       const { data: { user } } = await supabase.auth.getUser();
+
       if (user?.email === OWNER_EMAIL) {
-        localStorage.setItem(FLAG_KEY, "true");
-        // Save owner session for later restoration
         const { data: { session } } = await supabase.auth.getSession();
         if (session) {
           localStorage.setItem(STORAGE_KEY, JSON.stringify({
@@ -159,8 +170,25 @@ export default function PersonaSwitcher() {
             refresh_token: session.refresh_token,
           }));
         }
+        // We're the owner, not impersonating.
+        sessionStorage.removeItem(PERSONA_ACTIVE_KEY);
+        localStorage.removeItem(LEGACY_FLAG_KEY);
         setVisible(true);
+        return;
       }
+
+      // Not the owner: only legitimate if the owner is mid-impersonation in
+      // THIS tab and we still hold their session to restore.
+      const impersonating = sessionStorage.getItem(PERSONA_ACTIVE_KEY) === "true";
+      if (impersonating && localStorage.getItem(STORAGE_KEY)) {
+        setVisible(true);
+        return;
+      }
+
+      // Genuinely a non-owner (e.g. a new signup). Purge any leaked state
+      // and stay hidden.
+      clearPersonaState();
+      setVisible(false);
     }
     check();
   }, []);
@@ -182,6 +210,9 @@ export default function PersonaSwitcher() {
         password: PERSONA_PASSWORD,
       });
       if (signInErr) throw signInErr;
+      // Mark this tab as actively impersonating so the switcher stays
+      // available (to reset) even though the current user is no longer owner.
+      sessionStorage.setItem(PERSONA_ACTIVE_KEY, "true");
       setActivePersona(selectedPersona);
       router.refresh();
     } catch (e: any) {
@@ -207,6 +238,8 @@ export default function PersonaSwitcher() {
         });
         if (signInErr) throw signInErr;
       }
+      // Back to owner — no longer impersonating in this tab.
+      sessionStorage.removeItem(PERSONA_ACTIVE_KEY);
       setActivePersona(null);
       router.refresh();
     } catch (e: any) {

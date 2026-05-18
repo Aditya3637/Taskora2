@@ -187,6 +187,12 @@ function SidebarContent({
   }, []);
 
   async function handleSignOut() {
+    // Scrub owner/persona state so the next account on this browser
+    // (e.g. a fresh signup) can't inherit the testing switcher.
+    localStorage.removeItem("taskora_owner_session");
+    localStorage.removeItem("taskora_owner_mode");
+    sessionStorage.removeItem("taskora_persona_active");
+    localStorage.removeItem("business_id");
     await supabase.auth.signOut();
     router.push("/login");
   }
@@ -313,10 +319,52 @@ function SidebarContent({
 // ── App Layout ────────────────────────────────────────────────────────────────
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const [expanded, setExpanded] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [showInvite, setShowInvite] = useState(false);
   const [mounted, setMounted] = useState(false);
+  // null = checking, true = onboarded (render app), false = redirecting out
+  const [onboarded, setOnboarded] = useState<boolean | null>(null);
+
+  // Force any user whose onboarding isn't complete back into the wizard.
+  // No app page is usable half-set-up. Only block on a definitive signal
+  // (explicit incomplete, or no business yet); let transient API errors
+  // through so a backend blip can't trap everyone on /onboarding.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) return; // middleware handles unauthenticated users
+        const storedBizId =
+          typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
+        const res = await fetch(
+          `${API}/api/v1/onboarding/status${storedBizId ? `?business_id=${storedBizId}` : ""}`,
+          { headers: { Authorization: `Bearer ${session.access_token}` } }
+        );
+        if (cancelled) return;
+        if (res.status === 404) {
+          // No business at all — brand-new user, must onboard.
+          router.replace("/onboarding");
+          return;
+        }
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.onboarding_completed === false) {
+            setOnboarded(false);
+            router.replace("/onboarding");
+            return;
+          }
+        }
+        setOnboarded(true);
+      } catch {
+        // Network/unknown error: don't trap the user — let them through.
+        if (!cancelled) setOnboarded(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [router]);
 
   useEffect(() => {
     const stored = localStorage.getItem(SIDEBAR_KEY);
@@ -332,6 +380,16 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => { setMobileOpen(false); }, [pathname]);
 
   const sidebarW = mounted ? (expanded ? "14rem" : "3.5rem") : "14rem";
+
+  // Don't render the app shell until we know onboarding is complete —
+  // prevents a half-set-up flash before the redirect to /onboarding.
+  if (onboarded !== true) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-mist">
+        <div className="w-7 h-7 border-2 border-pebble border-t-taskora-red rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <>

@@ -548,6 +548,19 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
     finally { setImporting(false); }
   }
 
+  async function handleMarkComplete() {
+    setImporting(true); setMsg("");
+    try {
+      await apiFetch("/api/v1/onboarding/step3/done", {
+        method: "POST",
+        body: JSON.stringify({ skipped: false, business_id: biz }),
+      });
+      onStepDone();
+      setMsg("Onboarding marked complete.");
+    } catch (e: any) { setMsg(`Error: ${e.message}`); }
+    finally { setImporting(false); }
+  }
+
   const hasData = bUploadStatus === "parsed" || cUploadStatus === "parsed";
 
   return (
@@ -707,10 +720,18 @@ function EntityImportSection({ status, onStepDone }: { status: OnboardingStatus;
 
       {msg && <p className={`text-sm mt-3 ${msg.startsWith("Error") ? "text-red-600" : "text-green-600"}`}>{msg}</p>}
 
-      <button onClick={handleImport} disabled={importing || !hasData}
-        className="mt-4 h-9 px-4 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
-        {importing ? "Importing…" : "Import"}
-      </button>
+      <div className="mt-4 flex items-center gap-3">
+        <button onClick={handleImport} disabled={importing || !hasData}
+          className="h-9 px-4 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40">
+          {importing ? "Importing…" : "Import"}
+        </button>
+        {!badgeOk && (
+          <button onClick={handleMarkComplete} disabled={importing}
+            className="h-9 px-4 border border-pebble text-steel text-sm font-medium rounded-lg hover:bg-mist disabled:opacity-40">
+            Mark onboarding complete
+          </button>
+        )}
+      </div>
     </Section>
   );
 }
