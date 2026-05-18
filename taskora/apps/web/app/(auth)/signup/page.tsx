@@ -23,18 +23,34 @@ function SignupForm() {
   const [form, setForm] = useState({ name: "", email: "", password: "", company: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [confirmSent, setConfirmSent] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError("");
-    const { error: authError } = await supabase.auth.signUp({
+    // If Supabase email-confirmation is ON, signUp returns no session and
+    // the confirmation link must bring the user back to where they were
+    // headed (the invite, so they join the existing workspace — not lost).
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const { data, error: authError } = await supabase.auth.signUp({
       email: form.email,
       password: form.password,
-      options: { data: { name: form.name, company: form.company } },
+      options: {
+        data: { name: form.name, company: form.company },
+        emailRedirectTo: origin ? `${origin}${postSignup}` : undefined,
+      },
     });
     if (authError) { setError(authError.message); setLoading(false); return; }
-    router.push(postSignup);
+    if (data.session) {
+      // Confirmation disabled — straight in.
+      router.push(postSignup);
+    } else {
+      // Confirmation required — don't push into an auth-gated page (it would
+      // error). Tell them to confirm; the email link returns them here.
+      setConfirmSent(true);
+      setLoading(false);
+    }
   }
 
   const fields: { key: keyof typeof form; label: string; type: string; required: boolean }[] = [
@@ -43,6 +59,30 @@ function SignupForm() {
     { key: "password", label: "Password", type: "password", required: true },
     { key: "company", label: "Company (optional)", type: "text", required: false },
   ];
+
+  if (confirmSent) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-mist px-4">
+        <div className="bg-white rounded-2xl shadow p-10 w-full max-w-md text-center">
+          <p className="text-5xl mb-4">📧</p>
+          <h1 className="text-2xl font-bold text-midnight mb-2">Confirm your email</h1>
+          <p className="text-steel text-sm">
+            We sent a confirmation link to <strong className="text-midnight">{form.email}</strong>.
+            {inviteToken
+              ? " Open it and you'll be taken straight to your team's workspace to join."
+              : " Open it to finish setting up your account."}
+          </p>
+          <p className="text-steel/70 text-xs mt-4">
+            Wrong email or didn&apos;t get it?{" "}
+            <button onClick={() => { setConfirmSent(false); setError(""); }}
+              className="text-ocean font-medium underline underline-offset-2">
+              Try again
+            </button>
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-mist px-4">

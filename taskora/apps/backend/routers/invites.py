@@ -1,3 +1,4 @@
+import logging
 import secrets
 from typing import Optional
 from datetime import datetime, timezone
@@ -50,12 +51,16 @@ def create_invite(
     # Route is /invite/[token] (singular) — must match or the link 404s.
     invite_url = f"{settings.frontend_url}/invite/{token}"
 
-    biz = sb.table("businesses").select("name").eq("id", body.business_id).execute().data
-    business_name = (biz[0]["name"] if biz else None) or "a Taskora workspace"
-    inviter_rows = sb.table("users").select("name").eq("id", user["id"]).execute().data
-    inviter_name = (inviter_rows[0].get("name") if inviter_rows else None) or "A teammate"
-
-    _send_invite_email(body.invited_email, inviter_name, business_name, body.role, invite_url)
+    # Best-effort: the invite row + URL are the critical output. A failure
+    # looking up names or sending the email must not 500 the invite.
+    try:
+        biz = sb.table("businesses").select("name").eq("id", body.business_id).execute().data
+        business_name = (biz[0]["name"] if biz else None) or "a Taskora workspace"
+        inviter_rows = sb.table("users").select("name").eq("id", user["id"]).execute().data
+        inviter_name = (inviter_rows[0].get("name") if inviter_rows else None) or "A teammate"
+        _send_invite_email(body.invited_email, inviter_name, business_name, body.role, invite_url)
+    except Exception:
+        logging.getLogger(__name__).exception("invite email step failed (invite still created)")
 
     return {
         "id": invite["id"],
