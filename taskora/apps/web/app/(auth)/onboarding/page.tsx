@@ -774,12 +774,12 @@ function Step3({
 // ── Done screen ──────────────────────────────────────────────────────────────
 function DoneScreen() {
   const router = useRouter();
-  useEffect(() => { const t = setTimeout(() => router.push("/war-room"), 2000); return () => clearTimeout(t); }, [router]);
+  useEffect(() => { const t = setTimeout(() => router.push("/daily-brief"), 2000); return () => clearTimeout(t); }, [router]);
   return (
     <div className="text-center py-6 space-y-4">
       <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto text-3xl">✓</div>
       <h2 className="text-xl font-bold text-midnight">You're all set!</h2>
-      <p className="text-steel text-sm">Taking you to your War Room…</p>
+      <p className="text-steel text-sm">Taking you to your Daily Brief…</p>
     </div>
   );
 }
@@ -888,7 +888,7 @@ export default function OnboardingPage() {
         const params = storedBizId ? `?business_id=${storedBizId}` : "";
         const res = await apiFetch(`/api/v1/onboarding/status${params}`);
         if (res?.onboarding_completed) {
-          router.replace("/war-room");
+          router.replace("/daily-brief");
           return;
         }
         // Resume mid-flow if they have a business
@@ -903,7 +903,7 @@ export default function OnboardingPage() {
           if (!res.workspace_mode) { setStep(1); }
           else if (!res.step2_done) { setStep(2); }
           else if (!res.step3_done) { setStep(3); }
-          else { router.replace("/war-room"); }
+          else { router.replace("/daily-brief"); }
         }
       } catch {
         // No business. An invited user must join the existing workspace,
