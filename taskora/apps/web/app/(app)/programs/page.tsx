@@ -700,13 +700,21 @@ export default function ProgramsPage() {
     setLoading(true);
     setError("");
     try {
+      // Resolve the business from the server, not a possibly-stale
+      // localStorage value (a prior account / deleted test workspace
+      // would otherwise 403 "Not a member of this business"). Cached
+      // id is only a fallback if the lookup fails.
       let bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
-      if (!bizId) {
+      try {
         const biz = await apiFetch("/api/v1/businesses/my");
-        if (!biz?.id) throw new Error("No business found for your account.");
-        bizId = biz.id;
-        localStorage.setItem("business_id", bizId);
+        if (biz?.id) {
+          bizId = biz.id;
+          localStorage.setItem("business_id", bizId);
+        }
+      } catch {
+        /* fall back to cached id */
       }
+      if (!bizId) throw new Error("No business found for your account.");
       setBusinessId(bizId);
 
       // Independent calls — fetch the program list and the caller's role in

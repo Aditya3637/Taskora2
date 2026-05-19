@@ -143,15 +143,24 @@ function SidebarContent({
             ? localStorage.getItem("business_id") ?? ""
             : "";
 
-        if (!businessId) {
+        // Always reconcile the cached business_id against the user's
+        // actual business. A stale id (a prior account, a deleted test
+        // workspace, the persona switcher) otherwise makes every
+        // business-scoped call 403 "Not a member of this business".
+        // Keep the cached id only as a fallback if the lookup fails.
+        try {
           const res = await fetch(`${API}/api/v1/businesses/my`, {
             headers: { Authorization: `Bearer ${session.access_token}` },
           });
           if (res.ok) {
             const biz = await res.json();
-            businessId = biz?.id ?? "";
-            if (businessId) localStorage.setItem("business_id", businessId);
+            if (biz?.id) {
+              businessId = biz.id;
+              localStorage.setItem("business_id", businessId);
+            }
           }
+        } catch {
+          /* network blip — fall back to the cached id below */
         }
 
         if (businessId) {
