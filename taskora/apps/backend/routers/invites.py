@@ -1,3 +1,4 @@
+import html as _html
 import logging
 import secrets
 from typing import Optional
@@ -74,20 +75,29 @@ def _send_invite_email(
 ) -> None:
     from email_send import send_email
 
+    # inviter_name and business_name are user-controlled; escape before
+    # interpolating into HTML or an attacker could inject markup into an
+    # email Taskora sends on their behalf (phishing). subject/text are
+    # plain text — no injection surface — so leave them raw.
+    safe_inviter = _html.escape(inviter_name)
+    safe_biz = _html.escape(business_name)
+    safe_role = _html.escape(role)
+    safe_url = _html.escape(invite_url, quote=True)
+
     subject = f"{inviter_name} invited you to {business_name} on Taskora"
     html = f"""\
 <div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;color:#1a1a2e">
   <h1 style="font-size:20px;margin:0 0 4px">You've been invited to Taskora</h1>
   <p style="color:#5a6072;font-size:14px;line-height:1.6;margin:16px 0">
-    <strong>{inviter_name}</strong> has invited you to join
-    <strong>{business_name}</strong> as <strong>{role}</strong>.
+    <strong>{safe_inviter}</strong> has invited you to join
+    <strong>{safe_biz}</strong> as <strong>{safe_role}</strong>.
   </p>
-  <a href="{invite_url}" style="display:inline-block;background:#e23744;color:#fff;
+  <a href="{safe_url}" style="display:inline-block;background:#e23744;color:#fff;
      text-decoration:none;font-weight:600;font-size:14px;padding:12px 24px;
      border-radius:8px;margin:12px 0">Accept invitation</a>
   <p style="color:#9aa0ad;font-size:12px;line-height:1.6;margin:20px 0 0">
     Or paste this link into your browser:<br>
-    <a href="{invite_url}" style="color:#5a6072">{invite_url}</a>
+    <a href="{safe_url}" style="color:#5a6072">{safe_url}</a>
   </p>
   <p style="color:#9aa0ad;font-size:12px;margin:24px 0 0">
     If you weren't expecting this, you can ignore this email.
