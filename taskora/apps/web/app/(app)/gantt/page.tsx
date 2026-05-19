@@ -25,13 +25,20 @@ function GanttPageInner() {
     setLoading(true);
     setError("");
     try {
+      // Resolve from the server, not a possibly-stale localStorage value
+      // (a prior account / deleted test workspace would 403 "Not a member
+      // of this business"). Cached id is only a fallback.
       let bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
-      if (!bizId) {
+      try {
         const biz = await ganttApiFetch("/api/v1/businesses/my");
-        if (!biz?.id) throw new Error("No business");
-        bizId = biz.id;
-        localStorage.setItem("business_id", bizId);
+        if (biz?.id) {
+          bizId = biz.id;
+          localStorage.setItem("business_id", bizId);
+        }
+      } catch {
+        /* fall back to cached id */
       }
+      if (!bizId) throw new Error("No business");
       const data = await ganttApiFetch(`/api/v1/initiatives/business/${bizId}`);
       setInitiatives(Array.isArray(data) ? data : data.results ?? []);
     } catch {
