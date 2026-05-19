@@ -69,6 +69,7 @@ class TaskCreate(BaseModel):
     #   priority IN (low, medium, high, urgent)
     #   entity_inheritance IN (inherited, overridden)
     priority: Literal["low", "medium", "high", "urgent"] = "medium"
+    status: _TASK_STATUSES = "backlog"
     due_date: Optional[date] = None
     date_mode: Literal["uniform", "per_entity"] = "uniform"
     entity_inheritance: Literal["inherited", "overridden"] = "inherited"
@@ -356,6 +357,7 @@ def create_task(
         "initiative_id": body.initiative_id,
         "primary_stakeholder_id": body.primary_stakeholder_id,
         "priority": body.priority,
+        "status": body.status,
         "due_date": body.due_date.isoformat() if body.due_date else None,
         "date_mode": body.date_mode,
         "entity_inheritance": body.entity_inheritance,

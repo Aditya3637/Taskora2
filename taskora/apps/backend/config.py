@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     stripe_webhook_secret: Optional[str] = None
     firebase_credentials_json: Optional[str] = None
     frontend_url: str = "http://localhost:3000"
+    # Transactional email (Resend). When resend_api_key is unset, sending is
+    # a logged no-op so invite/onboarding flows never break unconfigured.
+    resend_api_key: Optional[str] = None
+    # "onboarding@resend.dev" works for testing before a domain is verified
+    # in Resend; switch to e.g. "Taskora <noreply@taskora.deftai.in>" after.
+    email_from: str = "Taskora <onboarding@resend.dev>"
 
 
 @lru_cache

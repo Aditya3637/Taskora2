@@ -99,11 +99,17 @@ export default function InvitePage() {
 
             {!session ? (
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm text-amber-800">
-                <p className="font-medium mb-2">You need to be logged in to accept this invitation.</p>
-                <Link href={`/login?redirect=/invite/${token}`}
-                  className="inline-block px-4 py-2 bg-midnight text-white rounded-lg font-medium hover:opacity-90">
-                  Log In First
-                </Link>
+                <p className="font-medium mb-3">Sign in or create an account to join {invite.business_name}.</p>
+                <div className="flex gap-2 justify-center">
+                  <Link href={`/signup?invite=${token}`}
+                    className="inline-block px-4 py-2 bg-midnight text-white rounded-lg font-medium hover:opacity-90">
+                    Create account
+                  </Link>
+                  <Link href={`/login?next=${encodeURIComponent(`/invite/${token}`)}`}
+                    className="inline-block px-4 py-2 border border-midnight text-midnight rounded-lg font-medium hover:bg-midnight/5">
+                    Log in
+                  </Link>
+                </div>
               </div>
             ) : (
               <div className="flex gap-3">

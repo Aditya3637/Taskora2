@@ -52,9 +52,9 @@ function InviteModal({ onClose }: { onClose: () => void }) {
         : "";
       const result = await apiFetch("/api/v1/invites/", {
         method: "POST",
-        body: JSON.stringify({ email: email.trim(), role, business_id: businessId }),
+        body: JSON.stringify({ invited_email: email.trim(), role, business_id: businessId }),
       });
-      setInviteLink(result?.invite_link ?? result?.link ?? "");
+      setInviteLink(result?.invite_url ?? "");
     } catch {
       setError("Failed to create invite. Please try again.");
     } finally {
@@ -345,7 +345,20 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         );
         if (cancelled) return;
         if (res.status === 404) {
-          // No business at all — brand-new user, must onboard.
+          // No business yet. If they have a pending invite, send them to
+          // accept it (join the existing workspace) instead of onboarding,
+          // which would spawn a duplicate business.
+          try {
+            const inv = await fetch(`${API}/api/v1/invites/pending-for-me`, {
+              headers: { Authorization: `Bearer ${session.access_token}` },
+            });
+            if (cancelled) return;
+            const invData = inv.ok ? await inv.json() : null;
+            if (invData?.token) {
+              router.replace(`/invite/${invData.token}`);
+              return;
+            }
+          } catch { /* fall through to onboarding */ }
           router.replace("/onboarding");
           return;
         }

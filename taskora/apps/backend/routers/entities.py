@@ -267,6 +267,8 @@ def bulk_add_buildings(
         raise HTTPException(status_code=422, detail="No valid items provided")
     if len(rows) > 500:
         raise HTTPException(status_code=422, detail="Maximum 500 items per import")
+    # DB constraint/RLS failures propagate to the global APIError handler
+    # (main.py), which maps them to a clean 4xx without leaking internals.
     result = sb.table("buildings").insert(rows).execute()
     return {"inserted": len(result.data or [])}
 
@@ -296,5 +298,6 @@ def bulk_add_clients(
         raise HTTPException(status_code=422, detail="No valid items provided")
     if len(rows) > 500:
         raise HTTPException(status_code=422, detail="Maximum 500 items per import")
+    # See bulk_add_buildings — global APIError handler owns DB-error mapping.
     result = sb.table("clients").insert(rows).execute()
     return {"inserted": len(result.data or [])}

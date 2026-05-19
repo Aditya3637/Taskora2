@@ -1,26 +1,56 @@
 "use client";
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import { supabase } from "@/lib/supabase";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
-export default function SignupPage() {
+function SignupForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // An invited teammate must land on the invite (to join the existing
+  // workspace), NEVER on /onboarding (which creates a brand-new business).
+  const inviteToken = searchParams.get("invite");
+  const nextParam = searchParams.get("next");
+  const postSignup = inviteToken
+    ? `/invite/${inviteToken}`
+    : nextParam || "/onboarding";
+  const loginHref = inviteToken
+    ? `/login?next=${encodeURIComponent(`/invite/${inviteToken}`)}`
+    : nextParam
+    ? `/login?next=${encodeURIComponent(nextParam)}`
+    : "/login";
+
   const [form, setForm] = useState({ name: "", email: "", password: "", company: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [confirmSent, setConfirmSent] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError("");
-    const { error: authError } = await supabase.auth.signUp({
+    // If Supabase email-confirmation is ON, signUp returns no session and
+    // the confirmation link must bring the user back to where they were
+    // headed (the invite, so they join the existing workspace — not lost).
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const { data, error: authError } = await supabase.auth.signUp({
       email: form.email,
       password: form.password,
-      options: { data: { name: form.name, company: form.company } },
+      options: {
+        data: { name: form.name, company: form.company },
+        emailRedirectTo: origin ? `${origin}${postSignup}` : undefined,
+      },
     });
     if (authError) { setError(authError.message); setLoading(false); return; }
-    router.push("/onboarding");
+    if (data.session) {
+      // Confirmation disabled — straight in.
+      router.push(postSignup);
+    } else {
+      // Confirmation required — don't push into an auth-gated page (it would
+      // error). Tell them to confirm; the email link returns them here.
+      setConfirmSent(true);
+      setLoading(false);
+    }
   }
 
   const fields: { key: keyof typeof form; label: string; type: string; required: boolean }[] = [
@@ -30,11 +60,39 @@ export default function SignupPage() {
     { key: "company", label: "Company (optional)", type: "text", required: false },
   ];
 
+  if (confirmSent) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-mist px-4">
+        <div className="bg-white rounded-2xl shadow p-10 w-full max-w-md text-center">
+          <p className="text-5xl mb-4">📧</p>
+          <h1 className="text-2xl font-bold text-midnight mb-2">Confirm your email</h1>
+          <p className="text-steel text-sm">
+            We sent a confirmation link to <strong className="text-midnight">{form.email}</strong>.
+            {inviteToken
+              ? " Open it and you'll be taken straight to your team's workspace to join."
+              : " Open it to finish setting up your account."}
+          </p>
+          <p className="text-steel/70 text-xs mt-4">
+            Wrong email or didn&apos;t get it?{" "}
+            <button onClick={() => { setConfirmSent(false); setError(""); }}
+              className="text-ocean font-medium underline underline-offset-2">
+              Try again
+            </button>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-mist px-4">
       <div className="bg-white rounded-2xl shadow p-10 w-full max-w-md">
         <h1 className="text-2xl font-bold text-midnight mb-2">Create your account</h1>
-        <p className="text-steel text-sm mb-8">Free for 2 months. No credit card needed.</p>
+        <p className="text-steel text-sm mb-8">
+          {inviteToken
+            ? "Create your account to join your team's workspace."
+            : "Free for 2 months. No credit card needed."}
+        </p>
         <form onSubmit={handleSubmit} className="space-y-4">
           {fields.map(({ key, label, type, required }) => (
             <input
@@ -58,9 +116,17 @@ export default function SignupPage() {
         </form>
         <p className="text-center text-sm text-steel mt-6">
           Already have an account?{" "}
-          <Link href="/login" className="text-ocean font-medium">Log in</Link>
+          <Link href={loginHref} className="text-ocean font-medium">Log in</Link>
         </p>
       </div>
     </div>
+  );
+}
+
+export default function SignupPage() {
+  return (
+    <Suspense fallback={null}>
+      <SignupForm />
+    </Suspense>
   );
 }

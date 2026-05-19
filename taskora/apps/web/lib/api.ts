@@ -23,7 +23,14 @@ export async function apiFetch(path: string, opts?: RequestInit) {
       .json()
       .then((d: any) => d.detail ?? d.message ?? `HTTP ${res.status}`)
       .catch(() => `HTTP ${res.status}`);
-    throw new Error(String(detail));
+    // FastAPI 422 returns `detail` as a list of {loc,msg} objects — String()
+    // on that yields "[object Object]". Flatten to readable text.
+    const msg = Array.isArray(detail)
+      ? detail.map((e: any) => e?.msg ?? JSON.stringify(e)).join("; ")
+      : typeof detail === "object" && detail !== null
+        ? JSON.stringify(detail)
+        : String(detail);
+    throw new Error(msg);
   }
   if (res.status === 204) return null;
   return res.json();

@@ -18,7 +18,7 @@ function LoginForm() {
     setError("");
     const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
     if (authError) { setError(authError.message); setLoading(false); return; }
-    const next = searchParams.get("next") ?? "/war-room";
+    const next = searchParams.get("next") ?? "/daily-brief";
     window.location.href = next;
   }
 
