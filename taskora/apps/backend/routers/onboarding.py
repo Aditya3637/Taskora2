@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
-from deps import get_supabase
+from deps import get_supabase, require_member
 
 router = APIRouter(prefix="/api/v1/onboarding", tags=["onboarding"])
 
@@ -169,5 +169,12 @@ def delete_assignee(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    # business_id not needed here — we match on assignee id + implicit business ownership via RLS
+    # Authorize against the assignee's own business — do NOT rely on RLS
+    # alone. The service-role client used here bypasses RLS, so an
+    # unscoped delete-by-id would let any authenticated user delete any
+    # workspace's assignee.
+    rows = sb.table("assignees").select("business_id").eq("id", assignee_id).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="Assignee not found")
+    require_member(sb, rows[0]["business_id"], user["id"])
     sb.table("assignees").delete().eq("id", assignee_id).execute()

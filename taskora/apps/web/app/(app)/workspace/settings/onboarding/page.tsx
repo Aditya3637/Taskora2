@@ -26,7 +26,14 @@ async function apiFetch(path: string, opts?: RequestInit) {
   });
   if (!res.ok) {
     const detail = await res.json().then((d: any) => d.detail ?? `HTTP ${res.status}`).catch(() => `HTTP ${res.status}`);
-    throw new Error(String(detail));
+    // FastAPI 422 returns `detail` as a list of {loc,msg} objects — String()
+    // on that yields "[object Object]". Flatten to readable text.
+    const msg = Array.isArray(detail)
+      ? detail.map((e: any) => e?.msg ?? JSON.stringify(e)).join("; ")
+      : typeof detail === "object" && detail !== null
+        ? JSON.stringify(detail)
+        : String(detail);
+    throw new Error(msg);
   }
   if (res.status === 204) return null;
   return res.json();
@@ -307,7 +314,7 @@ function TeamInvitesSection({ status, onStepDone }: { status: OnboardingStatus; 
     setSending(true); setError("");
     const bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
     try {
-      await apiFetch("/api/v1/invites/", { method: "POST", body: JSON.stringify({ email: e, role, business_id: bizId }) });
+      await apiFetch("/api/v1/invites/", { method: "POST", body: JSON.stringify({ invited_email: e, role, business_id: bizId }) });
       setSent((p) => [...p, e]);
       setEmail("");
       if (status.step2_skipped) {
