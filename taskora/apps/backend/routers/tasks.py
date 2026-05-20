@@ -491,14 +491,12 @@ def update_task(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    # Auth: must be stakeholder
-    task_row = sb.table("tasks").select("primary_stakeholder_id").eq("id", task_id).execute().data
-    if not task_row:
-        raise HTTPException(status_code=404, detail="Task not found")
-    stakeholders = sb.table("task_stakeholders").select("user_id").eq("task_id", task_id).execute().data
-    is_member = task_row[0]["primary_stakeholder_id"] == user["id"] or any(s["user_id"] == user["id"] for s in stakeholders)
-    if not is_member:
-        raise HTTPException(status_code=403, detail="Not a stakeholder")
+    # Authz: primary | secondary stakeholder | workspace owner/admin.
+    # Owners/admins were excluded by an inline stakeholder-only check —
+    # divergent from the rest of the write surface (status/subtask/entity
+    # already use _assert_task_write). That blocked owners from editing
+    # dates on tasks they didn't personally own.
+    _assert_task_write(sb, task_id, user["id"])
     # Snapshot current state BEFORE the update so we can detect transitions.
     prior = sb.table("tasks").select("due_date, status, closed_at").eq("id", task_id).execute().data
     prior_due_str = prior[0].get("due_date") if prior else None
@@ -608,11 +606,7 @@ def add_stakeholder(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    task_row = sb.table("tasks").select("primary_stakeholder_id").eq("id", task_id).execute().data
-    if not task_row:
-        raise HTTPException(status_code=404, detail="Task not found")
-    if task_row[0]["primary_stakeholder_id"] != user["id"]:
-        raise HTTPException(status_code=403, detail="Only the primary stakeholder can add stakeholders")
+    _assert_can_manage_stakeholders(sb, task_id, user["id"])
     result = sb.table("task_stakeholders").upsert(
         {"task_id": task_id, "user_id": body.user_id, "role": body.role},
         on_conflict="task_id,user_id",
@@ -627,11 +621,7 @@ def remove_stakeholder(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    task_row = sb.table("tasks").select("primary_stakeholder_id").eq("id", task_id).execute().data
-    if not task_row:
-        raise HTTPException(status_code=404, detail="Task not found")
-    if task_row[0]["primary_stakeholder_id"] != user["id"]:
-        raise HTTPException(status_code=403, detail="Only the primary stakeholder can remove stakeholders")
+    _assert_can_manage_stakeholders(sb, task_id, user["id"])
     sb.table("task_stakeholders").delete().eq("task_id", task_id).eq("user_id", stakeholder_user_id).execute()
 
 
@@ -701,6 +691,42 @@ def _assert_task_write(sb: Client, task_id: str, user_id: str):
 def _assert_stakeholder(sb: Client, task_id: str, user_id: str):
     """Back-compat alias — watcher-roster management uses the same write-gate."""
     _assert_task_write(sb, task_id, user_id)
+
+
+def _assert_can_manage_stakeholders(sb: Client, task_id: str, user_id: str):
+    """Authz for add/remove stakeholders: primary OR workspace owner/admin.
+    Deliberately NOT secondary stakeholders — a co-assignee shouldn't decide
+    who else is on the task. Owner/admin can manage so they can reassign
+    stranded tasks when the primary leaves.
+    """
+    rows = (
+        sb.table("tasks")
+        .select("primary_stakeholder_id, initiative_id")
+        .eq("id", task_id)
+        .execute()
+        .data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Task not found")
+    t = rows[0]
+    if t["primary_stakeholder_id"] == user_id:
+        return
+    if t.get("initiative_id"):
+        init_row = (
+            sb.table("initiatives")
+            .select("business_id")
+            .eq("id", t["initiative_id"])
+            .execute()
+            .data
+        )
+        if init_row and get_member_role(
+            sb, init_row[0]["business_id"], user_id
+        ) in ("owner", "admin"):
+            return
+    raise HTTPException(
+        status_code=403,
+        detail="Only the primary stakeholder or a workspace admin can manage stakeholders",
+    )
 
 
 def _scope_has_approver(sb: Client, task_id: str, scope_type: str,
@@ -1430,19 +1456,14 @@ def recurring_mark_done(
     sb: Client = Depends(get_supabase),
 ):
     """Mark a recurring task done for this cycle and advance next_meeting_at."""
+    # Authz consistent with other write endpoints: primary | secondary
+    # stakeholder | workspace owner/admin. Was stakeholder-only before, which
+    # blocked owners from advancing recurring tasks they didn't personally own.
+    _assert_task_write(sb, task_id, user["id"])
     rows = sb.table("tasks").select("primary_stakeholder_id, recurring_type, status").eq("id", task_id).execute().data
     if not rows:
         raise HTTPException(status_code=404, detail="Task not found")
     task_row = rows[0]
-
-    # Auth check
-    stakeholders = sb.table("task_stakeholders").select("user_id").eq("task_id", task_id).execute().data
-    is_member = (
-        task_row["primary_stakeholder_id"] == user["id"]
-        or any(s["user_id"] == user["id"] for s in stakeholders)
-    )
-    if not is_member:
-        raise HTTPException(status_code=403, detail="Not a stakeholder")
 
     recurring_type = task_row.get("recurring_type")
     if not recurring_type or recurring_type not in _RECURRENCE_DELTAS:
