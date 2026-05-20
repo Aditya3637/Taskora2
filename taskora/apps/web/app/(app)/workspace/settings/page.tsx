@@ -49,6 +49,7 @@ type Invite = {
   status: string;
   inviter_email?: string;
   created_at: string;
+  token: string;
 };
 
 type JoinRequest = {
@@ -165,15 +166,40 @@ export default function WorkspaceSettingsPage() {
   }
 
   async function handleRemoveMember(targetUserId: string, name: string) {
-    if (!confirm(`Remove ${name || "this member"} from the workspace?`)) return;
+    const who = name || "this member";
+    if (
+      !confirm(
+        `Remove ${who} from the workspace?\n\n` +
+          `Their tasks stay — anything where they were the primary will be ` +
+          `reassigned to you. Their secondary assignments and follower/approver ` +
+          `entries are removed.`,
+      )
+    )
+      return;
     try {
       await apiFetch(`/api/v1/businesses/${businessId}/members/${targetUserId}`, {
         method: "DELETE",
       });
       setMembers((prev) => prev.filter((m) => m.user_id !== targetUserId));
-      showToast("Member removed");
+      showToast("Member removed — their tasks were reassigned to you");
     } catch (e: any) {
       showToast(`Error: ${e.message}`);
+    }
+  }
+
+  async function handleCopyInviteLink(token: string, email: string) {
+    if (!token) {
+      showToast("This invite has no token — try revoking and re-inviting.");
+      return;
+    }
+    const url = `${window.location.origin}/invite/${token}`;
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast(`Invite link for ${email} copied to clipboard`);
+    } catch {
+      // Clipboard API blocked (insecure context / permission denied) —
+      // fall back to a prompt so the user can still copy it manually.
+      window.prompt("Copy this invite link:", url);
     }
   }
 
@@ -248,6 +274,7 @@ export default function WorkspaceSettingsPage() {
             Team Members{" "}
             <span className="text-steel font-normal text-sm ml-1">({members.length})</span>
           </h2>
+          <p className="text-xs text-steel mt-1">People who have joined the workspace.</p>
         </div>
 
         <div className="divide-y divide-pebble/50">
@@ -336,6 +363,15 @@ export default function WorkspaceSettingsPage() {
               Pending Invitations{" "}
               <span className="text-steel font-normal text-sm ml-1">({invites.length})</span>
             </h2>
+            <p className="text-xs text-steel mt-1">
+              People you&apos;ve invited who haven&apos;t joined yet.
+            </p>
+          </div>
+
+          <div className="px-6 py-3 bg-amber-50/60 border-b border-amber-200/60 text-xs text-amber-800">
+            <span className="font-medium">Heads up:</span> invite emails aren&apos;t
+            always delivered. Use <span className="font-medium">Copy link</span>{" "}
+            and share it with them directly (WhatsApp, Slack, email) to be safe.
           </div>
 
           <div className="divide-y divide-pebble/50">
@@ -355,6 +391,13 @@ export default function WorkspaceSettingsPage() {
                 <span className="text-xs px-2.5 py-1 rounded-full font-medium border bg-amber-50 text-amber-700 border-amber-200">
                   Pending
                 </span>
+
+                <button
+                  onClick={() => handleCopyInviteLink(inv.token, inv.invited_email)}
+                  className="text-xs text-ocean hover:text-ocean/80 font-medium ml-1 flex-shrink-0"
+                >
+                  Copy link
+                </button>
 
                 <button
                   onClick={() => handleRevokeInvite(inv.id, inv.invited_email)}

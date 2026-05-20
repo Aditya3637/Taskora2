@@ -306,6 +306,40 @@ def remove_member(
     if caller_role == "admin" and target_role == "admin":
         raise HTTPException(status_code=403, detail="Admins cannot remove other admins")
 
+    # Preserve their tasks but drop their assignments. primary_stakeholder_id
+    # and initiatives.owner_id are NOT NULL with ON DELETE RESTRICT — reassign
+    # to the caller (the admin/owner clicking Remove). Scoped to *this*
+    # business only; the same user in another workspace is untouched.
+    init_ids = [
+        r["id"]
+        for r in sb.table("initiatives").select("id").eq("business_id", business_id).execute().data
+    ]
+    task_ids = []
+    if init_ids:
+        task_ids = [
+            r["id"]
+            for r in sb.table("tasks").select("id").in_("initiative_id", init_ids).execute().data
+        ]
+
+    if init_ids:
+        sb.table("initiatives").update({"owner_id": user["id"]}).in_("id", init_ids).eq(
+            "owner_id", target_user_id
+        ).execute()
+
+    if task_ids:
+        sb.table("tasks").update({"primary_stakeholder_id": user["id"]}).in_("id", task_ids).eq(
+            "primary_stakeholder_id", target_user_id
+        ).execute()
+        sb.table("task_stakeholders").delete().in_("task_id", task_ids).eq(
+            "user_id", target_user_id
+        ).execute()
+        sb.table("subtasks").update({"assignee_id": None}).in_("task_id", task_ids).eq(
+            "assignee_id", target_user_id
+        ).execute()
+        sb.table("item_watchers").delete().in_("task_id", task_ids).eq(
+            "user_id", target_user_id
+        ).execute()
+
     sb.table("business_members").delete().eq("business_id", business_id).eq("user_id", target_user_id).execute()
 
 
