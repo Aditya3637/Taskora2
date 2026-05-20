@@ -1,30 +1,44 @@
+"""Auth tests.
+
+`get_current_user` validates a token by calling Supabase's
+`/auth/v1/user` endpoint over HTTP (it does NOT decode the JWT locally).
+So these tests mock `auth._http` rather than crafting JWTs — the older
+local-decode tests were stale against this design and had been failing
+on `main` (MagicMock settings leaking into a real httpx header).
+"""
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import patch, MagicMock
-from fastapi.testclient import TestClient
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
-from jose import jwt
-from datetime import datetime, timedelta, timezone
+from fastapi.testclient import TestClient
 
-from main import app
+import auth
 from auth import get_current_user
+from main import app
 
 client = TestClient(app)
 
-FAKE_SECRET = "test-secret-key-at-least-32-chars-long!!"
 FAKE_USER_ID = "00000000-0000-0000-0000-000000000001"
 
 
-def make_token(sub=FAKE_USER_ID, audience="authenticated", secret=FAKE_SECRET, **kwargs):
-    payload = {
-        "sub": sub,
-        "aud": audience,
-        "email": "test@example.com",
-        "role": "authenticated",
-        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
-        **kwargs,
-    }
-    return jwt.encode(payload, secret, algorithm="HS256")
+class _Resp:
+    """Minimal stand-in for an httpx.Response."""
+    def __init__(self, status_code: int, payload: dict | None = None):
+        self.status_code = status_code
+        self._payload = payload or {}
+
+    def json(self):
+        return self._payload
+
+
+class _Settings:
+    supabase_url = "http://supabase.test"
+    supabase_service_key = "service-key"
+
+
+def _creds(token="any.token"):
+    return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
 
 
 def test_health_no_auth_required():
@@ -34,64 +48,52 @@ def test_health_no_auth_required():
 
 
 def test_missing_token_returns_403():
-    # HTTPBearer returns 403 when no Authorization header is present
-    r = client.get("/api/v1/businesses/")
+    # No Authorization header — HTTPBearer rejects before get_current_user.
+    # Path is slash-less: redirect_slashes=False makes the trailing-slash
+    # form 405 (it only matches the POST route).
+    r = client.get("/api/v1/businesses")
     assert r.status_code == 403
 
 
 def test_invalid_token_returns_401():
-    r = client.get(
-        "/api/v1/businesses/",
-        headers={"Authorization": "Bearer totally.invalid.token"},
-    )
+    # Supabase rejects the token (non-200) -> get_current_user raises 401.
+    with patch.object(auth._http, "get", return_value=_Resp(401)):
+        r = client.get(
+            "/api/v1/businesses",
+            headers={"Authorization": "Bearer totally.invalid.token"},
+        )
     assert r.status_code == 401
 
 
 def test_valid_token_accepted():
-    """Valid JWT with correct secret and audience should decode successfully."""
-    token = make_token()
-    with patch("auth.get_settings") as mock_get_settings:
-        mock_settings = MagicMock()
-        mock_settings.supabase_jwt_secret = FAKE_SECRET
-        mock_get_settings.return_value = mock_settings
-        # We test the function directly since /api/v1/me doesn't exist yet
-        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
-        result = get_current_user(creds, mock_settings)
-        assert result["id"] == FAKE_USER_ID
-        assert result["email"] == "test@example.com"
+    """Supabase confirms the token -> user dict returned."""
+    resp = _Resp(200, {"id": FAKE_USER_ID, "email": "test@example.com",
+                        "role": "authenticated"})
+    with patch.object(auth._http, "get", return_value=resp):
+        result = get_current_user(_creds(), _Settings())
+    assert result["id"] == FAKE_USER_ID
+    assert result["email"] == "test@example.com"
 
 
-def test_expired_token_returns_401():
-    token = make_token(exp=datetime.now(timezone.utc) - timedelta(hours=1))
-    with patch("auth.get_settings") as mock_get_settings:
-        mock_settings = MagicMock()
-        mock_settings.supabase_jwt_secret = FAKE_SECRET
-        mock_get_settings.return_value = mock_settings
-        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+def test_rejected_token_returns_401():
+    """Any non-200 from Supabase (expired / bad signature / wrong aud —
+    all now enforced server-side) maps to a 401."""
+    with patch.object(auth._http, "get", return_value=_Resp(401)):
         with pytest.raises(HTTPException) as exc:
-            get_current_user(creds, mock_settings)
-        assert exc.value.status_code == 401
+            get_current_user(_creds(), _Settings())
+    assert exc.value.status_code == 401
 
 
-def test_wrong_audience_returns_401():
-    token = make_token(audience="wrong-audience")
-    with patch("auth.get_settings") as mock_get_settings:
-        mock_settings = MagicMock()
-        mock_settings.supabase_jwt_secret = FAKE_SECRET
-        mock_get_settings.return_value = mock_settings
-        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+def test_forbidden_upstream_also_401():
+    with patch.object(auth._http, "get", return_value=_Resp(403)):
         with pytest.raises(HTTPException) as exc:
-            get_current_user(creds, mock_settings)
-        assert exc.value.status_code == 401
+            get_current_user(_creds(), _Settings())
+    assert exc.value.status_code == 401
 
 
-def test_empty_sub_returns_401():
-    token = make_token(sub="")
-    with patch("auth.get_settings") as mock_get_settings:
-        mock_settings = MagicMock()
-        mock_settings.supabase_jwt_secret = FAKE_SECRET
-        mock_get_settings.return_value = mock_settings
-        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+def test_missing_subject_returns_401():
+    """200 from Supabase but no user id -> 401 (the local guard)."""
+    with patch.object(auth._http, "get", return_value=_Resp(200, {})):
         with pytest.raises(HTTPException) as exc:
-            get_current_user(creds, mock_settings)
-        assert exc.value.status_code == 401
+            get_current_user(_creds(), _Settings())
+    assert exc.value.status_code == 401
