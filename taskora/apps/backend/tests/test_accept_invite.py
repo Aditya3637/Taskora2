@@ -101,6 +101,23 @@ def test_accept_already_accepted_returns_409(sb):
     assert r.status_code == 409
 
 
+def test_accept_expired_invite_returns_410(sb):
+    from datetime import datetime, timezone, timedelta
+    yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    sb.store["workspace_invites"][0]["expires_at"] = yesterday
+    r = client.post(f"/api/v1/invites/{TOKEN}/accept")
+    assert r.status_code == 410
+    assert "expired" in r.json()["detail"].lower()
+
+
+def test_accept_not_yet_expired_invite_succeeds(sb):
+    from datetime import datetime, timezone, timedelta
+    tomorrow = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+    sb.store["workspace_invites"][0]["expires_at"] = tomorrow
+    r = client.post(f"/api/v1/invites/{TOKEN}/accept")
+    assert r.status_code == 200
+
+
 def test_accept_falls_back_to_email_local_part_when_no_metadata(sb):
     # Caller has no user_metadata.name — should derive name from the
     # email's local-part so public.users.name (NOT NULL) is satisfied.

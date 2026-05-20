@@ -26,6 +26,7 @@ type InviteInfo = {
   role: string;
   status: string;
   expires_at: string;
+  invited_email?: string;
 };
 
 export default function InvitePage() {
@@ -112,16 +113,33 @@ export default function InvitePage() {
                 </div>
               </div>
             ) : (
-              <div className="flex gap-3">
-                <button onClick={() => respond("decline")} disabled={acting}
-                  className="flex-1 h-11 border border-pebble text-steel rounded-lg font-medium hover:text-midnight hover:border-midnight transition-colors disabled:opacity-50">
-                  {acting ? "…" : "Decline"}
-                </button>
-                <button onClick={() => respond("accept")} disabled={acting}
-                  className="flex-1 h-11 bg-midnight text-white rounded-lg font-semibold hover:opacity-90 disabled:opacity-50">
-                  {acting ? "Joining…" : "Accept Invitation"}
-                </button>
-              </div>
+              <>
+                {invite.invited_email &&
+                  session?.user?.email &&
+                  invite.invited_email.toLowerCase() !==
+                    session.user.email.toLowerCase() && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-amber-800 text-left">
+                    <p>
+                      <span className="font-semibold">Heads up:</span> this invitation
+                      was addressed to{" "}
+                      <span className="font-mono">{invite.invited_email}</span>, but
+                      you&apos;re signed in as{" "}
+                      <span className="font-mono">{session.user.email}</span>.
+                      Accepting will add <strong>your</strong> account to the workspace.
+                    </p>
+                  </div>
+                )}
+                <div className="flex gap-3">
+                  <button onClick={() => respond("decline")} disabled={acting}
+                    className="flex-1 h-11 border border-pebble text-steel rounded-lg font-medium hover:text-midnight hover:border-midnight transition-colors disabled:opacity-50">
+                    {acting ? "…" : "Decline"}
+                  </button>
+                  <button onClick={() => respond("accept")} disabled={acting}
+                    className="flex-1 h-11 bg-midnight text-white rounded-lg font-semibold hover:opacity-90 disabled:opacity-50">
+                    {acting ? "Joining…" : "Accept Invitation"}
+                  </button>
+                </div>
+              </>
             )}
           </>
         )}

@@ -287,6 +287,23 @@ def accept_invite(
             detail=f"Invite is already {invite['status']}",
         )
 
+    # Reject expired invites — the FE only checks `status` so without this
+    # an invite created long ago could still be claimed.
+    expires_at = invite.get("expires_at")
+    if expires_at:
+        # Postgres timestamptz may serialise with a trailing 'Z' which
+        # fromisoformat() didn't accept until 3.11; normalise.
+        norm = expires_at.replace("Z", "+00:00") if isinstance(expires_at, str) else expires_at
+        try:
+            exp_dt = datetime.fromisoformat(norm) if isinstance(norm, str) else norm
+        except ValueError:
+            exp_dt = None
+        if exp_dt is not None and exp_dt < datetime.now(timezone.utc):
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="This invitation has expired. Ask the admin to send a new one.",
+            )
+
     business_id = invite["business_id"]
     invite_role = invite["role"]
     now = datetime.now(timezone.utc).isoformat()
