@@ -303,6 +303,23 @@ def accept_invite(
     }
     biz_role = _ROLE_MAP.get(invite_role, "member")
 
+    # Belt-and-suspenders: ensure the caller has a public.users row before
+    # the business_members upsert. Migration 030 added a trigger that mirrors
+    # new auth.users into public.users, but historic auth.users rows (or
+    # any future signup that races the trigger) could still be missing.
+    # Without this, business_members would 500 on an FK violation and the
+    # "Accept Invitation" button silently no-ops in the UI. Only INSERT if
+    # missing — never overwrite an existing display name.
+    existing_user = sb.table("users").select("id").eq("id", user["id"]).execute().data
+    if not existing_user:
+        name_from_meta = (user.get("user_metadata") or {}).get("name")
+        fallback_name = (user.get("email") or "").split("@")[0] or "User"
+        sb.table("users").insert({
+            "id": user["id"],
+            "name": name_from_meta or fallback_name,
+            "email": user.get("email"),
+        }).execute()
+
     # Insert business_members (upsert to be idempotent)
     sb.table("business_members").upsert(
         {
