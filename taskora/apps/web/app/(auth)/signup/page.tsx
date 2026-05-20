@@ -1,5 +1,5 @@
 "use client";
-import { useState, Suspense } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { supabase } from "@/lib/supabase";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -24,6 +24,20 @@ function SignupForm() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [confirmSent, setConfirmSent] = useState(false);
+
+  // Logged-in visitors don't belong on /signup — bounce them into the
+  // intended landing (invite, ?next=, or daily-brief). Without this they
+  // could submit the form and end up with a second account on a different
+  // email tied to the wrong session.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      if (cancelled || !data.session) return;
+      router.replace(postSignup);
+    })();
+    return () => { cancelled = true; };
+  }, [router, postSignup]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();

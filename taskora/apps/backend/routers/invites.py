@@ -287,6 +287,23 @@ def accept_invite(
             detail=f"Invite is already {invite['status']}",
         )
 
+    # Reject expired invites — the FE only checks `status` so without this
+    # an invite created long ago could still be claimed.
+    expires_at = invite.get("expires_at")
+    if expires_at:
+        # Postgres timestamptz may serialise with a trailing 'Z' which
+        # fromisoformat() didn't accept until 3.11; normalise.
+        norm = expires_at.replace("Z", "+00:00") if isinstance(expires_at, str) else expires_at
+        try:
+            exp_dt = datetime.fromisoformat(norm) if isinstance(norm, str) else norm
+        except ValueError:
+            exp_dt = None
+        if exp_dt is not None and exp_dt < datetime.now(timezone.utc):
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="This invitation has expired. Ask the admin to send a new one.",
+            )
+
     business_id = invite["business_id"]
     invite_role = invite["role"]
     now = datetime.now(timezone.utc).isoformat()
@@ -302,6 +319,23 @@ def accept_invite(
         "member": "member",
     }
     biz_role = _ROLE_MAP.get(invite_role, "member")
+
+    # Belt-and-suspenders: ensure the caller has a public.users row before
+    # the business_members upsert. Migration 030 added a trigger that mirrors
+    # new auth.users into public.users, but historic auth.users rows (or
+    # any future signup that races the trigger) could still be missing.
+    # Without this, business_members would 500 on an FK violation and the
+    # "Accept Invitation" button silently no-ops in the UI. Only INSERT if
+    # missing — never overwrite an existing display name.
+    existing_user = sb.table("users").select("id").eq("id", user["id"]).execute().data
+    if not existing_user:
+        name_from_meta = (user.get("user_metadata") or {}).get("name")
+        fallback_name = (user.get("email") or "").split("@")[0] or "User"
+        sb.table("users").insert({
+            "id": user["id"],
+            "name": name_from_meta or fallback_name,
+            "email": user.get("email"),
+        }).execute()
 
     # Insert business_members (upsert to be idempotent)
     sb.table("business_members").upsert(

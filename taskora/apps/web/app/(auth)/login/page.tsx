@@ -1,5 +1,5 @@
 "use client";
-import { useState, Suspense } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { supabase } from "@/lib/supabase";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -14,16 +14,66 @@ function LoginForm() {
   const [loading, setLoading] = useState(false);
   const [magicSending, setMagicSending] = useState(false);
   const [resetSending, setResetSending] = useState(false);
+  const [resendingConfirm, setResendingConfirm] = useState(false);
+  const [needsConfirm, setNeedsConfirm] = useState(false);
+
+  // Already-logged-in users hitting /login shouldn't see the form — bounce
+  // them into the app (or to ?next= if the caller specified one).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      if (cancelled || !data.session) return;
+      const next = searchParams.get("next") ?? "/daily-brief";
+      router.replace(next);
+    })();
+    return () => { cancelled = true; };
+  }, [router, searchParams]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError("");
     setInfo("");
+    setNeedsConfirm(false);
     const { error: authError } = await supabase.auth.signInWithPassword({ email, password });
-    if (authError) { setError(authError.message); setLoading(false); return; }
+    if (authError) {
+      // Supabase returns this when the email-confirmation gate is on and
+      // the user signed up but never clicked the link. Surface a resend
+      // button so they're not stuck.
+      const msg = authError.message.toLowerCase();
+      if (msg.includes("email not confirmed") || msg.includes("not confirmed")) {
+        setNeedsConfirm(true);
+      }
+      setError(authError.message);
+      setLoading(false);
+      return;
+    }
     const next = searchParams.get("next") ?? "/daily-brief";
     window.location.href = next;
+  }
+
+  async function handleResendConfirmation() {
+    setError("");
+    setInfo("");
+    if (!email) {
+      setError("Enter your email above first.");
+      return;
+    }
+    setResendingConfirm(true);
+    const origin = typeof window !== "undefined" ? window.location.origin : "";
+    const { error: err } = await supabase.auth.resend({
+      type: "signup",
+      email,
+      options: { emailRedirectTo: origin ? `${origin}/onboarding` : undefined },
+    });
+    setResendingConfirm(false);
+    if (err) {
+      setError(err.message);
+      return;
+    }
+    setNeedsConfirm(false);
+    setInfo(`Confirmation email re-sent to ${email}. Check your inbox.`);
   }
 
   async function handleMagicLink() {
@@ -91,6 +141,16 @@ function LoginForm() {
           />
           {error && <p className="text-red-600 text-sm">{error}</p>}
           {info && <p className="text-emerald-700 text-sm">{info}</p>}
+          {needsConfirm && (
+            <button
+              type="button"
+              onClick={handleResendConfirmation}
+              disabled={resendingConfirm}
+              className="w-full h-10 border border-ocean text-ocean text-sm font-medium rounded-lg hover:bg-ocean/5 disabled:opacity-50"
+            >
+              {resendingConfirm ? "Sending…" : "Resend confirmation email"}
+            </button>
+          )}
           <button
             type="submit"
             disabled={loading}
