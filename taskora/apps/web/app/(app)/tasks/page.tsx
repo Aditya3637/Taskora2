@@ -1828,7 +1828,9 @@ function TaskCard({
 
               {/* Due date — inline-editable from the row so users don't
                   have to expand the task to change it. Read-only fallback
-                  for viewers who don't have write access. */}
+                  for viewers who don't have write access. The ↻N badge
+                  surfaces the change-count history right next to the
+                  editor (mirrors the expanded-panel affordance). */}
               {canEditTask ? (
                 <span className="inline-flex items-center gap-1 text-xs">
                   <span aria-hidden>📅</span>
@@ -1842,13 +1844,35 @@ function TaskCard({
                     title={dateError || "Click to change the due date"}
                     className={`border rounded px-1.5 py-0.5 text-midnight bg-transparent focus:outline-none focus:border-ocean disabled:opacity-50 ${dateError ? "border-red-300" : "border-pebble"}`}
                   />
+                  {dateChangeCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setShowDateLog(true); }}
+                      title="Due date changed — view history"
+                      className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-medium hover:bg-amber-200"
+                    >
+                      ↻{dateChangeCount}
+                    </button>
+                  )}
                   {dateError && (
                     <span className="text-red-600" title={dateError}>!</span>
                   )}
                 </span>
               ) : (
                 task.due_date && (
-                  <span className="text-xs text-steel">📅 {task.due_date}</span>
+                  <span className="inline-flex items-center gap-1 text-xs text-steel">
+                    <span>📅 {task.due_date}</span>
+                    {dateChangeCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setShowDateLog(true); }}
+                        title="Due date changed — view history"
+                        className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-medium hover:bg-amber-200"
+                      >
+                        ↻{dateChangeCount}
+                      </button>
+                    )}
+                  </span>
                 )
               )}
 
