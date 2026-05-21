@@ -1626,6 +1626,7 @@ function TaskCard({
   const [deleting, setDeleting] = useState(false);
   const [editDueDate, setEditDueDate] = useState(task.due_date ?? "");
   const [savingDate, setSavingDate] = useState(false);
+  const [dateError, setDateError] = useState("");
   const [stakeholders, setStakeholders] = useState<Stakeholder[]>([]);
   const [stakeholdersLoaded, setStakeholdersLoaded] = useState(false);
   const [newStakeholderUserId, setNewStakeholderUserId] = useState("");
@@ -1654,6 +1655,11 @@ function TaskCard({
     myRole === "owner" ||
     myRole === "admin" ||
     stakeholders.some((s) => s.user_id === currentUserId);
+
+  // Same shape as the backend write-gate (_assert_task_write): primary,
+  // any secondary stakeholder, OR workspace owner/admin can edit the
+  // task's due date directly from the row.
+  const canEditTask = canManageWatchers;
 
   const isApproverTask = taskWatchers.some(
     (w) => w.role === "approver" && w.user_id === currentUserId
@@ -1737,6 +1743,7 @@ function TaskCard({
     setEditDueDate(newDate);
     if (!newDate) return;
     setSavingDate(true);
+    setDateError("");
     try {
       await apiFetch(`/api/v1/tasks/${task.id}`, {
         method: "PATCH",
@@ -1747,7 +1754,13 @@ function TaskCard({
       if (newDate !== priorDate) {
         setDateChangeCount((c) => c + 1);
       }
-    } catch { /* silent */ } finally {
+    } catch (err: any) {
+      // Revert the optimistic UI update so the row reflects what's actually
+      // persisted, and surface the cause inline. Silent-fail used to leave
+      // the user thinking they'd edited successfully.
+      setEditDueDate(priorDate);
+      setDateError(err?.message || "Couldn't save the new date.");
+    } finally {
       setSavingDate(false);
     }
   }
@@ -1813,8 +1826,30 @@ function TaskCard({
               {/* Inline status select */}
               <StatusSelect task={task} onStatusChange={onStatusChange} />
 
-              {task.due_date && (
-                <span className="text-xs text-steel">📅 {task.due_date}</span>
+              {/* Due date — inline-editable from the row so users don't
+                  have to expand the task to change it. Read-only fallback
+                  for viewers who don't have write access. */}
+              {canEditTask ? (
+                <span className="inline-flex items-center gap-1 text-xs">
+                  <span aria-hidden>📅</span>
+                  <input
+                    type="date"
+                    value={editDueDate}
+                    onChange={handleDueDateChange}
+                    onClick={(e) => e.stopPropagation()}
+                    disabled={savingDate}
+                    aria-label="Due date"
+                    title={dateError || "Click to change the due date"}
+                    className={`border rounded px-1.5 py-0.5 text-midnight bg-transparent focus:outline-none focus:border-ocean disabled:opacity-50 ${dateError ? "border-red-300" : "border-pebble"}`}
+                  />
+                  {dateError && (
+                    <span className="text-red-600" title={dateError}>!</span>
+                  )}
+                </span>
+              ) : (
+                task.due_date && (
+                  <span className="text-xs text-steel">📅 {task.due_date}</span>
+                )
               )}
 
               {/* Card-level closure stamp, right after the target date */}
