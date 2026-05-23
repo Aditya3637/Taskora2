@@ -10,8 +10,12 @@ import {
   CheckCircle2,
   AlertCircle,
   X,
+  Pencil,
+  Trash2,
+  Check,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { parseCSV, downloadCSV } from "@/lib/csv";
 import SettingsTabs from "@/components/SettingsTabs";
 
 type Client = {
@@ -25,26 +29,6 @@ const CLIENTS_CSV = `Name,Client Code,Contact Email,Contact Phone
 Acme Corp,CLI001,contact@acme.com,+91 98765 43210
 Tech Solutions,CLI002,info@techsol.com,+91 87654 32109
 `;
-
-function downloadCSV(content: string, filename: string) {
-  const blob = new Blob([content], { type: "text/csv" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function parseCSV(text: string): Record<string, string>[] {
-  const lines = text.trim().split(/\r?\n/).filter(Boolean);
-  if (lines.length < 2) return [];
-  const headers = lines[0].split(",").map((h) => h.trim().toLowerCase());
-  return lines.slice(1).map((line) => {
-    const vals = line.split(",").map((v) => v.trim());
-    return Object.fromEntries(headers.map((h, i) => [h, vals[i] ?? ""]));
-  });
-}
 
 type FormState = { name: string; code: string; contact_email: string; contact_phone: string };
 const EMPTY_FORM: FormState = { name: "", code: "", contact_email: "", contact_phone: "" };
@@ -64,6 +48,10 @@ export default function ClientsPage() {
   // Manual-add form is a less-frequent path than CSV import. Keep it folded
   // by default so the page reads compact, expand on demand.
   const [showManual, setShowManual] = useState(false);
+  // Inline row edit — admin/owner can flip a row into editable inputs.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<FormState>(EMPTY_FORM);
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const [uploadStatus, setUploadStatus] = useState<"idle" | "parsed" | "error">("idle");
   const [uploadCount, setUploadCount] = useState(0);
@@ -181,6 +169,49 @@ export default function ClientsPage() {
       showToast(`Error: ${e.message}`);
     } finally {
       setAdding(false);
+    }
+  }
+
+  function startEdit(c: Client) {
+    setEditingId(c.id);
+    setEditForm({
+      name: c.name ?? "",
+      code: c.code ?? "",
+      contact_email: c.contact_info?.email ?? "",
+      contact_phone: c.contact_info?.phone ?? "",
+    });
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditForm(EMPTY_FORM);
+  }
+
+  async function saveEdit() {
+    if (!editingId || !editForm.name.trim() || !businessId) return;
+    setSavingEdit(true);
+    try {
+      const updated = await apiFetch(
+        `/api/v1/businesses/${businessId}/clients/${editingId}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            name: editForm.name.trim(),
+            code: editForm.code.trim() || null,
+            contact_email: editForm.contact_email.trim(),
+            contact_phone: editForm.contact_phone.trim(),
+          }),
+        }
+      );
+      setItems((prev) =>
+        prev.map((c) => (c.id === editingId ? { ...c, ...updated } : c))
+      );
+      showToast("Client updated.");
+      cancelEdit();
+    } catch (e: any) {
+      showToast(`Error: ${e.message}`);
+    } finally {
+      setSavingEdit(false);
     }
   }
 
@@ -454,27 +485,138 @@ export default function ClientsPage() {
               : `No clients match “${search}”.`}
           </div>
         ) : (
-          <div className="divide-y divide-pebble/50">
-            {filtered.map((c) => (
-              <div key={c.id} className="flex items-center gap-3 px-6 py-2">
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-midnight text-sm truncate">{c.name}</p>
-                  <p className="text-[11px] text-steel/70 truncate">
-                    {[c.code, c.contact_info?.email, c.contact_info?.phone]
-                      .filter(Boolean)
-                      .join(" · ") || "—"}
-                  </p>
-                </div>
-                {isAdmin && (
-                  <button
-                    onClick={() => handleDelete(c.id, c.name)}
-                    className="text-xs text-red-500 hover:text-red-700 font-medium flex-shrink-0"
-                  >
-                    Remove
-                  </button>
-                )}
-              </div>
-            ))}
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-mist/50 border-b border-pebble">
+                <tr className="text-[11px] uppercase tracking-wider text-steel/70">
+                  <th className="text-left font-semibold px-6 py-2.5">Name</th>
+                  <th className="text-left font-semibold px-3 py-2.5">Code</th>
+                  <th className="text-left font-semibold px-3 py-2.5">Email</th>
+                  <th className="text-left font-semibold px-3 py-2.5">Phone</th>
+                  {isAdmin && (
+                    <th className="text-right font-semibold px-6 py-2.5 w-24">Actions</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-pebble/50">
+                {filtered.map((c) => {
+                  const isEditing = editingId === c.id;
+                  if (isEditing) {
+                    return (
+                      <tr key={c.id} className="bg-red-50/40">
+                        <td className="px-6 py-2 align-middle">
+                          <input
+                            type="text"
+                            value={editForm.name}
+                            onChange={(e) =>
+                              setEditForm((f) => ({ ...f, name: e.target.value }))
+                            }
+                            placeholder="Name *"
+                            className="w-full h-9 px-2.5 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red focus:ring-2 focus:ring-taskora-red/10"
+                            maxLength={200}
+                            autoFocus
+                          />
+                        </td>
+                        <td className="px-3 py-2 align-middle">
+                          <input
+                            type="text"
+                            value={editForm.code}
+                            onChange={(e) =>
+                              setEditForm((f) => ({ ...f, code: e.target.value }))
+                            }
+                            className="w-full h-9 px-2.5 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red focus:ring-2 focus:ring-taskora-red/10"
+                          />
+                        </td>
+                        <td className="px-3 py-2 align-middle">
+                          <input
+                            type="email"
+                            value={editForm.contact_email}
+                            onChange={(e) =>
+                              setEditForm((f) => ({ ...f, contact_email: e.target.value }))
+                            }
+                            className="w-full h-9 px-2.5 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red focus:ring-2 focus:ring-taskora-red/10"
+                          />
+                        </td>
+                        <td className="px-3 py-2 align-middle">
+                          <input
+                            type="text"
+                            value={editForm.contact_phone}
+                            onChange={(e) =>
+                              setEditForm((f) => ({ ...f, contact_phone: e.target.value }))
+                            }
+                            className="w-full h-9 px-2.5 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red focus:ring-2 focus:ring-taskora-red/10"
+                          />
+                        </td>
+                        {isAdmin && (
+                          <td className="px-6 py-2 align-middle">
+                            <div className="flex items-center justify-end gap-1">
+                              <button
+                                onClick={saveEdit}
+                                disabled={!editForm.name.trim() || savingEdit}
+                                title="Save"
+                                aria-label="Save"
+                                className="w-8 h-8 rounded-lg bg-taskora-red text-white flex items-center justify-center hover:opacity-90 disabled:opacity-40 transition-opacity"
+                              >
+                                <Check className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={cancelEdit}
+                                disabled={savingEdit}
+                                title="Cancel"
+                                aria-label="Cancel"
+                                className="w-8 h-8 rounded-lg border border-pebble text-steel hover:bg-mist hover:text-midnight flex items-center justify-center disabled:opacity-40 transition-colors"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  }
+                  return (
+                    <tr key={c.id} className="hover:bg-mist/30 transition-colors">
+                      <td className="px-6 py-2.5 align-middle font-medium text-midnight truncate max-w-[16rem]">
+                        {c.name}
+                      </td>
+                      <td className="px-3 py-2.5 align-middle text-steel">
+                        {c.code || <span className="text-steel/40">—</span>}
+                      </td>
+                      <td className="px-3 py-2.5 align-middle text-steel truncate max-w-[14rem]">
+                        {c.contact_info?.email || <span className="text-steel/40">—</span>}
+                      </td>
+                      <td className="px-3 py-2.5 align-middle text-steel">
+                        {c.contact_info?.phone || <span className="text-steel/40">—</span>}
+                      </td>
+                      {isAdmin && (
+                        <td className="px-6 py-2.5 align-middle">
+                          <div className="flex items-center justify-end gap-1">
+                            <button
+                              onClick={() => startEdit(c)}
+                              disabled={editingId !== null}
+                              title="Edit row"
+                              aria-label={`Edit ${c.name}`}
+                              className="w-8 h-8 rounded-lg text-steel hover:bg-mist hover:text-midnight flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleDelete(c.id, c.name)}
+                              disabled={editingId !== null}
+                              title="Remove"
+                              aria-label={`Remove ${c.name}`}
+                              className="w-8 h-8 rounded-lg text-red-500 hover:bg-red-50 hover:text-red-700 flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </div>

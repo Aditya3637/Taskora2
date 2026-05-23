@@ -273,7 +273,7 @@ function matchesApprovalFilter(t: Task, filter: string): boolean {
 
 function SubtaskRow({
   subtask,
-  children,
+  subChildren,
   taskId,
   members,
   currentUserId,
@@ -281,7 +281,9 @@ function SubtaskRow({
   onChanged,
 }: {
   subtask: Subtask;
-  children: Subtask[]; // child sub-subtasks; empty when subtask is itself a child
+  // Named `subChildren` (not `children`) so callers don't trip React's
+  // reserved `children` prop — eslint react/no-children-prop.
+  subChildren: Subtask[]; // child sub-subtasks; empty when subtask is itself a child
   taskId: string;
   members: Member[];
   currentUserId: string;
@@ -295,7 +297,7 @@ function SubtaskRow({
 
   // Schema caps nesting at 1 level: only top-level subtasks may have children.
   const isChild = !!subtask.parent_subtask_id;
-  const hasChildren = children.length > 0;
+  const hasChildren = subChildren.length > 0;
   const canAddChild = !isChild;
 
   const scope: WatcherScope = { scope_type: "subtask", subtask_id: subtask.id };
@@ -448,11 +450,11 @@ function SubtaskRow({
       {/* Children + add-child form */}
       {!isChild && expanded && (
         <div className="ml-6 pl-2 border-l border-pebble/30">
-          {children.map((c) => (
+          {subChildren.map((c) => (
             <SubtaskRow
               key={c.id}
               subtask={c}
-              children={[]}
+              subChildren={[]}
               taskId={taskId}
               members={members}
               currentUserId={currentUserId}
@@ -1464,7 +1466,7 @@ function EntitySubtaskRow({
             <SubtaskRow
               key={s.id}
               subtask={s}
-              children={childrenByParent[s.id] ?? []}
+              subChildren={childrenByParent[s.id] ?? []}
               taskId={taskId}
               members={members}
               currentUserId={currentUserId}
@@ -2054,7 +2056,7 @@ function TaskCard({
                 <SubtaskRow
                   key={s.id}
                   subtask={s}
-                  children={flatChildrenByParent[s.id] ?? []}
+                  subChildren={flatChildrenByParent[s.id] ?? []}
                   taskId={task.id}
                   members={members}
                   currentUserId={currentUserId}

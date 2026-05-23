@@ -10,8 +10,12 @@ import {
   CheckCircle2,
   AlertCircle,
   X,
+  Pencil,
+  Trash2,
+  Check,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { parseCSV, downloadCSV } from "@/lib/csv";
 import SettingsTabs from "@/components/SettingsTabs";
 
 type Building = {
@@ -27,26 +31,6 @@ const BUILDINGS_CSV = `Building Name,Zone,City,Building Code,Area
 Tower A,North Zone,Mumbai,BLD001,1200 sqft
 Tower B,South Zone,Delhi,BLD002,800 sqft
 `;
-
-function downloadCSV(content: string, filename: string) {
-  const blob = new Blob([content], { type: "text/csv" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function parseCSV(text: string): Record<string, string>[] {
-  const lines = text.trim().split(/\r?\n/).filter(Boolean);
-  if (lines.length < 2) return [];
-  const headers = lines[0].split(",").map((h) => h.trim().toLowerCase());
-  return lines.slice(1).map((line) => {
-    const vals = line.split(",").map((v) => v.trim());
-    return Object.fromEntries(headers.map((h, i) => [h, vals[i] ?? ""]));
-  });
-}
 
 type FormState = { name: string; zone: string; city: string; code: string; area: string };
 const EMPTY_FORM: FormState = { name: "", zone: "", city: "", code: "", area: "" };
@@ -66,6 +50,10 @@ export default function BuildingsPage() {
   // Manual-add form is a less-frequent path than CSV import. Keep it folded
   // by default so the page reads compact, expand on demand.
   const [showManual, setShowManual] = useState(false);
+  // Inline row edit — admin/owner can flip a row into editable inputs.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<FormState>(EMPTY_FORM);
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const [uploadStatus, setUploadStatus] = useState<"idle" | "parsed" | "error">("idle");
   const [uploadCount, setUploadCount] = useState(0);
@@ -185,6 +173,51 @@ export default function BuildingsPage() {
       showToast(`Error: ${e.message}`);
     } finally {
       setAdding(false);
+    }
+  }
+
+  function startEdit(b: Building) {
+    setEditingId(b.id);
+    setEditForm({
+      name: b.name ?? "",
+      zone: b.zone ?? "",
+      city: b.city ?? "",
+      code: b.code ?? "",
+      area: b.area ?? "",
+    });
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditForm(EMPTY_FORM);
+  }
+
+  async function saveEdit() {
+    if (!editingId || !editForm.name.trim() || !businessId) return;
+    setSavingEdit(true);
+    try {
+      const updated = await apiFetch(
+        `/api/v1/businesses/${businessId}/buildings/${editingId}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            name: editForm.name.trim(),
+            zone: editForm.zone.trim() || null,
+            city: editForm.city.trim() || null,
+            code: editForm.code.trim() || null,
+            area: editForm.area.trim() || null,
+          }),
+        }
+      );
+      setItems((prev) =>
+        prev.map((b) => (b.id === editingId ? { ...b, ...updated } : b))
+      );
+      showToast("Building updated.");
+      cancelEdit();
+    } catch (e: any) {
+      showToast(`Error: ${e.message}`);
+    } finally {
+      setSavingEdit(false);
     }
   }
 
@@ -466,25 +499,152 @@ export default function BuildingsPage() {
               : `No buildings match “${search}”.`}
           </div>
         ) : (
-          <div className="divide-y divide-pebble/50">
-            {filtered.map((b) => (
-              <div key={b.id} className="flex items-center gap-3 px-6 py-2">
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-midnight text-sm truncate">{b.name}</p>
-                  <p className="text-[11px] text-steel/70 truncate">
-                    {[b.code, b.zone, b.city, b.area].filter(Boolean).join(" · ") || "—"}
-                  </p>
-                </div>
-                {isAdmin && (
-                  <button
-                    onClick={() => handleDelete(b.id, b.name)}
-                    className="text-xs text-red-500 hover:text-red-700 font-medium flex-shrink-0"
-                  >
-                    Remove
-                  </button>
-                )}
-              </div>
-            ))}
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-mist/50 border-b border-pebble">
+                <tr className="text-[11px] uppercase tracking-wider text-steel/70">
+                  <th className="text-left font-semibold px-6 py-2.5">Name</th>
+                  <th className="text-left font-semibold px-3 py-2.5">Code</th>
+                  <th className="text-left font-semibold px-3 py-2.5">Zone</th>
+                  <th className="text-left font-semibold px-3 py-2.5">City</th>
+                  <th className="text-left font-semibold px-3 py-2.5">Area</th>
+                  {isAdmin && (
+                    <th className="text-right font-semibold px-6 py-2.5 w-24">Actions</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-pebble/50">
+                {filtered.map((b) => {
+                  const isEditing = editingId === b.id;
+                  if (isEditing) {
+                    return (
+                      <tr key={b.id} className="bg-red-50/40">
+                        <td className="px-6 py-2 align-middle">
+                          <input
+                            type="text"
+                            value={editForm.name}
+                            onChange={(e) =>
+                              setEditForm((f) => ({ ...f, name: e.target.value }))
+                            }
+                            placeholder="Name *"
+                            className="w-full h-9 px-2.5 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red focus:ring-2 focus:ring-taskora-red/10"
+                            maxLength={200}
+                            autoFocus
+                          />
+                        </td>
+                        <td className="px-3 py-2 align-middle">
+                          <input
+                            type="text"
+                            value={editForm.code}
+                            onChange={(e) =>
+                              setEditForm((f) => ({ ...f, code: e.target.value }))
+                            }
+                            className="w-full h-9 px-2.5 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red focus:ring-2 focus:ring-taskora-red/10"
+                          />
+                        </td>
+                        <td className="px-3 py-2 align-middle">
+                          <input
+                            type="text"
+                            value={editForm.zone}
+                            onChange={(e) =>
+                              setEditForm((f) => ({ ...f, zone: e.target.value }))
+                            }
+                            className="w-full h-9 px-2.5 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red focus:ring-2 focus:ring-taskora-red/10"
+                          />
+                        </td>
+                        <td className="px-3 py-2 align-middle">
+                          <input
+                            type="text"
+                            value={editForm.city}
+                            onChange={(e) =>
+                              setEditForm((f) => ({ ...f, city: e.target.value }))
+                            }
+                            className="w-full h-9 px-2.5 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red focus:ring-2 focus:ring-taskora-red/10"
+                          />
+                        </td>
+                        <td className="px-3 py-2 align-middle">
+                          <input
+                            type="text"
+                            value={editForm.area}
+                            onChange={(e) =>
+                              setEditForm((f) => ({ ...f, area: e.target.value }))
+                            }
+                            className="w-full h-9 px-2.5 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red focus:ring-2 focus:ring-taskora-red/10"
+                          />
+                        </td>
+                        {isAdmin && (
+                          <td className="px-6 py-2 align-middle">
+                            <div className="flex items-center justify-end gap-1">
+                              <button
+                                onClick={saveEdit}
+                                disabled={!editForm.name.trim() || savingEdit}
+                                title="Save"
+                                aria-label="Save"
+                                className="w-8 h-8 rounded-lg bg-taskora-red text-white flex items-center justify-center hover:opacity-90 disabled:opacity-40 transition-opacity"
+                              >
+                                <Check className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={cancelEdit}
+                                disabled={savingEdit}
+                                title="Cancel"
+                                aria-label="Cancel"
+                                className="w-8 h-8 rounded-lg border border-pebble text-steel hover:bg-mist hover:text-midnight flex items-center justify-center disabled:opacity-40 transition-colors"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  }
+                  return (
+                    <tr key={b.id} className="hover:bg-mist/30 transition-colors">
+                      <td className="px-6 py-2.5 align-middle font-medium text-midnight truncate max-w-[16rem]">
+                        {b.name}
+                      </td>
+                      <td className="px-3 py-2.5 align-middle text-steel">
+                        {b.code || <span className="text-steel/40">—</span>}
+                      </td>
+                      <td className="px-3 py-2.5 align-middle text-steel">
+                        {b.zone || <span className="text-steel/40">—</span>}
+                      </td>
+                      <td className="px-3 py-2.5 align-middle text-steel">
+                        {b.city || <span className="text-steel/40">—</span>}
+                      </td>
+                      <td className="px-3 py-2.5 align-middle text-steel">
+                        {b.area || <span className="text-steel/40">—</span>}
+                      </td>
+                      {isAdmin && (
+                        <td className="px-6 py-2.5 align-middle">
+                          <div className="flex items-center justify-end gap-1">
+                            <button
+                              onClick={() => startEdit(b)}
+                              disabled={editingId !== null}
+                              title="Edit row"
+                              aria-label={`Edit ${b.name}`}
+                              className="w-8 h-8 rounded-lg text-steel hover:bg-mist hover:text-midnight flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleDelete(b.id, b.name)}
+                              disabled={editingId !== null}
+                              title="Remove"
+                              aria-label={`Remove ${b.name}`}
+                              className="w-8 h-8 rounded-lg text-red-500 hover:bg-red-50 hover:text-red-700 flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
         )}
       </div>

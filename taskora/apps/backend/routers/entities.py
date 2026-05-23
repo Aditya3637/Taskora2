@@ -4,7 +4,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from supabase import Client
 from auth import get_current_user
-from deps import get_supabase, require_member
+from deps import get_supabase, require_member, require_admin_or_owner
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/v1/businesses/{business_id}", tags=["entities"])
@@ -90,6 +90,67 @@ def list_clients(
     )
 
 
+class ClientUpdate(BaseModel):
+    name: Optional[str] = None
+    code: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+
+
+@router.patch("/clients/{client_id}")
+def update_client(
+    business_id: str,
+    client_id: str,
+    body: ClientUpdate,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Partial update of a client. Admin/owner only — members are read-only."""
+    require_admin_or_owner(sb, business_id, user["id"])
+
+    rows = (
+        sb.table("clients")
+        .select("contact_info")
+        .eq("id", client_id)
+        .eq("business_id", business_id)
+        .execute()
+        .data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    payload: dict = {}
+    if body.name is not None:
+        payload["name"] = body.name.strip()
+    if body.code is not None:
+        payload["code"] = body.code.strip() or None
+
+    # contact_info is a JSONB blob; merge email/phone into the existing dict
+    # so a partial update doesn't wipe the other field.
+    if body.contact_email is not None or body.contact_phone is not None:
+        existing_contact = (rows[0].get("contact_info") or {}) if isinstance(rows[0].get("contact_info"), dict) else {}
+        contact = dict(existing_contact)
+        if body.contact_email is not None:
+            email = body.contact_email.strip()
+            if email:
+                contact["email"] = email
+            else:
+                contact.pop("email", None)
+        if body.contact_phone is not None:
+            phone = body.contact_phone.strip()
+            if phone:
+                contact["phone"] = phone
+            else:
+                contact.pop("phone", None)
+        payload["contact_info"] = contact
+
+    if not payload:
+        raise HTTPException(status_code=422, detail="No fields to update")
+
+    result = sb.table("clients").update(payload).eq("id", client_id).execute()
+    return result.data[0] if result.data else {}
+
+
 @router.delete("/clients/{client_id}", status_code=204)
 def delete_client(
     business_id: str,
@@ -97,7 +158,7 @@ def delete_client(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    require_member(sb, business_id, user["id"])
+    require_admin_or_owner(sb, business_id, user["id"])
     existing = (
         sb.table("clients")
         .select("id")
@@ -159,8 +220,8 @@ def update_building(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    """Partial update of building rich metadata."""
-    require_member(sb, business_id, user["id"])
+    """Partial update of building rich metadata. Admin/owner only."""
+    require_admin_or_owner(sb, business_id, user["id"])
 
     # Verify building belongs to business
     existing = (
@@ -197,7 +258,7 @@ def delete_building(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    require_member(sb, business_id, user["id"])
+    require_admin_or_owner(sb, business_id, user["id"])
     existing = (
         sb.table("buildings")
         .select("id")

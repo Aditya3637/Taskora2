@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 
@@ -13,6 +13,11 @@ export const metadata: Metadata = {
     statusBarStyle: "black-translucent",
     title: "Taskora",
   },
+};
+
+// Next.js 14 moved themeColor out of `metadata` into its own `viewport`
+// export; keeping it on metadata produces a build-time deprecation warning.
+export const viewport: Viewport = {
   themeColor: "#E53E3E",
 };
 
@@ -20,11 +25,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={inter.variable}>
       <head>
-        <link rel="manifest" href="/manifest.json" />
-        <meta name="theme-color" content="#E53E3E" />
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-        <meta name="apple-mobile-web-app-title" content="Taskora" />
         <link rel="apple-touch-icon" href="/icon-192.png" />
       </head>
       <body className="bg-white text-midnight antialiased">

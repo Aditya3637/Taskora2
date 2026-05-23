@@ -785,7 +785,7 @@ function DoneScreen() {
   return (
     <div className="text-center py-6 space-y-4">
       <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto text-3xl">✓</div>
-      <h2 className="text-xl font-bold text-midnight">You're all set!</h2>
+      <h2 className="text-xl font-bold text-midnight">You&apos;re all set!</h2>
       <p className="text-steel text-sm">Taking you to your Daily Brief…</p>
     </div>
   );
