@@ -253,6 +253,11 @@ const FILTER_LABELS: Record<string, string> = {
 // their view when they navigate to another page and come back.
 const TASKS_FILTERS_KEY = "taskora_tasks_filters_v1";
 
+// Expanded initiative-group ids are persisted so what a user has open
+// survives navigation. On the very first visit (no entry yet) the page
+// auto-expands the first non-empty group as a "where do I start" hint.
+const TASKS_EXPANDED_GROUPS_KEY = "taskora_tasks_expanded_groups_v1";
+
 // Approval-aware predicate for the special filter pills.
 function matchesApprovalFilter(t: Task, filter: string): boolean {
   if (filter === "approval_pending") {
@@ -3070,6 +3075,8 @@ function InitiativeGroup({
   currentUserId,
   myRole,
   highlighted,
+  collapsed,
+  onSetCollapsed,
   onStatusChange,
   onTaskDeleted,
   onBreakdown,
@@ -3084,6 +3091,10 @@ function InitiativeGroup({
   currentUserId: string;
   myRole: string;
   highlighted: boolean;
+  // Controlled collapse state — owned by the page so it can persist
+  // expanded ids to localStorage and survive navigations.
+  collapsed: boolean;
+  onSetCollapsed: (next: boolean) => void;
   onStatusChange: (taskId: string, newStatus: string) => void;
   onTaskDeleted: (taskId: string) => void;
   // Per-initiative actions, hoisted from the page so a single BreakdownModal/
@@ -3097,7 +3108,6 @@ function InitiativeGroup({
 }) {
   const groupRef = useRef<HTMLDivElement>(null);
   const containsFocus = !!focusTaskId && tasks.some((t) => t.id === focusTaskId);
-  const [collapsed, setCollapsed] = useState(!highlighted && !containsFocus);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -3130,8 +3140,8 @@ function InitiativeGroup({
   // A deep-linked task lives in this group → make sure it's open so the
   // card can reveal & scroll itself.
   useEffect(() => {
-    if (containsFocus) setCollapsed(false);
-  }, [containsFocus]);
+    if (containsFocus && collapsed) onSetCollapsed(false);
+  }, [containsFocus, collapsed, onSetCollapsed]);
 
   const doneCount = tasks.filter((t) => t.status === "done").length;
   const total = tasks.length;
@@ -3157,7 +3167,7 @@ function InitiativeGroup({
         <button
           type="button"
           className="flex items-center gap-3 flex-1 min-w-0 text-left"
-          onClick={() => setCollapsed((v) => !v)}
+          onClick={() => onSetCollapsed(!collapsed)}
           aria-expanded={!collapsed}
         >
           <span
@@ -3356,6 +3366,11 @@ function TasksPageInner() {
   // restored status filter — otherwise the load would fire with the default
   // "All" and immediately re-fire with the restored value.
   const [filtersHydrated, setFiltersHydrated] = useState(false);
+  // Initiative-group expand state, lifted from InitiativeGroup so the page
+  // can persist it. `null` = pre-hydration; treat as "use defaults" while
+  // loading so we don't briefly render every group collapsed.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string> | null>(null);
+  const [autoExpandedOnce, setAutoExpandedOnce] = useState(false);
   // Per-initiative modals — owned by the page so any group can open them.
   const [breakdownFor, setBreakdownFor] = useState<MyInitiative | null>(null);
   const [ganttFor, setGanttFor] = useState<MyInitiative | null>(null);
@@ -3464,6 +3479,50 @@ function TasksPageInner() {
       /* quota or storage disabled — silently ignore */
     }
   }, [filtersHydrated, search, programFilter, ownerFilter, filter]);
+
+  // Hydrate expanded-group state from localStorage. If there's no entry
+  // yet (first-ever visit), leave the Set empty — the auto-expand effect
+  // below will pick the first non-empty group once data arrives.
+  useEffect(() => {
+    let initial: Set<string> = new Set();
+    try {
+      const raw = localStorage.getItem(TASKS_EXPANDED_GROUPS_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) {
+          initial = new Set(arr.filter((x): x is string => typeof x === "string"));
+        }
+      }
+    } catch {
+      /* corrupted storage — fall through with empty set */
+    }
+    setExpandedGroups(initial);
+  }, []);
+
+  useEffect(() => {
+    if (expandedGroups === null) return;
+    try {
+      localStorage.setItem(
+        TASKS_EXPANDED_GROUPS_KEY,
+        JSON.stringify(Array.from(expandedGroups)),
+      );
+    } catch {
+      /* quota or storage disabled — silently ignore */
+    }
+  }, [expandedGroups]);
+
+  // Deep-link `?initiative=X` always wins over saved state — if the user
+  // arrived from a notification or link, that group must open.
+  useEffect(() => {
+    if (!highlightInitiativeId) return;
+    setExpandedGroups((prev) => {
+      const base = prev ?? new Set<string>();
+      if (base.has(highlightInitiativeId)) return base;
+      const next = new Set(base);
+      next.add(highlightInitiativeId);
+      return next;
+    });
+  }, [highlightInitiativeId]);
 
   useEffect(() => {
     // Wait for the saved status filter to hydrate before kicking off the
@@ -3638,6 +3697,40 @@ function TasksPageInner() {
     });
   }, [tasksByInitiative, filteredInitiatives, initiativeMap]);
 
+  // Auto-expand the first non-empty group on first arrival so the page
+  // doesn't read empty when every group is collapsed. Runs once per session
+  // after data + hydration are ready, and only if nothing is already open.
+  useEffect(() => {
+    if (autoExpandedOnce) return;
+    if (loading) return;
+    if (expandedGroups === null) return;
+    if (expandedGroups.size > 0) return;
+    if (displayInitiativeIds.length === 0) return;
+    const firstWithTasks = displayInitiativeIds.find(
+      (id) => (tasksByInitiative[id] ?? []).length > 0,
+    );
+    if (firstWithTasks) {
+      setExpandedGroups(new Set([firstWithTasks]));
+    }
+    setAutoExpandedOnce(true);
+  }, [
+    autoExpandedOnce,
+    loading,
+    expandedGroups,
+    displayInitiativeIds,
+    tasksByInitiative,
+  ]);
+
+  const setGroupCollapsed = useCallback((id: string, collapsed: boolean) => {
+    setExpandedGroups((prev) => {
+      const base = prev ?? new Set<string>();
+      const next = new Set(base);
+      if (collapsed) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
   const activeFilterCount =
     (programFilter ? 1 : 0) +
     (ownerFilter !== "__me__" && ownerFilter !== "" ? 1 : 0) +
@@ -3796,6 +3889,9 @@ function TasksPageInner() {
                 shows his initiatives even if no tasks have been created. */}
             {displayInitiativeIds.map((initId) => {
               const init = initiativeMap[initId] ?? null;
+              const isCollapsed = expandedGroups
+                ? !expandedGroups.has(initId)
+                : true;
               return (
                 <InitiativeGroup
                   key={initId}
@@ -3805,6 +3901,8 @@ function TasksPageInner() {
                   currentUserId={currentUserId}
                   myRole={myRole}
                   highlighted={highlightInitiativeId === initId}
+                  collapsed={isCollapsed}
+                  onSetCollapsed={(next) => setGroupCollapsed(initId, next)}
                   onStatusChange={handleStatusChange}
                   onTaskDeleted={handleTaskDelete}
                   onBreakdown={init ? () => setBreakdownFor(init) : undefined}
@@ -3828,6 +3926,8 @@ function TasksPageInner() {
                 currentUserId={currentUserId}
                 myRole={myRole}
                 highlighted={false}
+                collapsed={expandedGroups ? !expandedGroups.has("__unlinked__") : true}
+                onSetCollapsed={(next) => setGroupCollapsed("__unlinked__", next)}
                 onStatusChange={handleStatusChange}
                 onTaskDeleted={handleTaskDelete}
                 focusTaskId={focusTaskId}
