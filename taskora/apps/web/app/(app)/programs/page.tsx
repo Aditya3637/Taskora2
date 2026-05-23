@@ -8,8 +8,13 @@ import {
   ChevronRight,
   User,
   ArrowRight,
+  Pencil,
+  BarChart3,
+  Calendar,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { useWorkspaceFormat } from "@/lib/use-workspace-format";
+import { EditInitiativeModal, type EditableInitiative } from "./EditInitiativeModal";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -55,10 +60,13 @@ type Initiative = {
   status: string;
   description?: string | null;
   impact?: string | null;
+  impact_metric?: string | null;
   impact_category?: string | null;
+  start_date?: string | null;
   target_end_date?: string | null;
   primary_stakeholder_id?: string | null;
   primary_stakeholder_name?: string;
+  owner_id?: string | null;
 };
 
 type ProgramDetail = {
@@ -128,6 +136,12 @@ const IMPACT_CATEGORIES = [
 ] as const;
 
 type ImpactCatValue = (typeof IMPACT_CATEGORIES)[number]["value"];
+
+function formatShortDate(iso: string): string {
+  const d = new Date(`${iso}T00:00:00`);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
 
 // ── New Program Modal ─────────────────────────────────────────────────────────
 
@@ -280,6 +294,7 @@ function AddInitiativeModal({
   const [impactCategory, setImpactCategory] = useState<ImpactCatValue>("other");
   const [impact, setImpact] = useState("");
   const [impactMetric, setImpactMetric] = useState("");
+  const { currencySymbol: sym } = useWorkspaceFormat();
   const [targetDate, setTargetDate] = useState("");
   const [members, setMembers] = useState<Member[]>([]);
   const [saving, setSaving] = useState(false);
@@ -428,7 +443,7 @@ function AddInitiativeModal({
               className="w-full border border-pebble rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-taskora-red"
               value={impactMetric}
               onChange={(e) => setImpactMetric(e.target.value)}
-              placeholder="e.g. 15% cost reduction, ₹2L savings"
+              placeholder={`e.g. 15% cost reduction, ${sym}200K savings`}
               maxLength={200}
             />
           </div>
@@ -475,40 +490,50 @@ function ProgramRow({
   program,
   businessId,
   canEdit,
+  expanded,
+  onExpandedChange,
 }: {
   program: Program;
   businessId: string;
   canEdit: boolean;
+  expanded: boolean;
+  onExpandedChange: (next: boolean) => void;
 }) {
   const router = useRouter();
-  const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState<ProgramDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [showAddInit, setShowAddInit] = useState(false);
   const [hoveredInitId, setHoveredInitId] = useState<string | null>(null);
+  const [editInit, setEditInit] = useState<EditableInitiative | null>(null);
 
-  async function handleExpand() {
-    const next = !expanded;
-    setExpanded(next);
-    if (next && !detail) {
-      setLoadingDetail(true);
-      try {
-        const data = await apiFetch(`/api/v1/programs/${program.id}`);
-        setDetail(data);
-      } catch {
-        /* silent */
-      } finally {
-        setLoadingDetail(false);
-      }
-    }
+  // Fetch detail whenever the row is expanded and we don't already have it
+  // (covers both manual toggle and restored-from-sessionStorage initial state).
+  // NOTE: do NOT include `loadingDetail` in deps — setting it would re-run the
+  // effect, fire cleanup, and discard the in-flight fetch result.
+  useEffect(() => {
+    if (!expanded || detail) return;
+    let cancelled = false;
+    setLoadingDetail(true);
+    apiFetch(`/api/v1/programs/${program.id}`)
+      .then((data) => {
+        if (!cancelled) setDetail(data);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoadingDetail(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [expanded, detail, program.id]);
+
+  function handleExpand() {
+    onExpandedChange(!expanded);
   }
 
   function handleInitiativeCreated() {
-    // Reload detail
+    // Clearing detail re-triggers the fetch effect above.
     setDetail(null);
-    apiFetch(`/api/v1/programs/${program.id}`)
-      .then((data) => setDetail(data))
-      .catch(() => {});
   }
 
   const count = program.initiative_count ?? 0;
@@ -587,12 +612,20 @@ function ProgramRow({
                 const isHovered = hoveredInitId === init.id;
 
                 return (
-                  <button
+                  <div
                     key={init.id}
-                    className="w-full flex items-center gap-3 px-6 py-3.5 hover:bg-white/80 transition-colors text-left group/init"
+                    role="button"
+                    tabIndex={0}
+                    className="w-full flex items-center gap-2 px-6 py-3.5 hover:bg-white/80 transition-colors text-left group/init cursor-pointer"
                     onClick={() =>
                       router.push(`/tasks?initiative=${init.id}`)
                     }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        router.push(`/tasks?initiative=${init.id}`);
+                      }
+                    }}
                     onMouseEnter={() => setHoveredInitId(init.id)}
                     onMouseLeave={() => setHoveredInitId(null)}
                   >
@@ -603,7 +636,10 @@ function ProgramRow({
                     />
 
                     {/* Initiative name */}
-                    <span className="flex-1 text-sm font-medium text-midnight truncate">
+                    <span
+                      className="flex-1 text-sm font-medium text-midnight truncate"
+                      title={init.name}
+                    >
                       {init.name}
                     </span>
 
@@ -627,19 +663,54 @@ function ProgramRow({
 
                     {/* Primary stakeholder */}
                     {init.primary_stakeholder_name && (
-                      <span className="flex items-center gap-1 text-xs text-steel/60 flex-shrink-0">
+                      <span
+                        className="flex items-center gap-1 text-xs text-steel/60 flex-shrink-0"
+                        title={init.primary_stakeholder_name}
+                      >
                         <User className="w-3 h-3" />
-                        <span className="hidden sm:inline max-w-[100px] truncate">
+                        <span className="hidden sm:inline max-w-[80px] truncate">
                           {init.primary_stakeholder_name}
                         </span>
                       </span>
                     )}
 
-                    {/* Target date */}
+                    {/* Target date (compact: "Jun 30") */}
                     {init.target_end_date && (
-                      <span className="text-xs text-steel/60 flex-shrink-0 hidden md:inline">
-                        📅 {init.target_end_date}
+                      <span
+                        className="flex items-center gap-1 text-xs text-steel/60 flex-shrink-0 hidden md:inline-flex"
+                        title={init.target_end_date}
+                      >
+                        <Calendar className="w-3 h-3" />
+                        {formatShortDate(init.target_end_date)}
                       </span>
+                    )}
+
+                    {/* Gantt icon button */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        router.push(`/gantt?initiative=${init.id}`);
+                      }}
+                      title="View Gantt chart"
+                      aria-label="View Gantt chart"
+                      className="flex items-center justify-center w-6 h-6 rounded-full border border-pebble text-steel hover:border-ocean hover:text-ocean transition-colors flex-shrink-0"
+                    >
+                      <BarChart3 className="w-3 h-3" />
+                    </button>
+
+                    {/* Edit icon button (workspace owner/admin only) */}
+                    {canEdit && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditInit(init as EditableInitiative);
+                        }}
+                        title="Edit initiative"
+                        aria-label="Edit initiative"
+                        className="flex items-center justify-center w-6 h-6 rounded-full border border-pebble text-steel hover:border-taskora-red hover:text-taskora-red transition-colors flex-shrink-0"
+                      >
+                        <Pencil className="w-3 h-3" />
+                      </button>
                     )}
 
                     {/* Arrow on hover */}
@@ -650,7 +721,7 @@ function ProgramRow({
                           : "text-transparent -translate-x-1 opacity-0"
                       }`}
                     />
-                  </button>
+                  </div>
                 );
               })}
 
@@ -682,11 +753,36 @@ function ProgramRow({
           }}
         />
       )}
+
+      {/* Edit Initiative Modal */}
+      {editInit && (
+        <EditInitiativeModal
+          initiative={editInit}
+          businessId={businessId}
+          onClose={() => setEditInit(null)}
+          onSaved={handleInitiativeCreated}
+        />
+      )}
     </div>
   );
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────────
+
+const EXPANDED_STORAGE_KEY = "taskora:programs:expanded";
+const SCROLL_STORAGE_KEY = "taskora:programs:scrollY";
+
+function readExpandedFromStorage(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const raw = sessionStorage.getItem(EXPANDED_STORAGE_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? new Set(arr as string[]) : new Set();
+  } catch {
+    return new Set();
+  }
+}
 
 export default function ProgramsPage() {
   const [programs, setPrograms] = useState<Program[]>([]);
@@ -695,6 +791,53 @@ export default function ProgramsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showNew, setShowNew] = useState(false);
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() =>
+    readExpandedFromStorage()
+  );
+
+  const setExpanded = useCallback((programId: string, next: boolean) => {
+    setExpandedIds((prev) => {
+      const out = new Set(prev);
+      if (next) out.add(programId);
+      else out.delete(programId);
+      try {
+        sessionStorage.setItem(
+          EXPANDED_STORAGE_KEY,
+          JSON.stringify(Array.from(out))
+        );
+      } catch {}
+      return out;
+    });
+  }, []);
+
+  // Persist scroll position while the user scrolls.
+  useEffect(() => {
+    const onScroll = () => {
+      try {
+        sessionStorage.setItem(SCROLL_STORAGE_KEY, String(window.scrollY));
+      } catch {}
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // Restore scroll after programs render. Use rAF so layout is committed.
+  useEffect(() => {
+    if (loading || programs.length === 0) return;
+    let raf = 0;
+    try {
+      const y = sessionStorage.getItem(SCROLL_STORAGE_KEY);
+      if (y) {
+        const target = parseInt(y, 10);
+        if (!isNaN(target)) {
+          raf = requestAnimationFrame(() => window.scrollTo(0, target));
+        }
+      }
+    } catch {}
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [loading, programs.length]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -821,6 +964,8 @@ export default function ProgramsPage() {
               program={p}
               businessId={businessId ?? ""}
               canEdit={canEdit}
+              expanded={expandedIds.has(p.id)}
+              onExpandedChange={(next) => setExpanded(p.id, next)}
             />
           ))}
         </div>

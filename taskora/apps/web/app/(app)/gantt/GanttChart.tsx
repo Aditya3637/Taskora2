@@ -182,7 +182,11 @@ export function GanttSVG({ rows, ganttStart, ganttEnd }: { rows: GanttRow[]; gan
         x1: x0 + dayW,
         key,
         label:
-          d.toLocaleDateString("en-IN", { month: "short" }) +
+          // Use the browser locale so US/EU workspaces see "Jan/Feb…" in
+          // their idiom instead of the en-IN month names that ship by
+          // default. (English short months render identically across en-*
+          // locales but this also covers German/French if added later.)
+          d.toLocaleDateString(undefined, { month: "short" }) +
           (showYear ? ` ’${String(d.getFullYear()).slice(2)}` : ""),
       });
     } else {

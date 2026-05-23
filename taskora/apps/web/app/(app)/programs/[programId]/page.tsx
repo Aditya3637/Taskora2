@@ -1,9 +1,11 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Plus, User, X, ChevronDown, ChevronRight, GanttChartSquare } from "lucide-react";
+import { ArrowLeft, Plus, User, X, ChevronDown, ChevronRight, GanttChartSquare, Pencil } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { useWorkspaceFormat } from "@/lib/use-workspace-format";
 import { GanttModal } from "../../gantt/GanttChart";
+import { EditInitiativeModal } from "../EditInitiativeModal";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -54,9 +56,11 @@ type Initiative = {
   impact?: string | null;
   impact_metric?: string | null;
   impact_category?: string | null;
+  start_date?: string | null;
   target_end_date?: string | null;
   primary_stakeholder_id?: string | null;
   primary_stakeholder_name?: string;
+  owner_id?: string | null;
 };
 
 type Program = {
@@ -127,6 +131,7 @@ function AddInitiativeModal({
   const [impactCategory, setImpactCategory] = useState<ImpactCatValue>("other");
   const [impact, setImpact] = useState("");
   const [impactMetric, setImpactMetric] = useState("");
+  const { currencySymbol: sym } = useWorkspaceFormat();
   const [targetDate, setTargetDate] = useState("");
   const [members, setMembers] = useState<Member[]>([]);
   const [saving, setSaving] = useState(false);
@@ -275,7 +280,7 @@ function AddInitiativeModal({
               className="w-full border border-pebble rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-taskora-red"
               value={impactMetric}
               onChange={(e) => setImpactMetric(e.target.value)}
-              placeholder="e.g. 15% cost reduction, ₹2L savings"
+              placeholder={`e.g. 15% cost reduction, ${sym}200K savings`}
               maxLength={200}
             />
           </div>
@@ -316,9 +321,10 @@ function AddInitiativeModal({
   );
 }
 
+
 // ── Initiative Card ───────────────────────────────────────────────────────────
 
-function InitiativeCard({ init }: { init: Initiative }) {
+function InitiativeCard({ init, canEdit, onEdit }: { init: Initiative; canEdit: boolean; onEdit: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const [showGantt, setShowGantt] = useState(false);
   const cat = getCategoryMeta(init.impact_category);
@@ -356,6 +362,15 @@ function InitiativeCard({ init }: { init: Initiative }) {
           >
             <GanttChartSquare className="w-3.5 h-3.5" /> Gantt
           </button>
+          {canEdit && (
+            <button
+              onClick={onEdit}
+              title="Edit initiative"
+              className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-medium border border-pebble text-steel hover:border-taskora-red hover:text-taskora-red transition-colors whitespace-nowrap"
+            >
+              <Pencil className="w-3.5 h-3.5" /> Edit
+            </button>
+          )}
         </div>
 
         <h3 className="font-semibold text-midnight text-base mb-2">{init.name}</h3>
@@ -442,6 +457,7 @@ export default function ProgramDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [editInit, setEditInit] = useState<Initiative | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -568,7 +584,7 @@ export default function ProgramDetailPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {initiatives.map((init) => (
-            <InitiativeCard key={init.id} init={init} />
+            <InitiativeCard key={init.id} init={init} canEdit={canEdit} onEdit={() => setEditInit(init)} />
           ))}
         </div>
       )}
@@ -579,6 +595,15 @@ export default function ProgramDetailPage() {
           businessId={businessId}
           onClose={() => setShowAdd(false)}
           onCreated={load}
+        />
+      )}
+
+      {editInit && (
+        <EditInitiativeModal
+          initiative={editInit}
+          businessId={businessId}
+          onClose={() => setEditInit(null)}
+          onSaved={load}
         />
       )}
     </div>
