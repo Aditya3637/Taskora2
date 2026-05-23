@@ -6,7 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
-from deps import get_supabase, get_member_role, require_member
+from deps import (
+    get_supabase,
+    get_member_role,
+    require_member,
+    is_admin_or_owner,
+    writable_initiative_ids,
+    visible_initiative_ids,
+)
 from notifications import send_push_to_user
 
 router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
@@ -227,29 +234,113 @@ def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
     return tasks
 
 
+def _user_business_id(sb: Client, user_id: str) -> Optional[str]:
+    """Resolve the user's workspace. Single-workspace per user today, so the
+    first row wins."""
+    rows = (
+        sb.table("business_members")
+        .select("business_id")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+        .data
+    )
+    return rows[0]["business_id"] if rows else None
+
+
+def _visible_task_ids_for(sb: Client, business_id: str, user_id: str) -> Optional[set[str]]:
+    """Set of task_ids the user has read visibility into within this business.
+
+    Returns None for admin/owner (caller should skip the IN-filter and use a
+    full-business scan instead). Empty set means "no visibility" — the caller
+    should short-circuit to an empty response.
+
+    Visibility = tasks under any initiative the user can see (cascade) PLUS
+    tasks where the user is directly involved (primary, stakeholder, or
+    watcher). The direct-involvement union covers edge cases like legacy
+    tasks without an initiative_id.
+    """
+    if is_admin_or_owner(sb, business_id, user_id):
+        return None  # admin: full-business
+
+    vis_init_ids = visible_initiative_ids(sb, business_id, user_id)
+
+    # Direct membership (defensive — covers any task missed by the
+    # initiative-level cascade, e.g. legacy NULL-initiative rows).
+    primary_rows, stake_rows, watcher_rows = _parallel(
+        lambda: sb.table("tasks").select("id").eq("primary_stakeholder_id", user_id).execute().data,
+        lambda: sb.table("task_stakeholders").select("task_id").eq("user_id", user_id).execute().data,
+        lambda: sb.table("item_watchers").select("task_id").eq("user_id", user_id).execute().data,
+    )
+    direct_ids: set[str] = (
+        {r["id"] for r in primary_rows}
+        | {r["task_id"] for r in stake_rows if r.get("task_id")}
+        | {r["task_id"] for r in watcher_rows if r.get("task_id")}
+    )
+
+    init_task_ids: set[str] = set()
+    if vis_init_ids:
+        rows = (
+            sb.table("tasks")
+            .select("id")
+            .in_("initiative_id", list(vis_init_ids))
+            .execute()
+            .data
+        )
+        init_task_ids = {r["id"] for r in rows}
+
+    return direct_ids | init_task_ids
+
+
 @router.get("/my")
 def get_my_tasks(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    """Flat list of tasks the caller is a stakeholder on (used by mobile).
+    """Flat list of tasks the caller can see (used by mobile).
     For the paginated web flow, see /my/page.
+
+    Visibility follows the initiative cascade: primary/follower anywhere in
+    an initiative tree → full read of that initiative's tasks. See
+    `visible_initiative_ids` in deps.py.
     """
     uid = user["id"]
-    # The three membership lookups are independent — run them concurrently.
-    primary_rows, secondary_rows, watcher_rows = _parallel(
-        lambda: sb.table("tasks").select("id").eq("primary_stakeholder_id", uid).execute().data,
-        lambda: sb.table("task_stakeholders").select("task_id").eq("user_id", uid).execute().data,
-        # A follower/approver at any scope sees the whole parent task.
-        lambda: sb.table("item_watchers").select("task_id").eq("user_id", uid).execute().data,
-    )
-    primary_ids = [r["id"] for r in primary_rows]
-    secondary_ids = [r["task_id"] for r in secondary_rows]
-    watcher_ids = [r["task_id"] for r in watcher_rows]
-    all_ids = list(set(primary_ids + secondary_ids + watcher_ids))
-    if not all_ids:
+    business_id = _user_business_id(sb, uid)
+    if not business_id:
         return []
-    tasks = sb.table("tasks").select("*").in_("id", all_ids).order("created_at", desc=True).execute().data
+
+    visible = _visible_task_ids_for(sb, business_id, uid)
+    if visible is None:
+        # Admin: every task whose initiative is in this business
+        biz_init_ids = [
+            r["id"]
+            for r in sb.table("initiatives")
+            .select("id")
+            .eq("business_id", business_id)
+            .execute()
+            .data
+        ]
+        if not biz_init_ids:
+            return []
+        tasks = (
+            sb.table("tasks")
+            .select("*")
+            .in_("initiative_id", biz_init_ids)
+            .order("created_at", desc=True)
+            .execute()
+            .data
+        )
+    else:
+        if not visible:
+            return []
+        tasks = (
+            sb.table("tasks")
+            .select("*")
+            .in_("id", list(visible))
+            .order("created_at", desc=True)
+            .execute()
+            .data
+        )
     return _hydrate_tasks_with_entities(sb, tasks)
 
 
@@ -264,32 +355,52 @@ def get_my_tasks_page(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    """B5: Cursor-paginated list of tasks the caller is a stakeholder on.
+    """B5: Cursor-paginated list of tasks the caller can see.
+
+    Visibility follows the initiative cascade: involvement on any node of an
+    initiative tree (initiative primary, task primary/stakeholder/creator,
+    explicit initiative follower, or watcher on any task/subtask within it)
+    grants full read of every task in that initiative.
 
     Returns: {"items": [...tasks], "next_cursor": "<iso>" | None}
     """
     uid = user["id"]
-    # The three membership lookups are independent — run them concurrently.
-    primary_rows, secondary_rows, watcher_rows = _parallel(
-        lambda: sb.table("tasks").select("id").eq("primary_stakeholder_id", uid).execute().data,
-        lambda: sb.table("task_stakeholders").select("task_id").eq("user_id", uid).execute().data,
-        # A follower/approver at any scope sees the whole parent task.
-        lambda: sb.table("item_watchers").select("task_id").eq("user_id", uid).execute().data,
-    )
-    primary_ids = [r["id"] for r in primary_rows]
-    secondary_ids = [r["task_id"] for r in secondary_rows]
-    watcher_ids = [r["task_id"] for r in watcher_rows]
-    all_ids = list(set(primary_ids + secondary_ids + watcher_ids))
-    if not all_ids:
+    business_id = _user_business_id(sb, uid)
+    if not business_id:
         return {"items": [], "next_cursor": None}
 
-    q = (
-        sb.table("tasks")
-        .select("*")
-        .in_("id", all_ids)
-        .order("created_at", desc=True)
-        .limit(limit + 1)
-    )
+    visible = _visible_task_ids_for(sb, business_id, uid)
+
+    if visible is None:
+        # Admin/owner: every task in this business.
+        biz_init_ids = [
+            r["id"]
+            for r in sb.table("initiatives")
+            .select("id")
+            .eq("business_id", business_id)
+            .execute()
+            .data
+        ]
+        if not biz_init_ids:
+            return {"items": [], "next_cursor": None}
+        q = (
+            sb.table("tasks")
+            .select("*")
+            .in_("initiative_id", biz_init_ids)
+            .order("created_at", desc=True)
+            .limit(limit + 1)
+        )
+    else:
+        if not visible:
+            return {"items": [], "next_cursor": None}
+        q = (
+            sb.table("tasks")
+            .select("*")
+            .in_("id", list(visible))
+            .order("created_at", desc=True)
+            .limit(limit + 1)
+        )
+
     if cursor:
         q = q.lt("created_at", cursor)
     if status:
@@ -331,7 +442,7 @@ def create_task(
         )
     init_rows = (
         sb.table("initiatives")
-        .select("business_id")
+        .select("business_id, primary_stakeholder_id")
         .eq("id", body.initiative_id)
         .execute()
         .data
@@ -339,8 +450,25 @@ def create_task(
     if not init_rows:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="Initiative not found")
-    business_id = init_rows[0]["business_id"]
+    init_row = init_rows[0]
+    business_id = init_row["business_id"]
     require_member(sb, business_id, uid)  # 403 if caller not in this workspace
+
+    # Visibility scoping rule: non-admin members can only create tasks under
+    # initiatives they have WRITE access to (primary on initiative OR existing
+    # stake/creator on a task within it). Admin/owner always allowed.
+    # Followers are explicitly excluded — they're read-only viewers and use
+    # writable_initiative_ids() instead of aligned_initiative_ids() for that
+    # reason.
+    if not is_admin_or_owner(sb, business_id, uid):
+        if init_row.get("primary_stakeholder_id") != uid:
+            scope = writable_initiative_ids(sb, business_id, uid)
+            if body.initiative_id not in scope:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You're not aligned to this initiative",
+                )
+
     # Caller is a member (just verified). Only re-check when assigning the task
     # to someone else, to keep the common self-assignment path single-query.
     if body.primary_stakeholder_id != uid and get_member_role(
@@ -356,6 +484,7 @@ def create_task(
         "description": body.description,
         "initiative_id": body.initiative_id,
         "primary_stakeholder_id": body.primary_stakeholder_id,
+        "created_by": uid,
         "priority": body.priority,
         "status": body.status,
         "due_date": body.due_date.isoformat() if body.due_date else None,
@@ -1061,17 +1190,60 @@ class SubtaskUpdate(BaseModel):
 
 
 def _assert_task_access(sb: Client, task_id: str, user_id: str):
-    rows = sb.table("tasks").select("primary_stakeholder_id").eq("id", task_id).execute().data
+    rows = (
+        sb.table("tasks")
+        .select("primary_stakeholder_id, initiative_id")
+        .eq("id", task_id)
+        .execute()
+        .data
+    )
     if not rows:
         raise HTTPException(status_code=404, detail="Task not found")
-    is_primary = rows[0]["primary_stakeholder_id"] == user_id
-    if not is_primary:
-        s_rows = sb.table("task_stakeholders").select("user_id").eq("task_id", task_id).eq("user_id", user_id).execute().data
-        if not s_rows:
-            # Follower/approver at any scope still gets full task-tree read.
-            w_rows = sb.table("item_watchers").select("id").eq("task_id", task_id).eq("user_id", user_id).limit(1).execute().data
-            if not w_rows:
-                raise HTTPException(status_code=403, detail="Access denied")
+    row = rows[0]
+    if row["primary_stakeholder_id"] == user_id:
+        return
+    s_rows = (
+        sb.table("task_stakeholders")
+        .select("user_id")
+        .eq("task_id", task_id)
+        .eq("user_id", user_id)
+        .execute()
+        .data
+    )
+    if s_rows:
+        return
+    # Follower/approver at any scope still gets full task-tree read.
+    w_rows = (
+        sb.table("item_watchers")
+        .select("id")
+        .eq("task_id", task_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+        .data
+    )
+    if w_rows:
+        return
+    # Initiative-level cascade: if this task's initiative is in the user's
+    # visible_initiative_ids (admin, initiative primary, explicit follower,
+    # task primary/stake/creator elsewhere in the initiative, or watcher on
+    # any sibling task), the user can read this task too.
+    init_id = row.get("initiative_id")
+    if init_id:
+        init_rows = (
+            sb.table("initiatives")
+            .select("business_id")
+            .eq("id", init_id)
+            .execute()
+            .data
+        )
+        if init_rows:
+            biz_id = init_rows[0]["business_id"]
+            if is_admin_or_owner(sb, biz_id, user_id):
+                return
+            if init_id in visible_initiative_ids(sb, biz_id, user_id):
+                return
+    raise HTTPException(status_code=403, detail="Access denied")
 
 
 @router.get("/{task_id}/subtasks")

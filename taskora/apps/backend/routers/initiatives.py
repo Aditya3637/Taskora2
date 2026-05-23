@@ -5,7 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
-from deps import get_supabase, require_member, get_member_role
+from deps import (
+    get_supabase, require_member, require_admin_or_owner, get_member_role,
+    is_admin_or_owner, aligned_initiative_ids, follower_initiative_ids,
+    visible_initiative_ids,
+)
 
 router = APIRouter(prefix="/api/v1/initiatives", tags=["initiatives"])
 
@@ -37,17 +41,48 @@ def get_my_initiatives(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    """Return initiatives where the current user is the primary stakeholder or owner."""
+    """Initiatives the caller can see — follows the visibility cascade so
+    admins/owners see every initiative in the workspace, and members see
+    every initiative they're aligned to (primary on initiative, primary/
+    stakeholder/creator on a task within it, explicit follower, or watcher
+    on any task within it).
+
+    The Tasks page uses this to render initiative group headers even for
+    initiatives with no tasks yet — useful when an admin filters by a
+    primary user who has been assigned initiatives but hasn't created
+    any tasks.
+    """
     uid = user["id"]
-    rows = (
-        sb.table("initiatives")
-        .select("id, name, status, impact, impact_category, primary_stakeholder_id, owner_id, program_id, target_end_date, programs(id, name, color)")
-        .or_(f"primary_stakeholder_id.eq.{uid},owner_id.eq.{uid}")
-        .neq("status", "cancelled")
-        .order("created_at", desc=True)
+    biz_rows = (
+        sb.table("business_members")
+        .select("business_id")
+        .eq("user_id", uid)
+        .limit(1)
         .execute()
         .data
     )
+    if not biz_rows:
+        return []
+    business_id = biz_rows[0]["business_id"]
+
+    select_cols = (
+        "id, name, status, impact, impact_category, primary_stakeholder_id, "
+        "owner_id, program_id, target_end_date, programs(id, name, color)"
+    )
+    base_q = (
+        sb.table("initiatives")
+        .select(select_cols)
+        .eq("business_id", business_id)
+        .neq("status", "cancelled")
+        .order("created_at", desc=True)
+    )
+    if is_admin_or_owner(sb, business_id, uid):
+        rows = base_q.execute().data
+    else:
+        vis_ids = visible_initiative_ids(sb, business_id, uid)
+        if not vis_ids:
+            return []
+        rows = base_q.in_("id", list(vis_ids)).execute().data
     # Resolve primary stakeholder names
     ps_ids = list({r["primary_stakeholder_id"] for r in rows if r.get("primary_stakeholder_id")})
     ps_map: dict = {}
@@ -194,10 +229,12 @@ def list_initiatives_with_tasks(
     member_role = member_row[0]["role"] if member_row else "member"
     is_privileged = member_role in ("owner", "admin")
 
-    # Fetch initiatives
+    # Fetch initiatives. Include primary_stakeholder_id so we can distinguish
+    # "initiative primary" visibility (sees all tasks under the initiative)
+    # from "task-level stakeholder only" (sees only their own tasks).
     initiatives = (
         sb.table("initiatives")
-        .select("id, name, status, program_id, target_end_date")
+        .select("id, name, status, program_id, target_end_date, primary_stakeholder_id")
         .eq("business_id", business_id)
         .neq("status", "cancelled")
         .order("created_at")
@@ -207,6 +244,14 @@ def list_initiatives_with_tasks(
 
     if not initiatives:
         return []
+
+    # Visibility scope for non-admins: only initiatives they're aligned to.
+    # Admins/owners get the unfiltered list.
+    if not is_privileged:
+        scope = aligned_initiative_ids(sb, business_id, user["id"])
+        initiatives = [i for i in initiatives if i["id"] in scope]
+        if not initiatives:
+            return []
 
     init_ids = [i["id"] for i in initiatives]
     program_ids = list({i["program_id"] for i in initiatives if i.get("program_id")})
@@ -241,10 +286,10 @@ def list_initiatives_with_tasks(
     for e in entity_rows:
         entities_by_init.setdefault(e["initiative_id"], []).append(e)
 
-    # Fetch tasks
+    # Fetch tasks. `created_by` is required for "see tasks I created" scoping.
     tasks = (
         sb.table("tasks")
-        .select("id, title, status, due_date, description, primary_stakeholder_id, initiative_id")
+        .select("id, title, status, due_date, description, primary_stakeholder_id, initiative_id, created_by")
         .in_("initiative_id", init_ids)
         .neq("status", "cancelled")
         .order("created_at")
@@ -285,14 +330,34 @@ def list_initiatives_with_tasks(
     for t in tasks:
         tasks_by_init.setdefault(t["initiative_id"], []).append(t)
 
-    # Assemble result
+    # Assemble result. For non-admins, also scope the tasks shown under each
+    # initiative: members see every task in the initiative if they're the
+    # initiative's primary stakeholder OR an explicit follower; otherwise only
+    # the tasks they have stake in or created.
+    uid = user["id"]
+    follower_ids = set() if is_privileged else follower_initiative_ids(sb, business_id, uid)
     result = []
     for init in initiatives:
         iid = init["id"]
         init_tasks = tasks_by_init.get(iid, [])
+        sees_all_in_this_init = (
+            is_privileged
+            or init.get("primary_stakeholder_id") == uid
+            or iid in follower_ids
+        )
 
-        # viewer_can_edit: owner/admin always; member if they're stakeholder on any task here
+        if not sees_all_in_this_init:
+            init_tasks = [
+                t for t in init_tasks
+                if t["id"] in user_task_ids or t.get("created_by") == uid
+            ]
+
+        # viewer_can_edit: owner/admin always; otherwise the member is
+        # initiative-primary or has any task-level stake here. Followers are
+        # read-only — being a follower does NOT grant edit rights.
         if is_privileged:
+            can_edit = True
+        elif init.get("primary_stakeholder_id") == uid:
             can_edit = True
         else:
             init_task_ids = {t["id"] for t in init_tasks}
@@ -369,11 +434,116 @@ def remove_initiative_entity(
     sb.table("initiative_entities").delete().eq("initiative_id", initiative_id).eq("entity_type", entity_type).eq("entity_id", entity_id).execute()
 
 
+# ── Followers ────────────────────────────────────────────────────────────────
+# Read-only viewers of an initiative. They see the entire tree (initiative,
+# tasks, subtasks, comments, attachments) via the existing scoping helpers
+# in deps.py but cannot create or edit anything. Managed from the Edit
+# Initiative modal — admin/owner only.
+
+
+class FollowerAdd(BaseModel):
+    user_id: str
+
+
+def _get_initiative_business(sb: Client, initiative_id: str) -> str:
+    rows = sb.table("initiatives").select("business_id").eq("id", initiative_id).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="Initiative not found")
+    return rows[0]["business_id"]
+
+
+@router.get("/{initiative_id}/followers")
+def list_initiative_followers(
+    initiative_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """List followers of an initiative. Any business member can view the
+    roster (so people know who else has read access)."""
+    business_id = _get_initiative_business(sb, initiative_id)
+    require_member(sb, business_id, user["id"])
+
+    rows = (
+        sb.table("initiative_followers")
+        .select("user_id, added_by, added_at")
+        .eq("initiative_id", initiative_id)
+        .execute()
+        .data
+    )
+    user_ids = list({r["user_id"] for r in rows})
+    names = _resolve_user_names(sb, user_ids) if user_ids else {}
+    # Pull emails too so the UI has a stable secondary label.
+    email_map: dict = {}
+    if user_ids:
+        for u in sb.table("users").select("id, email").in_("id", user_ids).execute().data:
+            email_map[u["id"]] = u.get("email") or ""
+    return [
+        {
+            "user_id": r["user_id"],
+            "name": names.get(r["user_id"], ""),
+            "email": email_map.get(r["user_id"], ""),
+            "added_by": r.get("added_by"),
+            "added_at": r.get("added_at"),
+        }
+        for r in rows
+    ]
+
+
+@router.post("/{initiative_id}/followers", status_code=201)
+def add_initiative_follower(
+    initiative_id: str,
+    body: FollowerAdd,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Add a follower. Workspace owner/admin only — mirrors the edit gate so
+    only people who can edit the initiative can grant read access."""
+    business_id = _get_initiative_business(sb, initiative_id)
+    require_admin_or_owner(sb, business_id, user["id"])
+
+    # The follower being added must themselves be a member of the workspace.
+    if get_member_role(sb, business_id, body.user_id) is None:
+        raise HTTPException(
+            status_code=400,
+            detail="user_id must be a member of this workspace",
+        )
+
+    sb.table("initiative_followers").upsert(
+        {
+            "initiative_id": initiative_id,
+            "user_id": body.user_id,
+            "added_by": user["id"],
+        },
+        on_conflict="initiative_id,user_id",
+    ).execute()
+    return {"ok": True}
+
+
+@router.delete("/{initiative_id}/followers/{user_id}", status_code=204)
+def remove_initiative_follower(
+    initiative_id: str,
+    user_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Remove a follower. Workspace owner/admin only."""
+    business_id = _get_initiative_business(sb, initiative_id)
+    require_admin_or_owner(sb, business_id, user["id"])
+
+    sb.table("initiative_followers").delete().eq(
+        "initiative_id", initiative_id
+    ).eq("user_id", user_id).execute()
+
+
 class InitiativeUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
+    start_date: Optional[date] = None
     target_end_date: Optional[date] = None
+    date_mode: Optional[Literal["uniform", "per_entity"]] = None
+    primary_stakeholder_id: Optional[str] = None
+    owner_id: Optional[str] = None
     program_id: Optional[str] = None
     theme_id: Optional[str] = None
     impact: Optional[str] = None
@@ -418,6 +588,34 @@ def delete_initiative(
     sb.table("initiatives").delete().eq("id", initiative_id).execute()
 
 
+# Fields whose change should be recorded into activity_log. Each entry is the
+# DB column name; the action is "initiative_{column}_changed".
+_LOGGED_INITIATIVE_FIELDS = (
+    "name",
+    "description",
+    "status",
+    "start_date",
+    "target_end_date",
+    "date_mode",
+    "primary_stakeholder_id",
+    "owner_id",
+    "program_id",
+    "theme_id",
+    "impact",
+    "impact_metric",
+    "impact_category",
+)
+
+
+def _resolve_user_names(sb: Client, user_ids: list[str]) -> dict[str, str]:
+    """Look up display names for a list of user ids in one round-trip."""
+    ids = [uid for uid in user_ids if uid]
+    if not ids:
+        return {}
+    rows = sb.table("users").select("id, name").in_("id", ids).execute().data
+    return {r["id"]: r.get("name") or "" for r in rows}
+
+
 @router.patch("/{initiative_id}")
 def update_initiative(
     initiative_id: str,
@@ -425,17 +623,87 @@ def update_initiative(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    data = sb.table("initiatives").select("business_id").eq("id", initiative_id).execute().data
-    if not data:
+    # Load the full current row so we can diff every editable field for the
+    # activity log. Reading once keeps logging atomic with the read used for
+    # auth checks.
+    select_cols = "id, business_id, " + ", ".join(_LOGGED_INITIATIVE_FIELDS)
+    existing = (
+        sb.table("initiatives")
+        .select(select_cols)
+        .eq("id", initiative_id)
+        .execute()
+        .data
+    )
+    if not existing:
         raise HTTPException(status_code=404, detail="Initiative not found")
-    require_member(sb, data[0]["business_id"], user["id"])
+    current = existing[0]
+
+    # Edit gate: workspace owner/admin only. Locked down per product call:
+    # initiative editing from the program section is an admin operation.
+    require_admin_or_owner(sb, current["business_id"], user["id"])
+
     payload = {k: v for k, v in body.model_dump().items() if v is not None}
-    if "target_end_date" in payload and payload["target_end_date"]:
-        payload["target_end_date"] = payload["target_end_date"].isoformat()
     if not payload:
         raise HTTPException(status_code=422, detail="No fields to update")
+
+    # Serialise date fields before update + diffing.
+    for k in ("start_date", "target_end_date"):
+        if k in payload and payload[k] is not None and hasattr(payload[k], "isoformat"):
+            payload[k] = payload[k].isoformat()
+
+    # Compute the actual diff (skip writes that don't change anything so the
+    # activity feed isn't polluted by no-op PATCHes).
+    diff: dict[str, tuple] = {}
+    for field, new_val in payload.items():
+        old_val = current.get(field)
+        # Normalise None vs empty string for text fields so "" == None doesn't
+        # generate a phantom change.
+        if (old_val or None) != (new_val or None):
+            diff[field] = (old_val, new_val)
+
+    if not diff:
+        return current  # nothing actually changed
+
     result = sb.table("initiatives").update(payload).eq("id", initiative_id).execute()
-    return result.data[0] if result.data else {}
+    updated = result.data[0] if result.data else current
+
+    # Resolve user names for stakeholder/owner diffs so the activity feed shows
+    # "Aditya Singh → Rohit Kumar" instead of two UUIDs.
+    user_diffs = {f: diff[f] for f in ("primary_stakeholder_id", "owner_id") if f in diff}
+    name_map: dict[str, str] = {}
+    if user_diffs:
+        all_ids: list[str] = []
+        for old, new in user_diffs.values():
+            if old: all_ids.append(old)
+            if new: all_ids.append(new)
+        name_map = _resolve_user_names(sb, all_ids)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    actor_email = user.get("email")
+    log_rows = []
+    for field, (old, new) in diff.items():
+        old_payload: dict = {"value": old}
+        new_payload: dict = {"value": new}
+        if field in ("primary_stakeholder_id", "owner_id"):
+            old_payload["name"] = name_map.get(old or "", "")
+            new_payload["name"] = name_map.get(new or "", "")
+        log_rows.append({
+            "business_id": current["business_id"],
+            "initiative_id": initiative_id,
+            "actor_id": user["id"],
+            "actor_email": actor_email,
+            "action": f"initiative_{field}_changed",
+            "entity_type": "initiative",
+            "entity_id": initiative_id,
+            "entity_label": updated.get("name") or current.get("name"),
+            "old_value": old_payload,
+            "new_value": new_payload,
+            "created_at": now_iso,
+        })
+    if log_rows:
+        sb.table("activity_log").insert(log_rows).execute()
+
+    return updated
 
 
 # ---------------------------------------------------------------------------

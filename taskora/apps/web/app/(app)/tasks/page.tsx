@@ -1,7 +1,7 @@
 "use client";
-import { useState, useEffect, useCallback, useRef, Suspense } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck, GanttChartSquare } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck, GanttChartSquare, MoreHorizontal, Search, Trash2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { GanttModal } from "../gantt/GanttChart";
 
@@ -248,6 +248,10 @@ const FILTER_LABELS: Record<string, string> = {
   approval_pending: "Sent for Approval",
   reopened: "Reopened",
 };
+
+// Filter state on /tasks is persisted under this key so the user keeps
+// their view when they navigate to another page and come back.
+const TASKS_FILTERS_KEY = "taskora_tasks_filters_v1";
 
 // Approval-aware predicate for the special filter pills.
 function matchesApprovalFilter(t: Task, filter: string): boolean {
@@ -2569,133 +2573,6 @@ function BreakdownModal({
   );
 }
 
-// ── Initiative Banner ─────────────────────────────────────────────────────────
-
-function InitiativeBanner({
-  initiative,
-  businessId,
-  currentUserId,
-  myRole,
-  onTaskCreated,
-  onDeleted,
-}: {
-  initiative: MyInitiative;
-  businessId: string;
-  currentUserId: string;
-  myRole: string;
-  onTaskCreated: () => void;
-  onDeleted: (id: string) => void;
-}) {
-  const [showBreakdown, setShowBreakdown] = useState(false);
-  const [showGantt, setShowGantt] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const cat = initiative.impact_category ?? "others";
-
-  const canDelete =
-    initiative.primary_stakeholder_id === currentUserId ||
-    myRole === "owner" ||
-    myRole === "admin";
-
-  async function handleDelete() {
-    if (!confirm(`Delete initiative "${initiative.name}" and all its tasks? This cannot be undone.`)) return;
-    setDeleting(true);
-    try {
-      await apiFetch(`/api/v1/initiatives/${initiative.id}`, { method: "DELETE" });
-      onDeleted(initiative.id);
-    } catch (err: any) {
-      alert("Failed to delete: " + (err?.message ?? "Unknown error"));
-      setDeleting(false);
-    }
-  }
-
-  return (
-    <div className="bg-white rounded-xl border border-pebble shadow-sm p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            {initiative.programs && (
-              <span
-                className="text-xs font-medium px-2 py-0.5 rounded-full text-white"
-                style={{
-                  backgroundColor: initiative.programs.color ?? "#6366F1",
-                }}
-              >
-                {initiative.programs.name}
-              </span>
-            )}
-            <span
-              className={`text-[11px] px-1.5 py-0.5 rounded-full font-medium border ${IMPACT_CATEGORY_COLOR[cat]}`}
-            >
-              {IMPACT_CATEGORY_LABEL[cat] ?? cat}
-            </span>
-          </div>
-          <p className="font-semibold text-midnight mt-1.5">
-            {initiative.name}
-          </p>
-          {initiative.impact && (
-            <p className="text-xs text-steel mt-0.5 line-clamp-1">
-              {initiative.impact}
-            </p>
-          )}
-          {initiative.primary_stakeholder_name && (
-            <div className="flex items-center gap-1 mt-1">
-              <User className="w-3 h-3 text-steel/60" />
-              <span className="text-xs text-steel/70">
-                {initiative.primary_stakeholder_name}
-              </span>
-            </div>
-          )}
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {canDelete && (
-            <button
-              onClick={handleDelete}
-              disabled={deleting}
-              className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-red-200 text-red-500 hover:bg-red-50 disabled:opacity-50 transition-colors"
-            >
-              {deleting ? "Deleting…" : "Delete"}
-            </button>
-          )}
-          <button
-            onClick={() => setShowGantt(true)}
-            title="View Gantt chart"
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-pebble text-steel hover:border-ocean hover:text-ocean transition-colors"
-          >
-            <GanttChartSquare className="w-3.5 h-3.5" /> Gantt
-          </button>
-          <button
-            onClick={() => setShowBreakdown(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-taskora-red text-white text-xs font-semibold rounded-lg hover:opacity-90"
-          >
-            <Plus className="w-3.5 h-3.5" /> Break Down
-          </button>
-        </div>
-      </div>
-
-      {showBreakdown && (
-        <BreakdownModal
-          initiative={initiative}
-          businessId={businessId}
-          currentUserId={currentUserId}
-          onClose={() => setShowBreakdown(false)}
-          onCreated={() => {
-            onTaskCreated();
-            setShowBreakdown(false);
-          }}
-        />
-      )}
-
-      {showGantt && (
-        <GanttModal
-          initiativeId={initiative.id}
-          initiativeName={initiative.name}
-          onClose={() => setShowGantt(false)}
-        />
-      )}
-    </div>
-  );
-}
-
 // ── New Task Modal ─────────────────────────────────────────────────────────────
 
 function NewTaskModal({
@@ -2944,6 +2821,9 @@ function InitiativeGroup({
   highlighted,
   onStatusChange,
   onTaskDeleted,
+  onBreakdown,
+  onGantt,
+  onDelete,
   focusTaskId,
   focusSubtaskId,
 }: {
@@ -2955,12 +2835,39 @@ function InitiativeGroup({
   highlighted: boolean;
   onStatusChange: (taskId: string, newStatus: string) => void;
   onTaskDeleted: (taskId: string) => void;
+  // Per-initiative actions, hoisted from the page so a single BreakdownModal/
+  // GanttModal lives at page level. Null `initiative` means the "Unlinked"
+  // group, where these callbacks aren't passed.
+  onBreakdown?: () => void;
+  onGantt?: () => void;
+  onDelete?: () => void;
   focusTaskId?: string | null;
   focusSubtaskId?: string | null;
 }) {
   const groupRef = useRef<HTMLDivElement>(null);
   const containsFocus = !!focusTaskId && tasks.some((t) => t.id === focusTaskId);
   const [collapsed, setCollapsed] = useState(!highlighted && !containsFocus);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close the overflow menu when the user clicks outside of it.
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onDoc(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [menuOpen]);
+
+  const canDelete =
+    !!initiative &&
+    (initiative.primary_stakeholder_id === currentUserId ||
+      myRole === "owner" ||
+      myRole === "admin");
+  const hasActions = !!initiative && !!(onBreakdown || onGantt || (onDelete && canDelete));
 
   // Auto-scroll to highlighted group
   useEffect(() => {
@@ -2992,63 +2899,153 @@ function InitiativeGroup({
           : "border-pebble bg-white"
       }`}
     >
-      {/* Group Header */}
-      <button
-        className="w-full flex items-center gap-3 px-5 py-3.5 text-left hover:bg-black/[0.02] transition-colors"
-        onClick={() => setCollapsed((v) => !v)}
-        aria-expanded={!collapsed}
-      >
+      {/* Group Header — clickable to collapse, with action buttons that
+          stop propagation so they don't trigger the collapse toggle. */}
+      <div className="w-full flex items-center gap-3 px-5 py-3.5 hover:bg-black/[0.02] transition-colors">
         {/* Colored dot */}
-        <span
-          className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-          style={{ backgroundColor: programColor }}
-        />
-
-        {/* Initiative name */}
-        <span className="flex-1 font-semibold text-midnight text-sm truncate">
-          {initiative ? initiative.name : "Unlinked Tasks"}
-        </span>
-
-        {/* Program badge */}
-        {initiative?.programs && (
+        <button
+          type="button"
+          className="flex items-center gap-3 flex-1 min-w-0 text-left"
+          onClick={() => setCollapsed((v) => !v)}
+          aria-expanded={!collapsed}
+        >
           <span
-            className="text-[11px] px-2 py-0.5 rounded-full font-medium text-white flex-shrink-0"
-            style={{ backgroundColor: initiative.programs.color ?? "#6366F1" }}
-          >
-            {initiative.programs.name}
+            className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+            style={{ backgroundColor: programColor }}
+          />
+
+          {/* Initiative name */}
+          <span className="flex-1 font-semibold text-midnight text-sm truncate">
+            {initiative ? initiative.name : "Unlinked Tasks"}
           </span>
-        )}
 
-        {/* Category badge */}
-        {catColor && catLabel && (
-          <span
-            className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border flex-shrink-0 ${catColor}`}
-          >
-            {catLabel}
-          </span>
-        )}
-
-        {/* X/Y done */}
-        <span className="text-xs text-steel/60 flex-shrink-0 tabular-nums">
-          {doneCount}/{total} done
-        </span>
-
-        {/* Chevron */}
-        <span className="text-steel/40 flex-shrink-0">
-          {collapsed ? (
-            <ChevronRight className="w-4 h-4" />
-          ) : (
-            <ChevronDown className="w-4 h-4" />
+          {/* Program badge */}
+          {initiative?.programs && (
+            <span
+              className="text-[11px] px-2 py-0.5 rounded-full font-medium text-white flex-shrink-0"
+              style={{ backgroundColor: initiative.programs.color ?? "#6366F1" }}
+            >
+              {initiative.programs.name}
+            </span>
           )}
-        </span>
-      </button>
+
+          {/* Category badge */}
+          {catColor && catLabel && (
+            <span
+              className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border flex-shrink-0 ${catColor}`}
+            >
+              {catLabel}
+            </span>
+          )}
+
+          {/* X/Y done — or a "No tasks yet" hint when the initiative
+              hasn't been broken down. Surfaces empty work so an admin
+              filtering by owner sees who has open initiatives but no tasks. */}
+          {total === 0 ? (
+            <span className="text-[11px] px-2 py-0.5 rounded-full font-medium bg-amber-50 text-amber-700 border border-amber-200 flex-shrink-0">
+              No tasks yet
+            </span>
+          ) : (
+            <span className="text-xs text-steel/60 flex-shrink-0 tabular-nums">
+              {doneCount}/{total} done
+            </span>
+          )}
+
+          {/* Chevron */}
+          <span className="text-steel/40 flex-shrink-0">
+            {collapsed ? (
+              <ChevronRight className="w-4 h-4" />
+            ) : (
+              <ChevronDown className="w-4 h-4" />
+            )}
+          </span>
+        </button>
+
+        {/* Per-initiative actions — only on real initiatives, not the Unlinked group */}
+        {hasActions && (
+          <div className="flex items-center gap-1 flex-shrink-0">
+            {onBreakdown && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onBreakdown();
+                }}
+                title="Add a task to this initiative"
+                aria-label="Add task"
+                className="w-8 h-8 rounded-lg text-steel hover:bg-mist hover:text-taskora-red flex items-center justify-center transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+            )}
+            <div ref={menuRef} className="relative">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen((v) => !v);
+                }}
+                title="More actions"
+                aria-label="More actions"
+                aria-expanded={menuOpen}
+                className="w-8 h-8 rounded-lg text-steel hover:bg-mist hover:text-midnight flex items-center justify-center transition-colors"
+              >
+                <MoreHorizontal className="w-4 h-4" />
+              </button>
+              {menuOpen && (
+                <div className="absolute right-0 top-full mt-1 w-44 bg-white border border-pebble rounded-lg shadow-lg z-20 py-1 text-sm">
+                  {onGantt && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onGantt();
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-left text-midnight hover:bg-mist"
+                    >
+                      <GanttChartSquare className="w-4 h-4 text-steel" />
+                      View Gantt
+                    </button>
+                  )}
+                  {onDelete && canDelete && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onDelete();
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-left text-red-600 hover:bg-red-50"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Delete initiative
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Tasks list */}
       {!collapsed && (
         <div className="border-t border-pebble/50 px-4 py-3 space-y-2.5">
           {tasks.length === 0 ? (
-            <p className="text-xs text-steel/50 italic py-1">
-              No tasks in this group.
+            <p className="text-xs text-steel/60 py-1.5">
+              No tasks have been created under this initiative yet.
+              {onBreakdown && (
+                <>
+                  {" "}
+                  <button
+                    type="button"
+                    onClick={onBreakdown}
+                    className="text-taskora-red font-medium hover:underline"
+                  >
+                    Add the first one
+                  </button>
+                  .
+                </>
+              )}
             </p>
           ) : (
             tasks.map((task) => (
@@ -3065,63 +3062,6 @@ function InitiativeGroup({
               />
             ))
           )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── My Initiatives Collapsible Section ────────────────────────────────────────
-
-function MyInitiativesSection({
-  initiatives,
-  businessId,
-  currentUserId,
-  myRole,
-  onTaskCreated,
-  onInitiativeDeleted,
-}: {
-  initiatives: MyInitiative[];
-  businessId: string;
-  currentUserId: string;
-  myRole: string;
-  onTaskCreated: () => void;
-  onInitiativeDeleted: (id: string) => void;
-}) {
-  const [collapsed, setCollapsed] = useState(false);
-
-  if (initiatives.length === 0) return null;
-
-  return (
-    <div className="mb-8">
-      <button
-        className="flex items-center gap-2 mb-3 group"
-        onClick={() => setCollapsed((v) => !v)}
-        aria-expanded={!collapsed}
-      >
-        <h2 className="text-lg font-bold text-midnight">My Initiatives</h2>
-        <span className="text-steel/50 group-hover:text-steel transition-colors">
-          {collapsed ? (
-            <ChevronRight className="w-4 h-4" />
-          ) : (
-            <ChevronDown className="w-4 h-4" />
-          )}
-        </span>
-      </button>
-
-      {!collapsed && (
-        <div className="space-y-3">
-          {initiatives.map((init) => (
-            <InitiativeBanner
-              key={init.id}
-              initiative={init}
-              businessId={businessId}
-              currentUserId={currentUserId}
-              myRole={myRole}
-              onTaskCreated={onTaskCreated}
-              onDeleted={onInitiativeDeleted}
-            />
-          ))}
         </div>
       )}
     </div>
@@ -3152,6 +3092,22 @@ function TasksPageInner() {
   // B5: cursor pagination on /tasks/my/page
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  // Filters layered on top of the paged result (status is still server-side
+  // via `filter`). These are client-side: they narrow the current page only.
+  // For workspaces with many tasks per status, this is a known limitation
+  // we'll address with a real server query when it becomes a real problem.
+  const [search, setSearch] = useState("");
+  const [programFilter, setProgramFilter] = useState<string>(""); // program id or "" = all
+  const [ownerFilter, setOwnerFilter] = useState<string>("__me__"); // user id, "" = anyone, "__me__" = currentUser
+  // Persisted to localStorage so navigating away (People, Daily Brief, …)
+  // and back doesn't clear what the user was looking at. Gated by
+  // `filtersHydrated` so the initial /tasks/my/page fetch waits for the
+  // restored status filter — otherwise the load would fire with the default
+  // "All" and immediately re-fire with the restored value.
+  const [filtersHydrated, setFiltersHydrated] = useState(false);
+  // Per-initiative modals — owned by the page so any group can open them.
+  const [breakdownFor, setBreakdownFor] = useState<MyInitiative | null>(null);
+  const [ganttFor, setGanttFor] = useState<MyInitiative | null>(null);
 
   // Fetches a page of tasks. When `append` is true, results are appended to the
   // current list (used by Load More). Otherwise the list is replaced and the
@@ -3226,10 +3182,47 @@ function TasksPageInner() {
     }
   }, [filter, fetchTaskPage, router]);
 
+  // Hydrate filter state from localStorage on mount, then mark hydrated.
+  // After this, every filter change is persisted.
   useEffect(() => {
+    try {
+      const raw = localStorage.getItem(TASKS_FILTERS_KEY);
+      if (raw) {
+        const stored = JSON.parse(raw);
+        if (typeof stored?.search === "string") setSearch(stored.search);
+        if (typeof stored?.programFilter === "string")
+          setProgramFilter(stored.programFilter);
+        if (typeof stored?.ownerFilter === "string")
+          setOwnerFilter(stored.ownerFilter);
+        if (typeof stored?.filter === "string") setFilter(stored.filter);
+      }
+    } catch {
+      /* corrupted storage — fall through with defaults */
+    }
+    setFiltersHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!filtersHydrated) return;
+    try {
+      localStorage.setItem(
+        TASKS_FILTERS_KEY,
+        JSON.stringify({ search, programFilter, ownerFilter, filter }),
+      );
+    } catch {
+      /* quota or storage disabled — silently ignore */
+    }
+  }, [filtersHydrated, search, programFilter, ownerFilter, filter]);
+
+  useEffect(() => {
+    // Wait for the saved status filter to hydrate before kicking off the
+    // first server fetch — `load` depends on `filter`, so otherwise the
+    // initial load fires with default "All" and immediately re-fires with
+    // the restored value.
+    if (!filtersHydrated) return;
     load();
     // load is intentionally re-created when filter changes, which retriggers this.
-  }, [load]);
+  }, [load, filtersHydrated]);
 
   async function loadMore() {
     if (!nextCursor || loadingMore) return;
@@ -3274,18 +3267,77 @@ function TasksPageInner() {
     setTasks((prev) => prev.filter((t) => t.initiative_id !== initiativeId));
   }
 
-  // Server filters the page by status now (B5). The two approval pills are
-  // applied client-side over the fetched page.
-  const isApprovalPill =
-    filter === "approval_pending" || filter === "reopened";
-  const filtered = isApprovalPill
-    ? tasks.filter((t) => matchesApprovalFilter(t, filter))
-    : tasks;
+  async function handleDeleteInitiative(init: MyInitiative) {
+    if (
+      !confirm(
+        `Delete initiative "${init.name}" and all its tasks? This cannot be undone.`,
+      )
+    )
+      return;
+    try {
+      await apiFetch(`/api/v1/initiatives/${init.id}`, { method: "DELETE" });
+      handleInitiativeDelete(init.id);
+    } catch (err: any) {
+      alert("Failed to delete: " + (err?.message ?? "Unknown error"));
+    }
+  }
 
   // Group tasks by initiative
-  const initiativeMap = Object.fromEntries(
-    initiatives.map((i) => [i.id, i])
+  const initiativeMap = useMemo(
+    () => Object.fromEntries(initiatives.map((i) => [i.id, i])),
+    [initiatives]
   );
+
+  // Unique program list, derived from the initiatives the user can see.
+  // Used to populate the Program filter dropdown.
+  const programs = useMemo(() => {
+    const m = new Map<string, { id: string; name: string; color: string }>();
+    initiatives.forEach((i) => {
+      if (i.programs) m.set(i.programs.id, i.programs);
+    });
+    return Array.from(m.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [initiatives]);
+
+  // Server filters the page by status (B5). The two approval pills are
+  // applied client-side over the fetched page, and so are search/program/owner.
+  const isApprovalPill =
+    filter === "approval_pending" || filter === "reopened";
+  const isAdmin = myRole === "owner" || myRole === "admin";
+  // Members can only filter by themselves — even if state somehow holds a
+  // different ownerFilter (URL param, stale localStorage, etc.), force the
+  // resolved id to the current user so we never list someone else's tasks
+  // from a member's view.
+  const resolvedOwnerId = !isAdmin
+    ? currentUserId
+    : ownerFilter === "__me__"
+    ? currentUserId
+    : ownerFilter;
+  const searchLower = search.trim().toLowerCase();
+
+  const filtered = useMemo(() => {
+    return tasks.filter((t) => {
+      if (isApprovalPill && !matchesApprovalFilter(t, filter)) return false;
+      if (programFilter) {
+        const init = t.initiative_id ? initiativeMap[t.initiative_id] : null;
+        if (init?.programs?.id !== programFilter) return false;
+      }
+      if (resolvedOwnerId) {
+        if (t.primary_stakeholder_id !== resolvedOwnerId) return false;
+      }
+      if (searchLower) {
+        if (!(t.title || "").toLowerCase().includes(searchLower)) return false;
+      }
+      return true;
+    });
+  }, [
+    tasks,
+    isApprovalPill,
+    filter,
+    programFilter,
+    resolvedOwnerId,
+    searchLower,
+    initiativeMap,
+  ]);
 
   // Build groups: one per initiative that has tasks, plus unlinked
   const tasksByInitiative: Record<string, Task[]> = {};
@@ -3302,29 +3354,50 @@ function TasksPageInner() {
     }
   }
 
-  // Collect initiative ids that have tasks, ordered by initiative name
-  const initiativeIdsWithTasks = Object.keys(tasksByInitiative).sort((a, b) => {
-    const nameA = initiativeMap[a]?.name ?? "";
-    const nameB = initiativeMap[b]?.name ?? "";
-    return nameA.localeCompare(nameB);
-  });
+  // Initiatives matching the program/owner filter (regardless of whether
+  // they have tasks). Used so an admin filtering by a primary user can see
+  // initiatives in that user's name that don't have any tasks yet — the
+  // group renders empty with a "No tasks yet" badge instead of being
+  // silently hidden. Status and search filters are intentionally NOT
+  // applied here: those are about finding existing tasks, not surfacing
+  // empty initiatives.
+  const filteredInitiatives = useMemo(() => {
+    return initiatives.filter((i) => {
+      if (programFilter && i.programs?.id !== programFilter) return false;
+      if (resolvedOwnerId && i.primary_stakeholder_id !== resolvedOwnerId)
+        return false;
+      return true;
+    });
+  }, [initiatives, programFilter, resolvedOwnerId]);
+
+  // Display ids = (initiatives with matching tasks) UNION (initiatives
+  // matching program+owner). Empty-but-matching initiatives sort to the
+  // bottom so active work stays on top.
+  const displayInitiativeIds = useMemo(() => {
+    const withTasks = new Set(Object.keys(tasksByInitiative));
+    const ids = new Set<string>(withTasks);
+    for (const i of filteredInitiatives) ids.add(i.id);
+    return Array.from(ids).sort((a, b) => {
+      const aHas = withTasks.has(a);
+      const bHas = withTasks.has(b);
+      if (aHas !== bHas) return aHas ? -1 : 1;
+      const nameA = initiativeMap[a]?.name ?? "";
+      const nameB = initiativeMap[b]?.name ?? "";
+      return nameA.localeCompare(nameB);
+    });
+  }, [tasksByInitiative, filteredInitiatives, initiativeMap]);
+
+  const activeFilterCount =
+    (programFilter ? 1 : 0) +
+    (ownerFilter !== "__me__" && ownerFilter !== "" ? 1 : 0) +
+    (search.trim() ? 1 : 0);
 
   return (
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
-      {/* My Initiatives Section (collapsible) */}
-      <MyInitiativesSection
-        initiatives={initiatives}
-        businessId={businessId}
-        currentUserId={currentUserId}
-        myRole={myRole}
-        onTaskCreated={load}
-        onInitiativeDeleted={handleInitiativeDelete}
-      />
-
-      {/* Tasks Section */}
+      {/* Tasks Section — initiatives now render as group headers inline */}
       <div>
         <div className="flex items-center justify-between mb-4">
-          <h1 className="text-2xl font-bold text-midnight">My Tasks</h1>
+          <h1 className="text-2xl font-bold text-midnight">My Work</h1>
           <button
             onClick={() => setShowCreate(true)}
             className="flex items-center gap-1.5 px-4 py-2 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90"
@@ -3332,6 +3405,73 @@ function TasksPageInner() {
             <Plus className="w-4 h-4" />
             New Task
           </button>
+        </div>
+
+        {/* Filter toolbar: search + program + owner + clear. */}
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <div className="relative flex-1 min-w-[180px]">
+            <Search className="w-3.5 h-3.5 text-steel/60 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search tasks…"
+              className="w-full h-9 pl-9 pr-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red focus:ring-2 focus:ring-taskora-red/10"
+            />
+          </div>
+          <select
+            value={programFilter}
+            onChange={(e) => setProgramFilter(e.target.value)}
+            className="h-9 px-3 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red"
+            title="Filter by program"
+          >
+            <option value="">All programs</option>
+            {programs.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          {isAdmin ? (
+            <select
+              value={ownerFilter}
+              onChange={(e) => setOwnerFilter(e.target.value)}
+              className="h-9 px-3 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red"
+              title="Filter by primary owner"
+            >
+              <option value="__me__">Owner: Me</option>
+              <option value="">Anyone</option>
+              {members.map((m) => (
+                <option key={m.user_id} value={m.user_id}>
+                  {m.name || m.email}
+                </option>
+              ))}
+            </select>
+          ) : (
+            // Members can only filter by themselves — admins/owners get the
+            // full picker above. Static chip makes the lock visible and the
+            // resolvedOwnerId computation forces the current user even if
+            // state somehow holds a different value.
+            <div
+              className="h-9 px-3 border border-pebble rounded-lg text-sm bg-mist/40 flex items-center text-steel/80 cursor-not-allowed select-none"
+              title="Only admins and owners can filter by other people"
+              aria-disabled
+            >
+              Owner: Me
+            </div>
+          )}
+          {activeFilterCount > 0 && (
+            <button
+              onClick={() => {
+                setSearch("");
+                setProgramFilter("");
+                setOwnerFilter("__me__");
+              }}
+              className="h-9 px-3 text-xs font-medium text-steel hover:text-midnight rounded-lg hover:bg-mist transition-colors"
+            >
+              Clear filters
+            </button>
+          )}
         </div>
 
         {/* Status filter tabs */}
@@ -3382,31 +3522,50 @@ function TasksPageInner() {
           </p>
         )}
 
-        {!loading && !error && filtered.length === 0 && (
-          <div className="text-center py-16 bg-white rounded-xl border border-pebble">
-            <p className="text-steel text-sm italic">No tasks here yet.</p>
-          </div>
-        )}
+        {!loading &&
+          !error &&
+          displayInitiativeIds.length === 0 &&
+          unlinkedTasks.length === 0 && (
+            <div className="text-center py-16 bg-white rounded-xl border border-pebble">
+              <p className="text-steel text-sm italic">
+                {activeFilterCount > 0
+                  ? "No tasks or initiatives match your filters."
+                  : "No tasks here yet."}
+              </p>
+            </div>
+          )}
 
         {/* Grouped tasks */}
-        {!loading && !error && filtered.length > 0 && (
+        {!loading &&
+          !error &&
+          (displayInitiativeIds.length > 0 || unlinkedTasks.length > 0) && (
           <div className="space-y-3">
-            {/* Initiative groups */}
-            {initiativeIdsWithTasks.map((initId) => (
-              <InitiativeGroup
-                key={initId}
-                initiative={initiativeMap[initId] ?? null}
-                tasks={tasksByInitiative[initId]}
-                members={members}
-                currentUserId={currentUserId}
-                myRole={myRole}
-                highlighted={highlightInitiativeId === initId}
-                onStatusChange={handleStatusChange}
-                onTaskDeleted={handleTaskDelete}
-                focusTaskId={focusTaskId}
-                focusSubtaskId={focusSubtaskId}
-              />
-            ))}
+            {/* Initiative groups — includes empty initiatives that match
+                the program/owner filter, so e.g. "Owner: Hitesh" still
+                shows his initiatives even if no tasks have been created. */}
+            {displayInitiativeIds.map((initId) => {
+              const init = initiativeMap[initId] ?? null;
+              return (
+                <InitiativeGroup
+                  key={initId}
+                  initiative={init}
+                  tasks={tasksByInitiative[initId] ?? []}
+                  members={members}
+                  currentUserId={currentUserId}
+                  myRole={myRole}
+                  highlighted={highlightInitiativeId === initId}
+                  onStatusChange={handleStatusChange}
+                  onTaskDeleted={handleTaskDelete}
+                  onBreakdown={init ? () => setBreakdownFor(init) : undefined}
+                  onGantt={init ? () => setGanttFor(init) : undefined}
+                  onDelete={
+                    init ? () => handleDeleteInitiative(init) : undefined
+                  }
+                  focusTaskId={focusTaskId}
+                  focusSubtaskId={focusSubtaskId}
+                />
+              );
+            })}
 
             {/* Unlinked tasks group */}
             {unlinkedTasks.length > 0 && (
@@ -3448,6 +3607,27 @@ function TasksPageInner() {
           initiatives={initiatives}
           onClose={() => setShowCreate(false)}
           onCreated={load}
+        />
+      )}
+
+      {/* Per-initiative modals — opened from any group header */}
+      {breakdownFor && (
+        <BreakdownModal
+          initiative={breakdownFor}
+          businessId={businessId}
+          currentUserId={currentUserId}
+          onClose={() => setBreakdownFor(null)}
+          onCreated={() => {
+            load();
+            setBreakdownFor(null);
+          }}
+        />
+      )}
+      {ganttFor && (
+        <GanttModal
+          initiativeId={ganttFor.id}
+          initiativeName={ganttFor.name}
+          onClose={() => setGanttFor(null)}
         />
       )}
     </div>

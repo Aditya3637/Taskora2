@@ -43,8 +43,10 @@ def _seed():
         ],
         "tasks": [
             {
+                # T1 is linked to INIT1: in prod every task has an initiative
+                # (POST /tasks requires it), so the test fixture should match.
                 "id": "T1", "title": "Quarterly audit", "status": "in_progress",
-                "priority": "medium", "due_date": None, "initiative_id": None,
+                "priority": "medium", "due_date": None, "initiative_id": "INIT1",
                 "primary_stakeholder_id": U_OWNER, "approval_state": "none",
                 "closed_at": None, "created_at": "2026-05-01T00:00:00+00:00",
             },
@@ -56,8 +58,14 @@ def _seed():
             },
         ],
         "initiatives": [{"id": "INIT1", "business_id": "BIZ1"}],
+        # In prod every active user is a business_members row; U_OUT is the
+        # only deliberate non-member here (used by the outsider-denied test).
         "business_members": [
             {"business_id": "BIZ1", "user_id": U_ADMIN, "role": "admin"},
+            {"business_id": "BIZ1", "user_id": U_OWNER, "role": "owner"},
+            {"business_id": "BIZ1", "user_id": U_FOL, "role": "member"},
+            {"business_id": "BIZ1", "user_id": U_APP, "role": "member"},
+            {"business_id": "BIZ1", "user_id": U_APP2, "role": "member"},
         ],
         "task_stakeholders": [
             {"task_id": "T1", "user_id": U_OWNER, "role": "primary"},
