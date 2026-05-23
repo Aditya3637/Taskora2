@@ -1,6 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Briefcase,
+  FileSpreadsheet,
+  Download,
+  Upload,
+  Plus,
+  CheckCircle2,
+  AlertCircle,
+  X,
+} from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import SettingsTabs from "@/components/SettingsTabs";
 
@@ -51,6 +61,9 @@ export default function ClientsPage() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
+  // Manual-add form is a less-frequent path than CSV import. Keep it folded
+  // by default so the page reads compact, expand on demand.
+  const [showManual, setShowManual] = useState(false);
 
   const [uploadStatus, setUploadStatus] = useState<"idle" | "parsed" | "error">("idle");
   const [uploadCount, setUploadCount] = useState(0);
@@ -228,106 +241,185 @@ export default function ClientsPage() {
       </div>
       <SettingsTabs />
 
-      {/* Import + manual add — admins/owners only */}
+      {/* Add clients — admins/owners only. CSV is the primary path; manual
+          is a one-off escape hatch tucked behind a click. */}
       {isAdmin && (
-      <div className="bg-white rounded-2xl border border-pebble shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-pebble">
-          <h2 className="font-semibold text-midnight">Add clients</h2>
-          <p className="text-xs text-steel mt-1">
-            Bulk import a CSV or add one at a time.
-          </p>
+      <section className="bg-white rounded-2xl border border-pebble shadow-sm overflow-hidden">
+        {/* Header */}
+        <div className="px-6 py-4 border-b border-pebble flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-taskora-red/10 text-taskora-red flex items-center justify-center flex-shrink-0">
+            <Briefcase className="w-5 h-5" strokeWidth={2} />
+          </div>
+          <div className="min-w-0">
+            <h2 className="font-semibold text-midnight leading-tight">Add clients</h2>
+            <p className="text-xs text-steel mt-0.5">
+              CSV is fastest for 10+ clients. Add one at a time below.
+            </p>
+          </div>
         </div>
-        <div className="px-6 py-5 space-y-4">
-          <div className="border border-pebble rounded-xl p-4 space-y-3">
-            <p className="text-sm font-medium text-midnight">Import from CSV</p>
-            <div className="flex gap-3 flex-wrap items-center">
-              <button
-                type="button"
-                onClick={() => downloadCSV(CLIENTS_CSV, "clients_template.csv")}
-                className="h-9 px-3 text-xs border border-pebble rounded-lg text-steel hover:bg-mist flex items-center gap-1.5"
-              >
-                ↓ Download template
-              </button>
-              <label
-                className={`h-9 px-3 text-xs rounded-lg flex items-center gap-1.5 cursor-pointer transition-colors ${
-                  uploadStatus === "parsed"
-                    ? "bg-green-50 border border-green-200 text-green-700"
-                    : uploadStatus === "error"
-                    ? "bg-red-50 border border-red-200 text-red-600"
-                    : "border border-taskora-red/60 text-taskora-red hover:bg-red-50"
-                }`}
-              >
-                {uploadStatus === "parsed"
-                  ? `✓ ${uploadCount} clients ready`
-                  : uploadStatus === "error"
-                  ? "✕ Parse error"
-                  : "↑ Upload CSV"}
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept=".csv,.txt"
-                  className="hidden"
-                  onChange={handleFile}
-                />
-              </label>
-              {uploadStatus === "parsed" && (
-                <button
-                  onClick={handleImport}
-                  disabled={importing}
-                  className="h-9 px-4 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40"
-                >
-                  {importing ? "Importing…" : "Import"}
-                </button>
-              )}
+
+        <div className="px-6 py-5 space-y-5">
+          {/* ── Primary: CSV import ─────────────────────────────────── */}
+          <div className="relative rounded-xl border border-pebble bg-gradient-to-br from-mist/60 via-white to-white p-5">
+            <span className="absolute top-3 right-3 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-taskora-red/10 text-taskora-red rounded-full">
+              Recommended
+            </span>
+            <div className="flex items-start gap-4">
+              <div className="w-11 h-11 rounded-xl bg-white border border-pebble flex items-center justify-center flex-shrink-0 shadow-sm">
+                <FileSpreadsheet className="w-5 h-5 text-taskora-red" strokeWidth={1.75} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-midnight">Import from CSV</p>
+                <p className="text-xs text-steel mt-0.5">
+                  Download the template, fill it in, and drop it here.
+                </p>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => downloadCSV(CLIENTS_CSV, "clients_template.csv")}
+                    className="h-9 px-3 text-xs font-medium border border-pebble rounded-lg text-steel bg-white hover:bg-mist hover:text-midnight flex items-center gap-1.5 transition-colors"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Template
+                  </button>
+
+                  <label
+                    className={`h-9 px-3.5 text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer transition-colors ${
+                      uploadStatus === "parsed"
+                        ? "bg-green-50 border border-green-200 text-green-700 hover:bg-green-100"
+                        : uploadStatus === "error"
+                        ? "bg-red-50 border border-red-200 text-red-600 hover:bg-red-100"
+                        : "bg-taskora-red text-white hover:opacity-90"
+                    }`}
+                  >
+                    {uploadStatus === "parsed" ? (
+                      <>
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        {uploadCount} ready
+                      </>
+                    ) : uploadStatus === "error" ? (
+                      <>
+                        <AlertCircle className="w-3.5 h-3.5" />
+                        Parse error — try again
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-3.5 h-3.5" />
+                        Upload CSV
+                      </>
+                    )}
+                    <input
+                      ref={fileRef}
+                      type="file"
+                      accept=".csv,.txt"
+                      className="hidden"
+                      onChange={handleFile}
+                    />
+                  </label>
+
+                  {uploadStatus === "parsed" && (
+                    <button
+                      onClick={handleImport}
+                      disabled={importing}
+                      className="h-9 px-4 bg-midnight text-white text-xs font-semibold rounded-lg hover:opacity-90 disabled:opacity-40 transition-opacity"
+                    >
+                      {importing ? "Importing…" : `Import ${uploadCount}`}
+                    </button>
+                  )}
+                </div>
+                {uploadError && (
+                  <p className="mt-2 text-xs text-red-600 flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                    {uploadError}
+                  </p>
+                )}
+              </div>
             </div>
-            {uploadError && <p className="text-xs text-red-600">{uploadError}</p>}
           </div>
 
-          <div className="border border-pebble rounded-xl p-4 space-y-2">
-            <p className="text-sm font-medium text-midnight">Add manually</p>
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                type="text"
-                placeholder="Client Name *"
-                value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red"
-                maxLength={200}
-              />
-              <input
-                type="text"
-                placeholder="Client Code"
-                value={form.code}
-                onChange={(e) => setForm((f) => ({ ...f, code: e.target.value }))}
-                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red"
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <input
-                type="email"
-                placeholder="Contact email"
-                value={form.contact_email}
-                onChange={(e) => setForm((f) => ({ ...f, contact_email: e.target.value }))}
-                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red"
-              />
-              <input
-                type="text"
-                placeholder="Contact phone"
-                value={form.contact_phone}
-                onChange={(e) => setForm((f) => ({ ...f, contact_phone: e.target.value }))}
-                className="h-9 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red"
-              />
-            </div>
-            <button
-              onClick={handleAdd}
-              disabled={!form.name.trim() || adding}
-              className="w-full h-9 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40"
-            >
-              {adding ? "Saving…" : "+ Add Client"}
-            </button>
+          {/* ── Divider ─────────────────────────────────────────────── */}
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-px bg-pebble" />
+            <span className="text-[10px] uppercase tracking-[0.15em] font-semibold text-steel/50">or</span>
+            <div className="flex-1 h-px bg-pebble" />
           </div>
+
+          {/* ── Secondary: manual add — dashed CTA, expands inline ──── */}
+          {!showManual ? (
+            <button
+              type="button"
+              onClick={() => setShowManual(true)}
+              className="w-full flex items-center justify-center gap-2 h-11 border border-dashed border-pebble rounded-xl text-sm font-medium text-steel hover:border-taskora-red hover:text-taskora-red hover:bg-red-50/40 transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              Add a client manually
+            </button>
+          ) : (
+            <div className="rounded-xl border border-pebble bg-mist/30 p-4 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-midnight">New client</p>
+                <button
+                  type="button"
+                  onClick={() => { setShowManual(false); setForm(EMPTY_FORM); }}
+                  className="text-steel hover:text-midnight transition-colors"
+                  aria-label="Cancel"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="text"
+                  placeholder="Client name *"
+                  value={form.name}
+                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                  className="h-10 px-3 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red focus:ring-2 focus:ring-taskora-red/10"
+                  maxLength={200}
+                  autoFocus
+                />
+                <input
+                  type="text"
+                  placeholder="Client code"
+                  value={form.code}
+                  onChange={(e) => setForm((f) => ({ ...f, code: e.target.value }))}
+                  className="h-10 px-3 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red focus:ring-2 focus:ring-taskora-red/10"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  type="email"
+                  placeholder="Contact email"
+                  value={form.contact_email}
+                  onChange={(e) => setForm((f) => ({ ...f, contact_email: e.target.value }))}
+                  className="h-10 px-3 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red focus:ring-2 focus:ring-taskora-red/10"
+                />
+                <input
+                  type="text"
+                  placeholder="Contact phone"
+                  value={form.contact_phone}
+                  onChange={(e) => setForm((f) => ({ ...f, contact_phone: e.target.value }))}
+                  className="h-10 px-3 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red focus:ring-2 focus:ring-taskora-red/10"
+                />
+              </div>
+              <button
+                onClick={handleAdd}
+                disabled={!form.name.trim() || adding}
+                className="w-full h-10 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40 flex items-center justify-center gap-1.5 transition-opacity"
+              >
+                {adding ? (
+                  "Saving…"
+                ) : (
+                  <>
+                    <Plus className="w-4 h-4" />
+                    Add client
+                  </>
+                )}
+              </button>
+            </div>
+          )}
         </div>
-      </div>
+      </section>
       )}
 
       {/* List */}
