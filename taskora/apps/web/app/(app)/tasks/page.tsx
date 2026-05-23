@@ -298,6 +298,13 @@ function SubtaskRow({
   const [expanded, setExpanded] = useState(false);
   const [showAddChild, setShowAddChild] = useState(false);
   const [showComments, setShowComments] = useState(false);
+  // Inline editing state — title edit, assignee picker popover, overflow menu.
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleInput, setTitleInput] = useState(subtask.title);
+  const [assigneeOpen, setAssigneeOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const assigneeRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   // Schema caps nesting at 1 level: only top-level subtasks may have children.
   const isChild = !!subtask.parent_subtask_id;
@@ -311,6 +318,21 @@ function SubtaskRow({
   );
   const isRejected =
     subtask.approval_state === "rejected" || subtask.status === "reopened";
+
+  // Close popovers on outside click — shared pattern with InitiativeGroup.
+  useEffect(() => {
+    if (!assigneeOpen && !menuOpen) return;
+    function onDoc(e: MouseEvent) {
+      if (assigneeOpen && assigneeRef.current && !assigneeRef.current.contains(e.target as Node)) {
+        setAssigneeOpen(false);
+      }
+      if (menuOpen && menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [assigneeOpen, menuOpen]);
 
   async function setStatus(next: string) {
     if (next === subtask.status) return;
@@ -332,7 +354,83 @@ function SubtaskRow({
     setStatus(subtask.status === "done" ? "todo" : "done");
   }
 
+  async function saveTitle() {
+    const next = titleInput.trim();
+    if (!next || next === subtask.title) {
+      setEditingTitle(false);
+      setTitleInput(subtask.title);
+      return;
+    }
+    setUpdating(true);
+    try {
+      await apiFetch(`/api/v1/tasks/${taskId}/subtasks/${subtask.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title: next }),
+      });
+      setEditingTitle(false);
+      onChanged();
+    } catch {
+      // Restore the prior title on failure rather than leaving the input dirty.
+      setTitleInput(subtask.title);
+      setEditingTitle(false);
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  async function changeAssignee(nextUserId: string | null) {
+    if (nextUserId === (subtask.assignee_id ?? null)) {
+      setAssigneeOpen(false);
+      return;
+    }
+    setUpdating(true);
+    try {
+      await apiFetch(`/api/v1/tasks/${taskId}/subtasks/${subtask.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ assignee_id: nextUserId }),
+      });
+      setAssigneeOpen(false);
+      onChanged();
+    } catch {
+      setAssigneeOpen(false);
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!confirm(`Delete subtask "${subtask.title}"? This cannot be undone.`)) return;
+    setUpdating(true);
+    try {
+      await apiFetch(`/api/v1/tasks/${taskId}/subtasks/${subtask.id}`, {
+        method: "DELETE",
+      });
+      setMenuOpen(false);
+      onChanged();
+    } catch (e: any) {
+      alert("Failed to delete: " + (e?.message ?? "Unknown error"));
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  // First letter of up to the first two words — "Aditya Singh" → "AS".
+  function initials(name: string): string {
+    if (!name) return "?";
+    const words = name.trim().split(/\s+/).slice(0, 2);
+    return words.map((w) => w[0]?.toUpperCase() ?? "").join("") || "?";
+  }
+
   const statusCls = STATUS_COLORS[subtask.status] ?? "bg-gray-100 text-gray-600";
+  const allAssignableMembers = useMemo(() => {
+    const me: Member = {
+      user_id: currentUserId,
+      name: "Me",
+      email: "",
+    };
+    const others = members.filter((m) => m.user_id !== currentUserId);
+    return [me, ...others];
+  }, [members, currentUserId]);
 
   return (
     <div>
@@ -379,15 +477,46 @@ function SubtaskRow({
           )}
         </button>
 
-        <span
-          className={`text-xs flex-1 truncate ${
-            subtask.status === "done"
-              ? "line-through text-steel/50"
-              : "text-midnight"
-          }`}
-        >
-          {subtask.title}
-        </span>
+        {/* Title — click to edit. Disabled if the user can't manage. */}
+        {editingTitle ? (
+          <input
+            type="text"
+            value={titleInput}
+            onChange={(e) => setTitleInput(e.target.value)}
+            onBlur={saveTitle}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                saveTitle();
+              } else if (e.key === "Escape") {
+                setTitleInput(subtask.title);
+                setEditingTitle(false);
+              }
+            }}
+            disabled={updating}
+            autoFocus
+            className="text-xs flex-1 min-w-0 px-1.5 py-0.5 border border-pebble rounded bg-white focus:outline-none focus:border-taskora-red focus:ring-1 focus:ring-taskora-red/20"
+            maxLength={500}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              if (!canManage) return;
+              setTitleInput(subtask.title);
+              setEditingTitle(true);
+            }}
+            disabled={!canManage}
+            title={canManage ? "Click to edit" : undefined}
+            className={`text-xs flex-1 min-w-0 text-left truncate px-1 py-0.5 rounded ${
+              subtask.status === "done"
+                ? "line-through text-steel/50"
+                : "text-midnight"
+            } ${canManage ? "hover:bg-mist cursor-text" : "cursor-default"}`}
+          >
+            {subtask.title}
+          </button>
+        )}
 
         {/* Full status select */}
         <select
@@ -403,11 +532,77 @@ function SubtaskRow({
           ))}
         </select>
 
-        {subtask.assignee_name && (
-          <span className="text-[10px] text-steel/60 hidden group-hover:block max-w-[80px] truncate">
-            {subtask.assignee_name}
-          </span>
-        )}
+        {/* Assignee chip — initials avatar; click to reassign. */}
+        <div ref={assigneeRef} className="relative flex-shrink-0">
+          <button
+            type="button"
+            onClick={() => canManage && setAssigneeOpen((v) => !v)}
+            disabled={!canManage || updating}
+            title={
+              subtask.assignee_name
+                ? `Assigned to ${subtask.assignee_name}${canManage ? " — click to change" : ""}`
+                : canManage
+                ? "Unassigned — click to assign"
+                : "Unassigned"
+            }
+            className={`w-6 h-6 rounded-full text-[10px] font-bold flex items-center justify-center transition-colors ${
+              subtask.assignee_id
+                ? subtask.assignee_id === currentUserId
+                  ? "bg-taskora-red text-white"
+                  : "bg-ocean/15 text-ocean"
+                : "bg-mist text-steel/60 border border-dashed border-pebble"
+            } ${canManage ? "cursor-pointer hover:opacity-90" : "cursor-default"} ${
+              updating ? "opacity-50" : ""
+            }`}
+            aria-label="Assignee"
+          >
+            {subtask.assignee_name
+              ? initials(subtask.assignee_name)
+              : subtask.assignee_id === currentUserId
+              ? "Me"
+              : "?"}
+          </button>
+          {assigneeOpen && (
+            <div className="absolute right-0 top-full mt-1 w-52 bg-white border border-pebble rounded-lg shadow-lg z-30 py-1 text-sm max-h-64 overflow-y-auto">
+              {allAssignableMembers.map((m) => {
+                const isSelected = m.user_id === subtask.assignee_id;
+                return (
+                  <button
+                    key={m.user_id}
+                    type="button"
+                    onClick={() => changeAssignee(m.user_id)}
+                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-mist ${
+                      isSelected ? "bg-mist/70 font-semibold" : ""
+                    }`}
+                  >
+                    <span
+                      className={`w-5 h-5 rounded-full text-[9px] font-bold flex items-center justify-center flex-shrink-0 ${
+                        m.user_id === currentUserId
+                          ? "bg-taskora-red text-white"
+                          : "bg-ocean/15 text-ocean"
+                      }`}
+                    >
+                      {m.user_id === currentUserId ? "Me" : initials(m.name)}
+                    </span>
+                    <span className="truncate text-midnight">{m.name || m.email}</span>
+                  </button>
+                );
+              })}
+              {subtask.assignee_id && (
+                <button
+                  type="button"
+                  onClick={() => changeAssignee(null)}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-mist text-steel border-t border-pebble/60 mt-1 pt-2"
+                >
+                  <span className="w-5 h-5 rounded-full bg-mist border border-dashed border-pebble text-[9px] flex items-center justify-center flex-shrink-0">
+                    ✕
+                  </span>
+                  Unassign
+                </button>
+              )}
+            </div>
+          )}
+        </div>
 
         <ClosedStamp at={subtask.closed_at} />
 
@@ -448,6 +643,39 @@ function SubtaskRow({
           >
             <Plus className="w-3 h-3" />
           </button>
+        )}
+
+        {/* Overflow menu — Delete and (future) other actions. Hidden until
+            hover/focus so the row stays clean by default. */}
+        {canManage && (
+          <div ref={menuRef} className="relative flex-shrink-0">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen((v) => !v);
+              }}
+              disabled={updating}
+              title="More actions"
+              aria-label="More actions"
+              aria-expanded={menuOpen}
+              className="opacity-0 group-hover:opacity-100 focus:opacity-100 w-5 h-5 rounded text-steel/50 hover:bg-mist hover:text-midnight flex items-center justify-center transition-opacity"
+            >
+              <MoreHorizontal className="w-3.5 h-3.5" />
+            </button>
+            {menuOpen && (
+              <div className="absolute right-0 top-full mt-1 w-36 bg-white border border-pebble rounded-lg shadow-lg z-30 py-1 text-sm">
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-red-600 hover:bg-red-50"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Delete subtask
+                </button>
+              </div>
+            )}
+          </div>
         )}
       </div>
 
@@ -1630,6 +1858,8 @@ function TaskCard({
   const [loadingSubtasks, setLoadingSubtasks] = useState(false);
   const [showAddSubtask, setShowAddSubtask] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [cardMenuOpen, setCardMenuOpen] = useState(false);
+  const cardMenuRef = useRef<HTMLDivElement>(null);
   const [editDueDate, setEditDueDate] = useState(task.due_date ?? "");
   const [savingDate, setSavingDate] = useState(false);
   const [dateError, setDateError] = useState("");
@@ -1672,6 +1902,19 @@ function TaskCard({
   );
   const taskRejected =
     task.status === "reopened" || taskApproval === "rejected";
+
+  // Close the card overflow menu on outside click — same pattern as
+  // InitiativeGroup / SubtaskRow.
+  useEffect(() => {
+    if (!cardMenuOpen) return;
+    function onDoc(e: MouseEvent) {
+      if (cardMenuRef.current && !cardMenuRef.current.contains(e.target as Node)) {
+        setCardMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [cardMenuOpen]);
 
   async function refreshTaskWatchers() {
     try {
@@ -1913,16 +2156,6 @@ function TaskCard({
                 onClick={() => setShowComments(true)}
               />
             </div>
-            {canDelete && (
-              <button
-                onClick={handleDelete}
-                disabled={deleting}
-                className="text-xs px-2 py-1 rounded border border-red-200 text-red-400 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50 font-medium"
-                title="Delete task"
-              >
-                {deleting ? "…" : "Delete"}
-              </button>
-            )}
             <button
               onClick={toggleExpand}
               className="flex items-center gap-1 text-xs text-steel hover:text-midnight"
@@ -1943,6 +2176,43 @@ function TaskCard({
 
             {/* Turnaround time — right-most, only once closed */}
             <TatBadge createdAt={task.created_at} closedAt={task.closed_at} />
+
+            {/* Overflow menu — keeps Delete out of the always-visible
+                bar where it was both noisy (red) and easy to mis-click. */}
+            {canDelete && (
+              <div ref={cardMenuRef} className="relative">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCardMenuOpen((v) => !v);
+                  }}
+                  disabled={deleting}
+                  title="More actions"
+                  aria-label="More actions"
+                  aria-expanded={cardMenuOpen}
+                  className="w-7 h-7 rounded text-steel/60 hover:bg-mist hover:text-midnight flex items-center justify-center transition-colors disabled:opacity-50"
+                >
+                  <MoreHorizontal className="w-4 h-4" />
+                </button>
+                {cardMenuOpen && (
+                  <div className="absolute right-0 top-full mt-1 w-40 bg-white border border-pebble rounded-lg shadow-lg z-30 py-1 text-sm">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        setCardMenuOpen(false);
+                        handleDelete(e);
+                      }}
+                      disabled={deleting}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-red-600 hover:bg-red-50 disabled:opacity-50"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      {deleting ? "Deleting…" : "Delete task"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1950,30 +2220,11 @@ function TaskCard({
       {expanded && (
         <div className="border-t border-pebble/50 px-4 pb-3 pt-2 bg-mist/10">
 
-          {/* ── Task meta: due date + secondary stakeholders ── */}
-          <div className="flex items-center gap-3 pb-2 mb-2 border-b border-pebble/30 flex-wrap text-xs">
-            <label className="flex items-center gap-1.5 flex-shrink-0">
-              <span className="text-steel font-medium">Due date:</span>
-              <input
-                type="date"
-                value={editDueDate}
-                onChange={handleDueDateChange}
-                disabled={savingDate}
-                className="border border-pebble rounded px-1.5 py-0.5 text-midnight focus:outline-none focus:border-ocean disabled:opacity-50"
-              />
-              {dateChangeCount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowDateLog(true)}
-                  title="Due date changed — view history"
-                  className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-medium hover:bg-amber-200"
-                >
-                  ↻{dateChangeCount}
-                </button>
-              )}
-              <ClosedStamp at={task.closed_at} />
-            </label>
+          {/* Due date used to live here too; removed because it's already
+              inline-editable in the always-visible header row above. */}
 
+          {/* ── Task meta: secondary stakeholders ── */}
+          <div className="flex items-center gap-3 pb-2 mb-2 border-b border-pebble/30 flex-wrap text-xs">
             <div className="flex items-center gap-1.5 flex-wrap flex-1 min-w-0">
               <span className="text-steel font-medium flex-shrink-0">Team:</span>
               {stakeholders.filter((s) => s.role !== "primary").map((s) => (

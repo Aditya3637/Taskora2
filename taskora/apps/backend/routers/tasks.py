@@ -1539,6 +1539,35 @@ def update_subtask(
     return result.data[0] if result.data else {}
 
 
+@router.delete("/{task_id}/subtasks/{subtask_id}", status_code=204)
+def delete_subtask(
+    task_id: str,
+    subtask_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Delete a subtask. Cascade-deletes any nested sub-subtasks (parent_subtask_id
+    children) to avoid orphans, since the schema allows one level of nesting.
+
+    Write-gated the same way as PATCH — caller must be task primary/stakeholder
+    or a workspace owner/admin. Followers/approvers cannot delete.
+    """
+    _assert_task_write(sb, task_id, user["id"])
+    existing = (
+        sb.table("subtasks")
+        .select("id")
+        .eq("id", subtask_id)
+        .eq("task_id", task_id)
+        .execute()
+        .data
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Subtask not found")
+    # Cascade: drop child sub-subtasks first so we don't leave orphans.
+    sb.table("subtasks").delete().eq("parent_subtask_id", subtask_id).execute()
+    sb.table("subtasks").delete().eq("id", subtask_id).eq("task_id", task_id).execute()
+
+
 @router.get("/follow-up-today")
 def follow_up_today(
     user: dict = Depends(get_current_user),
