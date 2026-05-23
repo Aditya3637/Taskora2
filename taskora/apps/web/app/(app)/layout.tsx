@@ -7,22 +7,6 @@ import PersonaSwitcher from "@/components/testing/PersonaSwitcher";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
-async function apiFetch(path: string, opts?: RequestInit) {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) return null;
-  const res = await fetch(`${API}${path}`, {
-    ...opts,
-    headers: {
-      Authorization: `Bearer ${session.access_token}`,
-      "Content-Type": "application/json",
-      ...(opts?.headers ?? {}),
-    },
-  });
-  if (!res.ok) throw new Error(`${res.status}`);
-  if (res.status === 204) return {};
-  return res.json();
-}
-
 const coreNavItems = [
   { href: "/daily-brief", label: "Daily Brief", icon: "☀️" },
   { href: "/people",      label: "People",      icon: "👥" },
@@ -34,104 +18,46 @@ const coreNavItems = [
 
 const SIDEBAR_KEY = "taskora_sidebar_expanded";
 
-// ── Invite Modal ──────────────────────────────────────────────────────────────
-function InviteModal({ onClose }: { onClose: () => void }) {
-  const [email, setEmail] = useState("");
-  const [role, setRole] = useState("member");
-  const [loading, setLoading] = useState(false);
-  const [inviteLink, setInviteLink] = useState("");
-  const [error, setError] = useState("");
+// "Business Excellence" → "BE". First letter of up to the first two words.
+function workspaceInitials(name: string): string {
+  if (!name) return "?";
+  const words = name.trim().split(/\s+/).slice(0, 2);
+  const initials = words.map((w) => w[0]?.toUpperCase() ?? "").join("");
+  return initials || "?";
+}
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!email.trim()) return;
-    setLoading(true); setError(""); setInviteLink("");
-    try {
-      const businessId = typeof window !== "undefined"
-        ? localStorage.getItem("business_id") ?? ""
-        : "";
-      const result = await apiFetch("/api/v1/invites/", {
-        method: "POST",
-        body: JSON.stringify({ invited_email: email.trim(), role, business_id: businessId }),
-      });
-      setInviteLink(result?.invite_url ?? "");
-    } catch {
-      setError("Failed to create invite. Please try again.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-midnight">Invite Team Member</h2>
-          <button onClick={onClose} className="text-steel hover:text-midnight text-xl leading-none">&times;</button>
-        </div>
-        {!inviteLink ? (
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="text-xs text-steel font-medium mb-1 block">Email address</label>
-              <input type="email" value={email} onChange={e => setEmail(e.target.value)}
-                placeholder="colleague@company.com" required
-                className="w-full h-10 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-ocean" />
-            </div>
-            <div>
-              <label className="text-xs text-steel font-medium mb-1 block">Role</label>
-              <select value={role} onChange={e => setRole(e.target.value)}
-                className="w-full h-10 px-3 border border-pebble rounded-lg text-sm focus:outline-none">
-                <option value="member">Member</option>
-                <option value="admin">Admin</option>
-              </select>
-            </div>
-            {error && <p className="text-red-600 text-xs">{error}</p>}
-            <div className="flex gap-3 pt-1">
-              <button type="button" onClick={onClose}
-                className="flex-1 h-10 border border-pebble rounded-lg text-sm text-steel hover:bg-mist">Cancel</button>
-              <button type="submit" disabled={loading}
-                className="flex-1 h-10 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-50">
-                {loading ? "Sending…" : "Send Invite"}
-              </button>
-            </div>
-          </form>
-        ) : (
-          <div className="space-y-4">
-            <p className="text-sm text-steel">Invite created! Share this link with your teammate:</p>
-            <div className="flex items-center gap-2 bg-mist rounded-lg p-3 border border-pebble">
-              <span className="text-xs font-mono text-midnight flex-1 break-all">{inviteLink}</span>
-              <button onClick={() => navigator.clipboard.writeText(inviteLink)}
-                className="text-xs px-3 py-1.5 bg-white border border-pebble rounded-lg text-steel hover:text-midnight flex-shrink-0">Copy</button>
-            </div>
-            <button onClick={onClose}
-              className="w-full h-10 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90">Done</button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
+// Hard cap on the visible workspace-name label in the sidebar identity row.
+// CSS `truncate` already handles overflow, but a char cap gives a predictable
+// max length regardless of sidebar width and avoids a single very long word
+// (which CSS truncates aggressively) eating the whole row.
+const SIDEBAR_NAME_MAX = 24;
+function clampLabel(s: string, max = SIDEBAR_NAME_MAX): string {
+  return s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s;
 }
 
 // ── Sidebar inner content (shared between desktop & mobile drawer) ─────────────
 function SidebarContent({
   expanded,
   onToggle,
-  onInvite,
 }: {
   expanded: boolean;
   onToggle: () => void;
-  onInvite: () => void;
 }) {
   const pathname = usePathname();
   const router = useRouter();
   const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
-  const [isWorkspaceAdmin, setIsWorkspaceAdmin] = useState(false);
   const [trialDaysLeft, setTrialDaysLeft] = useState<number | null>(null);
+  const [workspaceName, setWorkspaceName] = useState<string>("");
+  const [userName, setUserName] = useState<string>("");
 
   useEffect(() => {
     async function loadRoles() {
       const { data: { user } } = await supabase.auth.getUser();
       if (user?.user_metadata?.is_admin) setIsPlatformAdmin(true);
+      // Display name: prefer user_metadata.name (set during signup), else email.
+      const meta = (user?.user_metadata ?? {}) as Record<string, unknown>;
+      const metaName = typeof meta.name === "string" ? meta.name : "";
+      setUserName(metaName || user?.email || "");
 
       // Ensure business_id is in localStorage — auto-resolve if missing
       try {
@@ -158,25 +84,16 @@ function SidebarContent({
               businessId = biz.id;
               localStorage.setItem("business_id", businessId);
             }
+            if (biz?.name) setWorkspaceName(biz.name);
           }
         } catch {
           /* network blip — fall back to the cached id below */
         }
 
         if (businessId) {
-          const [roleRes, subRes] = await Promise.all([
-            fetch(`${API}/api/v1/businesses/${businessId}/my-role`, {
-              headers: { Authorization: `Bearer ${session.access_token}` },
-            }),
-            fetch(`${API}/api/v1/billing/status/${businessId}`, {
-              headers: { Authorization: `Bearer ${session.access_token}` },
-            }),
-          ]);
-
-          if (roleRes.ok) {
-            const data = await roleRes.json();
-            if (data.role === "owner" || data.role === "admin") setIsWorkspaceAdmin(true);
-          }
+          const subRes = await fetch(`${API}/api/v1/billing/status/${businessId}`, {
+            headers: { Authorization: `Bearer ${session.access_token}` },
+          });
 
           if (subRes.ok) {
             const sub = await subRes.json();
@@ -208,9 +125,6 @@ function SidebarContent({
 
   const navItems = [
     ...coreNavItems,
-    ...(isWorkspaceAdmin
-      ? [{ href: "/workspace/settings", label: "Workspace", icon: "⚙️" }]
-      : []),
     ...(isPlatformAdmin
       ? [{ href: "/admin", label: "Admin", icon: "🛡️" }]
       : []),
@@ -284,20 +198,44 @@ function SidebarContent({
 
       {/* Footer actions */}
       <div className="border-t border-white/10 py-2 flex-shrink-0 space-y-0.5">
-        <button
-          onClick={onInvite}
-          title={!expanded ? "Invite Team" : undefined}
-          className={`flex items-center gap-3 mx-2 rounded-lg py-2.5 text-white/60 hover:text-white hover:bg-white/10 transition-colors ${
-            expanded ? "px-3 w-[calc(100%-1rem)]" : "justify-center w-[calc(100%-1rem)]"
+        {/* Identity row — workspace initials + user/workspace names. Anchors
+            the sidebar to "what am I logged into right now." Becomes the
+            structural seed for the multi-workspace switcher later. */}
+        <div
+          title={!expanded ? `${workspaceName || "Workspace"} · ${userName || ""}` : undefined}
+          className={`flex items-center gap-2.5 mx-2 mb-1 rounded-lg ${
+            expanded ? "px-2 py-2" : "py-2 justify-center"
           }`}
         >
-          <span className="text-[1.1rem] leading-none flex-shrink-0">👥</span>
-          {expanded && <span className="text-sm font-medium">Invite Team</span>}
-        </button>
+          <div
+            className="w-8 h-8 rounded-lg bg-gradient-to-br from-taskora-red to-taskora-red/70 text-white flex items-center justify-center text-xs font-bold flex-shrink-0 shadow-sm"
+            aria-label={workspaceName ? `${workspaceName} workspace` : "Workspace"}
+          >
+            {workspaceInitials(workspaceName)}
+          </div>
+          {expanded && (
+            <div className="min-w-0 flex-1">
+              <p
+                className="text-sm font-semibold text-white truncate leading-tight"
+                title={workspaceName || undefined}
+              >
+                {clampLabel(workspaceName || "Workspace")}
+              </p>
+              {userName && (
+                <p
+                  className="text-[11px] text-white/60 truncate leading-tight mt-0.5"
+                  title={userName}
+                >
+                  {clampLabel(userName)}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
 
         <Link
           href="/workspace/settings"
-          title={!expanded ? "Settings" : undefined}
+          title={!expanded ? "Workspace" : undefined}
           className={`flex items-center gap-3 mx-2 rounded-lg py-2.5 text-white/60 hover:text-white hover:bg-white/10 transition-colors ${
             expanded ? "px-3" : "justify-center"
           }`}
@@ -305,7 +243,7 @@ function SidebarContent({
           <svg className="w-[1.1rem] h-[1.1rem] flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
             <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
           </svg>
-          {expanded && <span className="text-sm font-medium">Settings</span>}
+          {expanded && <span className="text-sm font-medium">Workspace</span>}
         </Link>
 
         <button
@@ -331,7 +269,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [expanded, setExpanded] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [showInvite, setShowInvite] = useState(false);
   const [mounted, setMounted] = useState(false);
   // null = checking, true = onboarded (render app), false = redirecting out
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
@@ -424,7 +361,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <SidebarContent
           expanded={expanded}
           onToggle={() => setExpanded(v => !v)}
-          onInvite={() => setShowInvite(true)}
         />
       </aside>
 
@@ -459,7 +395,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <SidebarContent
           expanded={true}
           onToggle={() => setMobileOpen(false)}
-          onInvite={() => { setShowInvite(true); setMobileOpen(false); }}
         />
       </aside>
 
@@ -470,7 +405,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
     </div>
     <PersonaSwitcher />
-    {showInvite && <InviteModal onClose={() => setShowInvite(false)} />}
     </>
   );
 }

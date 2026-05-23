@@ -32,6 +32,24 @@ def create_invite(
     """Create a workspace invite and return the invite URL."""
     require_member(sb, body.business_id, user["id"])
 
+    # Members can invite, but only as 'member'. Promoting requires admin/owner
+    # so a member can't escalate by inviting a confederate as admin.
+    if body.role == "admin":
+        caller = (
+            sb.table("business_members")
+            .select("role")
+            .eq("business_id", body.business_id)
+            .eq("user_id", user["id"])
+            .execute()
+            .data
+        )
+        caller_role = caller[0]["role"] if caller else None
+        if caller_role not in ("owner", "admin"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only admins can invite admins",
+            )
+
     token = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc).isoformat()
 
