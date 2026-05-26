@@ -141,6 +141,18 @@ function Step1({
       localStorage.setItem("business_id", bizId);
       onDone({ businessName: form.businessName, businessType: form.businessType, workspaceMode: form.workspaceMode, businessId: bizId });
     } catch (err: any) {
+      // Backend caps each user at one owned workspace. If the user reached
+      // this screen via the catch-block path (network blip on the prior
+      // /onboarding/status check) but actually owns a workspace already,
+      // the create POST returns 409. Route them to their existing
+      // workspace instead of leaving them stuck on a raw error.
+      if (err?.status === 409) {
+        if (typeof window !== "undefined") {
+          localStorage.removeItem("business_id");
+          window.location.href = "/daily-brief";
+          return;
+        }
+      }
       setError(err.message ?? "Something went wrong");
     } finally {
       setSubmitting(false);
@@ -262,12 +274,20 @@ function Step2Personal({
   }
 
   async function handleContinue() {
-    await apiFetch("/api/v1/onboarding/step2/done", { method: "POST", body: JSON.stringify({ skipped: false }) }).catch(() => {});
+    const bid = typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
+    await apiFetch("/api/v1/onboarding/step2/done", {
+      method: "POST",
+      body: JSON.stringify({ skipped: false, business_id: bid }),
+    }).catch(() => {});
     onContinue();
   }
 
   async function handleSkip() {
-    await apiFetch("/api/v1/onboarding/step2/done", { method: "POST", body: JSON.stringify({ skipped: true }) }).catch(() => {});
+    const bid = typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
+    await apiFetch("/api/v1/onboarding/step2/done", {
+      method: "POST",
+      body: JSON.stringify({ skipped: true, business_id: bid }),
+    }).catch(() => {});
     onSkip();
   }
 
@@ -356,12 +376,20 @@ function Step2Org({
   }
 
   async function handleContinue() {
-    await apiFetch("/api/v1/onboarding/step2/done", { method: "POST", body: JSON.stringify({ skipped: false }) }).catch(() => {});
+    const bid = typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
+    await apiFetch("/api/v1/onboarding/step2/done", {
+      method: "POST",
+      body: JSON.stringify({ skipped: false, business_id: bid }),
+    }).catch(() => {});
     onContinue();
   }
 
   async function handleSkip() {
-    await apiFetch("/api/v1/onboarding/step2/done", { method: "POST", body: JSON.stringify({ skipped: true }) }).catch(() => {});
+    const bid = typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
+    await apiFetch("/api/v1/onboarding/step2/done", {
+      method: "POST",
+      body: JSON.stringify({ skipped: true, business_id: bid }),
+    }).catch(() => {});
     onSkip();
   }
 
@@ -561,7 +589,10 @@ function Step3({
         msgs.push(`${res.inserted} client${res.inserted !== 1 ? "s" : ""} imported`);
       }
 
-      await apiFetch("/api/v1/onboarding/step3/done", { method: "POST", body: JSON.stringify({ skipped: false }) });
+      await apiFetch("/api/v1/onboarding/step3/done", {
+        method: "POST",
+        body: JSON.stringify({ skipped: false, business_id: businessId }),
+      });
       setImportMsg(msgs.length > 0 ? msgs.join(" · ") + "." : "Done!");
       setTimeout(onFinish, 800);
     } catch (err: any) {
@@ -572,7 +603,10 @@ function Step3({
   }
 
   async function handleSkip() {
-    await apiFetch("/api/v1/onboarding/step3/done", { method: "POST", body: JSON.stringify({ skipped: true }) }).catch(() => {});
+    await apiFetch("/api/v1/onboarding/step3/done", {
+      method: "POST",
+      body: JSON.stringify({ skipped: true, business_id: businessId }),
+    }).catch(() => {});
     onSkip();
   }
 
@@ -584,7 +618,7 @@ function Step3({
     try {
       await apiFetch("/api/v1/onboarding/step3/done", {
         method: "POST",
-        body: JSON.stringify({ skipped: false }),
+        body: JSON.stringify({ skipped: false, business_id: businessId }),
       });
       onFinish();
     } catch (err: any) {
