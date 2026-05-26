@@ -239,7 +239,13 @@ def _user_business_id(sb: Client, user_id: str, prefer: Optional[str] = None) ->
 
     For multi-workspace members the caller can pass a preferred business_id
     (the FE forwards the localStorage pin) — when the user is a member
-    there, that wins. Otherwise fall back to the first membership row.
+    there, that wins. When the caller is a member of exactly one workspace
+    and didn't pass `prefer`, we fall back to that single membership.
+
+    Strict mode: if the caller is a member of more than one workspace and
+    no valid `prefer` was supplied, raise 400. Silently picking the first
+    membership row used to write/read against the wrong workspace for
+    multi-workspace users (Hitesh report).
     """
     if prefer:
         rows = (
@@ -253,15 +259,21 @@ def _user_business_id(sb: Client, user_id: str, prefer: Optional[str] = None) ->
         )
         if rows:
             return rows[0]["business_id"]
-    rows = (
+    memberships = (
         sb.table("business_members")
         .select("business_id")
         .eq("user_id", user_id)
-        .limit(1)
         .execute()
         .data
     )
-    return rows[0]["business_id"] if rows else None
+    if not memberships:
+        return None
+    if len(memberships) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="business_id is required — caller is a member of multiple workspaces.",
+        )
+    return memberships[0]["business_id"]
 
 
 def _visible_task_ids_for(sb: Client, business_id: str, user_id: str) -> Optional[set[str]]:
