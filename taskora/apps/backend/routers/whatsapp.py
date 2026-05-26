@@ -91,11 +91,19 @@ def _tasks_for_user(sb: Client, uid: str, business_id: str) -> dict:
     if not all_ids:
         return {"overdue": [], "pending": [], "blocked": [], "due_week": []}
 
-    # Fetch tasks with initiative join
+    # Workspace scope. Without this, a user in multiple workspaces would
+    # get tasks from every workspace pooled into a single WhatsApp digest.
+    biz_init_ids = [
+        r["id"]
+        for r in sb.table("initiatives").select("id").eq("business_id", business_id).execute().data
+    ]
+    if not biz_init_ids:
+        return {"overdue": [], "pending": [], "blocked": [], "due_week": []}
     tasks = (
         sb.table("tasks")
-        .select("id, title, status, due_date, blocker_reason, initiatives(name, title)")
+        .select("id, title, status, due_date, blocker_reason, initiative_id, initiatives(name, title)")
         .in_("id", all_ids)
+        .in_("initiative_id", biz_init_ids)
         .execute()
         .data
     )
