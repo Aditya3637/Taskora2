@@ -234,9 +234,25 @@ def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
     return tasks
 
 
-def _user_business_id(sb: Client, user_id: str) -> Optional[str]:
-    """Resolve the user's workspace. Single-workspace per user today, so the
-    first row wins."""
+def _user_business_id(sb: Client, user_id: str, prefer: Optional[str] = None) -> Optional[str]:
+    """Resolve the caller's active workspace.
+
+    For multi-workspace members the caller can pass a preferred business_id
+    (the FE forwards the localStorage pin) — when the user is a member
+    there, that wins. Otherwise fall back to the first membership row.
+    """
+    if prefer:
+        rows = (
+            sb.table("business_members")
+            .select("business_id")
+            .eq("user_id", user_id)
+            .eq("business_id", prefer)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if rows:
+            return rows[0]["business_id"]
     rows = (
         sb.table("business_members")
         .select("business_id")
@@ -272,11 +288,35 @@ def _visible_task_ids_for(sb: Client, business_id: str, user_id: str) -> Optiona
         lambda: sb.table("task_stakeholders").select("task_id").eq("user_id", user_id).execute().data,
         lambda: sb.table("item_watchers").select("task_id").eq("user_id", user_id).execute().data,
     )
-    direct_ids: set[str] = (
+    direct_candidates: set[str] = (
         {r["id"] for r in primary_rows}
         | {r["task_id"] for r in stake_rows if r.get("task_id")}
         | {r["task_id"] for r in watcher_rows if r.get("task_id")}
     )
+    # Multi-workspace fix: the primary/stakeholder/watcher lookups above
+    # are workspace-agnostic. Without this filter a user in two workspaces
+    # would see direct-involvement tasks from BOTH pooled into whichever
+    # workspace they're currently viewing (the Hitesh report).
+    direct_ids: set[str] = set()
+    if direct_candidates:
+        biz_init_ids = [
+            r["id"]
+            for r in sb.table("initiatives")
+            .select("id")
+            .eq("business_id", business_id)
+            .execute()
+            .data
+        ]
+        if biz_init_ids:
+            scoped = (
+                sb.table("tasks")
+                .select("id")
+                .in_("id", list(direct_candidates))
+                .in_("initiative_id", biz_init_ids)
+                .execute()
+                .data
+            )
+            direct_ids = {r["id"] for r in scoped}
 
     init_task_ids: set[str] = set()
     if vis_init_ids:
@@ -296,6 +336,7 @@ def _visible_task_ids_for(sb: Client, business_id: str, user_id: str) -> Optiona
 def get_my_tasks(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
+    business_id: Optional[str] = Query(default=None, description="Scope to a specific workspace. When omitted, picks the user's first membership row (legacy)."),
 ):
     """Flat list of tasks the caller can see (used by mobile).
     For the paginated web flow, see /my/page.
@@ -303,9 +344,11 @@ def get_my_tasks(
     Visibility follows the initiative cascade: primary/follower anywhere in
     an initiative tree → full read of that initiative's tasks. See
     `visible_initiative_ids` in deps.py.
+
+    FE passes business_id so the list reflects the active workspace only.
     """
     uid = user["id"]
-    business_id = _user_business_id(sb, uid)
+    business_id = _user_business_id(sb, uid, prefer=business_id)
     if not business_id:
         return []
 
@@ -352,6 +395,7 @@ def get_my_tasks_page(
         description="ISO timestamp of the last task's created_at — return tasks older than this",
     ),
     status: Optional[str] = Query(default=None, description="Filter by exact task status"),
+    business_id: Optional[str] = Query(default=None, description="Scope to a specific workspace."),
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
@@ -365,7 +409,7 @@ def get_my_tasks_page(
     Returns: {"items": [...tasks], "next_cursor": "<iso>" | None}
     """
     uid = user["id"]
-    business_id = _user_business_id(sb, uid)
+    business_id = _user_business_id(sb, uid, prefer=business_id)
     if not business_id:
         return {"items": [], "next_cursor": None}
 
