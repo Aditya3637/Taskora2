@@ -272,6 +272,20 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [mounted, setMounted] = useState(false);
   // null = checking, true = onboarded (render app), false = redirecting out
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
+  // Gate child rendering until localStorage.business_id is reconciled.
+  // React fires child useEffects bottom-up on mount, so without this gate
+  // a multi-workspace user with empty localStorage (post-logout, fresh
+  // signup, workspace deletion) hits /tasks/my and /daily-brief BEFORE
+  // the sidebar's reconciliation populates business_id — backend then
+  // either 400s (tasks, strict mode) or pools data across workspaces
+  // (daily brief). Sidebar already calls /businesses/my for its own
+  // workspace-name display; this just enforces ordering so children see
+  // a populated pin before they fetch. Fast path: if localStorage
+  // already has business_id, ready=true on first render and no extra
+  // fetch happens.
+  const [workspaceReady, setWorkspaceReady] = useState<boolean>(
+    typeof window !== "undefined" && !!localStorage.getItem("business_id"),
+  );
 
   // Force any user whose onboarding isn't complete back into the wizard.
   // No app page is usable half-set-up. Only block on a definitive signal
@@ -331,6 +345,44 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     setMounted(true);
   }, []);
 
+  // Workspace reconciliation. Only runs when localStorage was empty at
+  // mount (the empty-pin race case). Calls /businesses/my to populate
+  // the pin so child pages can fetch with business_id from their first
+  // useEffect.
+  useEffect(() => {
+    if (workspaceReady) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          if (!cancelled) setWorkspaceReady(true);
+          return;
+        }
+        try {
+          const res = await fetch(`${API}/api/v1/businesses/my`, {
+            headers: { Authorization: `Bearer ${session.access_token}` },
+          });
+          if (cancelled) return;
+          if (res.ok) {
+            const biz = await res.json();
+            if (biz?.id && typeof window !== "undefined") {
+              localStorage.setItem("business_id", biz.id);
+            }
+          }
+        } catch {
+          // Network blip — let children through; better usable page
+          // than spin forever.
+        }
+      } catch {
+        /* unknown error — fall through */
+      } finally {
+        if (!cancelled) setWorkspaceReady(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [workspaceReady]);
+
   useEffect(() => {
     if (mounted) localStorage.setItem(SIDEBAR_KEY, String(expanded));
   }, [expanded, mounted]);
@@ -342,7 +394,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
   // Don't render the app shell until we know onboarding is complete —
   // prevents a half-set-up flash before the redirect to /onboarding.
-  if (onboarded !== true) {
+  // Also wait for workspace reconciliation so child pages don't fetch
+  // business-scoped data before localStorage.business_id is populated.
+  if (onboarded !== true || !workspaceReady) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-mist">
         <div className="w-7 h-7 border-2 border-pebble border-t-taskora-red rounded-full animate-spin" />
