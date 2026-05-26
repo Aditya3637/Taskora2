@@ -40,6 +40,7 @@ def get_daily_brief(
     program: Optional[str] = None,
     owner: Optional[str] = None,
     group_by: str = Query("none", pattern="^(none|initiative|program)$"),
+    business_id: Optional[str] = Query(default=None, description="Scope to a single workspace. When omitted, defaults to every workspace the user is a member of (legacy behaviour)."),
 ):
     """One screen to decide from.
 
@@ -57,6 +58,11 @@ def get_daily_brief(
 
     biz_rows = sb.table("business_members").select("business_id").eq("user_id", uid).execute().data
     biz_ids = [r["business_id"] for r in biz_rows]
+    # Active-workspace scoping. If the FE passes a business_id the user is
+    # a member of, restrict the brief to that workspace. Without this a
+    # multi-workspace user sees data from every workspace pooled together.
+    if business_id and business_id in biz_ids:
+        biz_ids = [business_id]
 
     # initiative_id -> {business_id, program_id, name} for filtering + grouping
     init_meta: dict = {}
@@ -89,6 +95,28 @@ def get_daily_brief(
             for r in sb.table("task_stakeholders").select("task_id").eq("user_id", uid).execute().data
         ]
         all_task_ids = list(set(primary_ids + secondary_ids))
+        # Multi-workspace fix: primary_stakeholder_id / task_stakeholders
+        # rows are workspace-agnostic, so without this filter scope=mine
+        # would pool tasks across every workspace the caller belongs to —
+        # exactly what surfaced as "Workspace 1's data showing in
+        # Workspace 2". Drop any task whose initiative isn't in the active
+        # workspace's init_meta. Tasks with NULL initiative_id are also
+        # dropped (no workspace anchor — they'd otherwise appear in every
+        # workspace).
+        if all_task_ids:
+            scoped_init_ids = set(init_meta.keys())
+            owned_tasks_meta = (
+                sb.table("tasks")
+                .select("id, initiative_id")
+                .in_("id", all_task_ids)
+                .execute()
+                .data
+            )
+            all_task_ids = [
+                t["id"]
+                for t in owned_tasks_meta
+                if t.get("initiative_id") in scoped_init_ids
+            ]
 
     # Single full fetch for everything in scope, then partition + enrich once
     # (was 5 separate full-table fetches).
