@@ -11,6 +11,7 @@ import { apiFetch } from "@/lib/api";
 import {
   evaluateCell,
   evaluateExpression,
+  hasInlineMath,
   looksLikePureMath,
   type CellMap,
 } from "../_lib/formula";
@@ -807,7 +808,19 @@ function EditableBlockBody({
             rows={1}
             className={`w-full bg-transparent resize-none focus:outline-none overflow-hidden placeholder:text-steel/40 ${textareaClass(block)}`}
           />
-        ) : (
+        ) : null}
+
+        {/* Live math preview — shown only while editing, only when the
+            block actually contains evaluatable math. Lets the user see
+            their result immediately instead of having to blur first. */}
+        {editing && !readOnly && hasInlineMath(block.text) && (
+          <div className="mt-1 px-2 py-1 text-xs text-steel/80 bg-amber-50/60 border border-amber-200/60 rounded">
+            <span className="text-[10px] uppercase tracking-wide text-steel/60 mr-2">Preview</span>
+            {renderTextWithMath(block.text, workspacePeople, pageByTitle, onOpenPage)}
+          </div>
+        )}
+
+        {!editing && (
           <div
             onClick={() => !readOnly && setEditing(true)}
             className={`whitespace-pre-wrap cursor-text ${textareaClass(block)} ${

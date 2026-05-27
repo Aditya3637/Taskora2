@@ -1,28 +1,34 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import Goals from "./_components/Goals";
 import Checklist from "./_components/Checklist";
+import NotebookNav from "./_components/NotebookNav";
 import PageEditor from "./_components/PageEditor";
 import ShareModal from "./_components/ShareModal";
 import type { Page, Person, Project } from "./_lib/types";
 
 type FocusMode = null | "goals" | "checklist" | "notebook";
 const RATIO_KEY = "taskora_notebook_goals_pct";
+const NAV_OPEN_KEY = "taskora_notebook_nav_open";
 
 /**
- * Notebook surface (book-spread).
+ * Notebook surface — three coordinated zones in a book-spread:
  *
- * Layout:
- *   ┌─────────────────────┬─────────────────────────────────┐
- *   │ GOALS               │ Project ▾  Page ▾   [Share][+]  │
- *   ├─────────────────────┤                                 │
- *   │ CHECKLIST           │  Chat-style page editor         │
- *   │ [My][Assigned•N]    │  text · tables · math · @assign │
- *   └─────────────────────┴─────────────────────────────────┘
+ *   ┌────────────┬─────────────────────────────────────────────────┐
+ *   │ GOALS      │ NotebookNav (collapsible)   |  Editor           │
+ *   ├────────────┤  Search                     |  Title            │
+ *   │ CHECKLIST  │  + New page                 |  Block list       │
+ *   │ [My][Asn•N]│  Recent / Projects / Shared │  (text, table,    │
+ *   │            │                             │   slash, math…)   │
+ *   └────────────┴─────────────────────────────────────────────────┘
  *
- * Single notebook per user, cross-workspace (the data model is
- * user-scoped — workspace switch does NOT switch notebooks).
+ * Goals + Checklist live on the left page; the right page hosts the
+ * collapsible navigation sidebar plus the actual editor.
+ *
+ * One notebook per user, cross-workspace. Workspace switch does not
+ * switch notebooks — that's enforced by the backend (no business_id
+ * column on any notebook_* table).
  */
 export default function NotebookPage() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -32,9 +38,18 @@ export default function NotebookPage() {
   const [people, setPeople] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
   const [shareOpen, setShareOpen] = useState(false);
-  const [activeProjectId, setActiveProjectId] = useState<string | "orphan" | "shared" | null>(null);
 
-  // Bootstrap: projects, pages, workspace people picker.
+  // Sidebar open/closed — persisted per user via localStorage.
+  const [navOpen, setNavOpen] = useState<boolean>(true);
+  useEffect(() => {
+    const v = typeof window !== "undefined" && localStorage.getItem(NAV_OPEN_KEY);
+    if (v === "false") setNavOpen(false);
+  }, []);
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem(NAV_OPEN_KEY, String(navOpen));
+  }, [navOpen]);
+
+  // Bootstrap: projects, pages, workspace people.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -48,10 +63,7 @@ export default function NotebookPage() {
         setProjects(projs);
         setPages(pagesAll);
         setPeople((picker?.in_workspace ?? []) as Person[]);
-        if (pagesAll[0]) {
-          setActivePageId(pagesAll[0].id);
-          setActiveProjectId(pagesAll[0].project_id ?? "orphan");
-        }
+        if (pagesAll[0]) setActivePageId(pagesAll[0].id);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -65,27 +77,18 @@ export default function NotebookPage() {
   }, []);
   useEffect(() => { void loadShared(); }, [loadShared]);
 
-  // The page-list filtered to the active project (or shared bucket).
-  const visiblePages = useMemo(() => {
-    if (activeProjectId === "shared") return sharedPages;
-    if (activeProjectId === "orphan") return pages.filter((p) => !p.project_id);
-    if (activeProjectId) return pages.filter((p) => p.project_id === activeProjectId);
-    return pages;
-  }, [pages, sharedPages, activeProjectId]);
-
-  const activePage = useMemo<Page | null>(() => {
-    if (!activePageId) return null;
-    return (
-      pages.find((p) => p.id === activePageId) ||
-      sharedPages.find((p) => p.id === activePageId) ||
-      null
-    );
-  }, [pages, sharedPages, activePageId]);
+  // Resolve the active page from either owned or shared lists.
+  const activePage =
+    activePageId == null
+      ? null
+      : pages.find((p) => p.id === activePageId)
+        ?? sharedPages.find((p) => p.id === activePageId)
+        ?? null;
 
   const isOwnerOfActive = activePage ? !activePage.follower_role : false;
   const canEditActive = isOwnerOfActive || activePage?.follower_role === "editor";
 
-  // ── Actions ────────────────────────────────────────────────────────
+  // ── Actions ─────────────────────────────────────────────────────
   const createProject = async () => {
     const name = window.prompt("Project name?");
     if (!name || !name.trim()) return;
@@ -94,21 +97,15 @@ export default function NotebookPage() {
       body: JSON.stringify({ name: name.trim() }),
     })) as Project;
     setProjects((prev) => [...prev, proj]);
-    setActiveProjectId(proj.id);
   };
 
-  const createPage = async () => {
-    const project_id =
-      activeProjectId === "orphan" || activeProjectId === "shared" || !activeProjectId
-        ? null
-        : activeProjectId;
+  const createPage = async (projectId: string | null) => {
     const page = (await apiFetch("/api/v1/notebook/pages", {
       method: "POST",
-      body: JSON.stringify({ project_id, title: "Untitled", body: [] }),
+      body: JSON.stringify({ project_id: projectId, title: "Untitled", body: [] }),
     })) as Page;
     setPages((prev) => [page, ...prev]);
     setActivePageId(page.id);
-    setActiveProjectId(project_id ?? "orphan");
   };
 
   const updatePageInList = (next: Page) => {
@@ -135,9 +132,6 @@ export default function NotebookPage() {
     if (typeof window !== "undefined") localStorage.setItem(RATIO_KEY, String(goalsPct));
   }, [goalsPct]);
 
-  // Drag handle between Goals and Checklist. Tracks the container's
-  // bounding box on mousedown, then translates the cursor's Y position
-  // into a percentage of total height.
   const leftPanelRef = useRef<HTMLDivElement | null>(null);
   const dragging = useRef<boolean>(false);
   const startDrag = (e: React.MouseEvent | React.TouchEvent) => {
@@ -165,12 +159,9 @@ export default function NotebookPage() {
     window.addEventListener("touchend", stop);
   };
 
-  // Layout class names switch on focus mode. When a panel is focused, the
-  // grid collapses to a single column and the other panels hide.
   const showLeft = focus === null || focus === "goals" || focus === "checklist";
   const showRight = focus === null || focus === "notebook";
-  const gridCols =
-    focus === null ? "md:grid-cols-[3fr_7fr]" : "md:grid-cols-1";
+  const gridCols = focus === null ? "md:grid-cols-[3fr_7fr]" : "md:grid-cols-1";
 
   return (
     <div className="min-h-screen p-4 md:p-6 bg-mist">
@@ -178,7 +169,6 @@ export default function NotebookPage() {
         {/* ── LEFT PAGE: Goals + Checklist ──────────────────────────── */}
         {showLeft && (
           <div ref={leftPanelRef} className="bg-white rounded-2xl shadow-sm border border-pebble p-4 flex flex-col overflow-hidden">
-            {/* Goals */}
             {(focus === null || focus === "goals") && (
               <PanelFrame
                 focused={focus === "goals"}
@@ -190,7 +180,6 @@ export default function NotebookPage() {
               </PanelFrame>
             )}
 
-            {/* Resize handle — only when both panels are visible */}
             {focus === null && (
               <div
                 onMouseDown={startDrag}
@@ -203,7 +192,6 @@ export default function NotebookPage() {
               </div>
             )}
 
-            {/* Checklist */}
             {(focus === null || focus === "checklist") && (
               <PanelFrame
                 focused={focus === "checklist"}
@@ -216,105 +204,91 @@ export default function NotebookPage() {
           </div>
         )}
 
-        {/* ── RIGHT PAGE: AI Notebook ──────────────────────────────── */}
+        {/* ── RIGHT PAGE: Nav + AI Notebook ─────────────────────────── */}
         {showRight && (
-        <div className="bg-white rounded-2xl shadow-sm border border-pebble p-4 flex flex-col overflow-hidden relative">
-          <button
-            onClick={() => setFocus(focus === "notebook" ? null : "notebook")}
-            className="absolute top-2 right-3 z-10 text-steel/60 hover:text-midnight text-sm leading-none"
-            title={focus === "notebook" ? "Exit focus" : "Focus this panel"}
-            aria-label={focus === "notebook" ? "Exit focus" : "Focus this panel"}
-          >
-            {focus === "notebook" ? "×" : "⛶"}
-          </button>
-          {/* Top bar: project + page selectors + actions */}
-          <div className="flex items-center gap-2 mb-3 text-sm">
-            <select
-              value={activeProjectId ?? ""}
-              onChange={(e) => {
-                const v = e.target.value || null;
-                setActiveProjectId(v as typeof activeProjectId);
-                // Auto-pick first page in this project.
-                const list =
-                  v === "shared" ? sharedPages
-                  : v === "orphan" ? pages.filter((p) => !p.project_id)
-                  : pages.filter((p) => p.project_id === v);
-                setActivePageId(list[0]?.id ?? null);
-              }}
-              className="border border-pebble rounded px-2 py-1.5 text-sm bg-white"
-            >
-              <option value="">All projects</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-              <option value="orphan">— Unfiled —</option>
-              <option value="shared">Shared with me</option>
-            </select>
-            <button
-              onClick={createProject}
-              className="text-xs px-2 py-1 border border-pebble rounded text-steel hover:text-midnight hover:bg-pebble/40"
-              title="Create project"
-            >
-              + Project
-            </button>
-
-            <span className="text-steel/30">·</span>
-
-            <select
-              value={activePageId ?? ""}
-              onChange={(e) => setActivePageId(e.target.value || null)}
-              className="border border-pebble rounded px-2 py-1.5 text-sm bg-white flex-1 min-w-0"
-            >
-              <option value="">— pick a page —</option>
-              {visiblePages.map((p) => (
-                <option key={p.id} value={p.id}>{p.title}</option>
-              ))}
-            </select>
-            {activeProjectId !== "shared" && (
+          <div className="bg-white rounded-2xl shadow-sm border border-pebble flex flex-row overflow-hidden relative">
+            {/* Sidebar */}
+            {navOpen ? (
+              <NotebookNav
+                projects={projects}
+                pages={pages}
+                sharedPages={sharedPages}
+                activePageId={activePageId}
+                onSelectPage={setActivePageId}
+                onCreatePage={createPage}
+                onCreateProject={createProject}
+                onCollapse={() => setNavOpen(false)}
+              />
+            ) : (
               <button
-                onClick={createPage}
-                className="text-xs px-2 py-1 border border-pebble rounded text-steel hover:text-midnight hover:bg-pebble/40"
+                onClick={() => setNavOpen(true)}
+                className="w-8 flex-shrink-0 bg-pebble/30 border-r border-pebble flex items-start justify-center pt-3 text-steel/60 hover:text-midnight"
+                title="Open notebook sidebar"
+                aria-label="Open notebook sidebar"
               >
-                + Page
+                ▶
               </button>
             )}
-            {activePage && isOwnerOfActive && (
-              <>
-                <button
-                  onClick={() => setShareOpen(true)}
-                  className="text-xs px-2 py-1 bg-midnight text-white rounded hover:opacity-90"
-                >
-                  Share
-                </button>
-                <button
-                  onClick={archivePage}
-                  className="text-xs px-2 py-1 border border-pebble text-steel rounded hover:text-red-500 hover:border-red-300"
-                  title="Delete page"
-                >
-                  ⌫
-                </button>
-              </>
-            )}
-          </div>
 
-          {/* Editor or empty state */}
-          <div className="flex-1 overflow-hidden">
-            {loading ? (
-              <div className="text-sm text-steel/60">Loading notebook…</div>
-            ) : !activePage ? (
-              <EmptyState onCreate={createPage} hasProjects={projects.length > 0} />
-            ) : (
-              <PageEditor
-                page={activePage}
-                workspacePeople={people}
-                readOnly={!canEditActive}
-                onSaved={updatePageInList}
-                allPages={[...pages, ...sharedPages]}
-                onOpenPage={(id) => setActivePageId(id)}
-              />
-            )}
+            {/* Editor area */}
+            <div className="flex-1 flex flex-col overflow-hidden p-4 min-w-0">
+              {/* Top action bar */}
+              <div className="flex items-center justify-between gap-2 mb-2 flex-shrink-0">
+                <div className="text-xs text-steel/60 truncate">
+                  {activePage
+                    ? activePage.follower_role
+                      ? `Shared with you · ${activePage.follower_role}`
+                      : "Your page"
+                    : ""}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {activePage && isOwnerOfActive && (
+                    <>
+                      <button
+                        onClick={() => setShareOpen(true)}
+                        className="text-xs px-2 py-1 bg-midnight text-white rounded hover:opacity-90"
+                      >
+                        Share
+                      </button>
+                      <button
+                        onClick={archivePage}
+                        className="text-xs px-2 py-1 border border-pebble text-steel rounded hover:text-red-500 hover:border-red-300"
+                        title="Delete page"
+                      >
+                        ⌫
+                      </button>
+                    </>
+                  )}
+                  <button
+                    onClick={() => setFocus(focus === "notebook" ? null : "notebook")}
+                    className="text-steel/60 hover:text-midnight text-sm leading-none px-1.5"
+                    title={focus === "notebook" ? "Exit focus" : "Focus this panel"}
+                    aria-label={focus === "notebook" ? "Exit focus" : "Focus this panel"}
+                  >
+                    {focus === "notebook" ? "×" : "⛶"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Editor or empty state */}
+              <div className="flex-1 overflow-hidden">
+                {loading ? (
+                  <div className="text-sm text-steel/60">Loading notebook…</div>
+                ) : !activePage ? (
+                  <EmptyState onCreate={() => createPage(null)} hasPages={pages.length > 0} />
+                ) : (
+                  <PageEditor
+                    page={activePage}
+                    workspacePeople={people}
+                    readOnly={!canEditActive}
+                    onSaved={updatePageInList}
+                    allPages={[...pages, ...sharedPages]}
+                    onOpenPage={(id) => setActivePageId(id)}
+                  />
+                )}
+              </div>
+            </div>
           </div>
-        </div>
         )}
       </div>
 
@@ -325,11 +299,6 @@ export default function NotebookPage() {
   );
 }
 
-/**
- * Wraps Goals and Checklist with a small focus toggle in the top-right.
- * When `focused` is true, the wrapper takes the full panel height and the
- * button flips to a close affordance.
- */
 function PanelFrame({
   focused,
   onToggleFocus,
@@ -361,20 +330,23 @@ function PanelFrame({
   );
 }
 
-function EmptyState({ onCreate, hasProjects }: { onCreate: () => void; hasProjects: boolean }) {
+function EmptyState({ onCreate, hasPages }: { onCreate: () => void; hasPages: boolean }) {
   return (
     <div className="h-full flex flex-col items-center justify-center text-center px-6">
       <div className="text-4xl mb-3">📓</div>
-      <h3 className="text-base font-bold text-midnight mb-1">Your notebook</h3>
+      <h3 className="text-base font-bold text-midnight mb-1">
+        {hasPages ? "Pick a page from the sidebar" : "Your notebook"}
+      </h3>
       <p className="text-sm text-steel max-w-xs mb-4">
-        A private thinking space. Drop a thought, add a table with formulas, or
-        @mention a teammate to assign them a task — they&apos;ll see it in their inbox.
+        {hasPages
+          ? "Or start something new below."
+          : "A private thinking space. Drop a thought, add a table with formulas, or @mention a teammate to assign them a task — they’ll see it in their inbox."}
       </p>
       <button
         onClick={onCreate}
         className="text-sm px-3 py-1.5 bg-taskora-red text-white rounded hover:opacity-90"
       >
-        {hasProjects ? "+ New page" : "+ Start your first page"}
+        {hasPages ? "+ New page" : "+ Start your first page"}
       </button>
     </div>
   );

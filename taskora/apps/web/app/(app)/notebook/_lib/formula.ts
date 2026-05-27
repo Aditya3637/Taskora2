@@ -106,6 +106,17 @@ export function looksLikePureMath(line: string): boolean {
   return /[+\-*/%]/.test(line);
 }
 
+// Roughly true when the text contains *something* the renderer will
+// evaluate — used to gate the live-preview affordance in edit mode.
+export function hasInlineMath(text: string): boolean {
+  for (const line of text.split("\n")) {
+    if (looksLikePureMath(line)) return true;
+    // =<number-or-paren> opens an inline expression.
+    if (/=[\d(]/.test(line)) return true;
+  }
+  return false;
+}
+
 // ── Internal types + lexer/parser ─────────────────────────────────────
 
 type Ctx = { cells: CellMap | undefined; visiting: Set<string> };
@@ -127,7 +138,9 @@ function tokenize(src: string): Token[] {
   let i = 0;
   while (i < src.length) {
     const c = src[i];
-    if (c === " " || c === "\t") { i++; continue; }
+    // Skip ALL whitespace (was only ' ' and '\t' — broke multi-line cells
+    // and any expression that contained \n / \r / form-feed).
+    if (/\s/.test(c)) { i++; continue; }
     if ((c >= "0" && c <= "9") || c === ".") {
       let j = i + 1;
       while (j < src.length && /[\d.]/.test(src[j])) j++;
