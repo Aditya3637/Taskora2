@@ -139,6 +139,18 @@ export default function PageEditor({
     });
   };
 
+  // Insert a fresh empty text block immediately after the given index —
+  // used by Cmd/Shift+Enter to "split" out of an existing block into a
+  // new one without losing focus flow.
+  const insertTextBlockAfter = (idx: number) => {
+    setBlocks((prev) => {
+      const next = [...prev];
+      next.splice(idx + 1, 0, { id: newBlockId(), type: "text", text: "" });
+      scheduleSave(title, next);
+      return next;
+    });
+  };
+
   const addTable = () => {
     setBlocks((prev) => {
       const empty: TableBlock = {
@@ -272,6 +284,7 @@ export default function PageEditor({
               status={sentStatuses[b.id]}
               onChange={(text) => updateBlock(idx, { text })}
               onDelete={() => deleteBlock(idx)}
+              onSplit={() => insertTextBlockAfter(idx)}
               workspacePeople={workspacePeople}
             />
           ) : (
@@ -317,6 +330,7 @@ function TextBlockView({
   status,
   onChange,
   onDelete,
+  onSplit,
   workspacePeople,
 }: {
   block: { id: string; type: "text"; text: string };
@@ -324,27 +338,58 @@ function TextBlockView({
   status?: string;
   onChange: (text: string) => void;
   onDelete: () => void;
+  onSplit: () => void;
   workspacePeople: Person[];
 }) {
-  const [editing, setEditing] = useState(false);
+  // Empty blocks start in edit mode so the user can just type — they
+  // shouldn't have to click first. After typing once, clicking outside
+  // commits to the rendered (math-aware) view.
+  const [editing, setEditing] = useState(block.text.length === 0);
+  const taRef = useRef<HTMLTextAreaElement | null>(null);
   const rendered = useMemo(
     () => renderTextWithMath(block.text, workspacePeople),
     [block.text, workspacePeople],
   );
 
+  // Auto-resize the textarea on every keystroke so newlines are visible.
+  // Without this, the default `rows` attribute is a one-shot hint and
+  // `\n` characters go into the value but the visible height stays at
+  // 1 row — looks like Enter is broken.
+  const fitHeight = () => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  };
+  useEffect(() => { if (editing) fitHeight(); }, [editing, block.text]);
+
   return (
     <div className="group bg-pebble/40 rounded-lg px-3 py-2 relative">
       {editing && !readOnly ? (
         <textarea
+          ref={taRef}
           autoFocus
           value={block.text}
-          onChange={(e) => onChange(e.target.value)}
-          onBlur={() => setEditing(false)}
+          onChange={(e) => { onChange(e.target.value); fitHeight(); }}
+          onBlur={() => { if (block.text.length > 0) setEditing(false); }}
           onKeyDown={(e) => {
-            if (e.key === "Escape") setEditing(false);
+            if (e.key === "Escape") {
+              setEditing(false);
+              return;
+            }
+            // Shift+Enter or Cmd/Ctrl+Enter — finish this block and
+            // open a fresh empty block immediately below.
+            if (e.key === "Enter" && (e.shiftKey || e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              setEditing(false);
+              onSplit();
+            }
+            // Plain Enter falls through → default newline insertion
+            // (visible because fitHeight runs on the next onChange).
           }}
-          rows={Math.max(1, block.text.split("\n").length)}
-          className="w-full bg-transparent text-sm text-midnight resize-none focus:outline-none"
+          rows={1}
+          placeholder="Type here. Enter for a new line · Shift+Enter for a new block"
+          className="w-full bg-transparent text-sm text-midnight resize-none focus:outline-none placeholder:text-steel/40 overflow-hidden"
         />
       ) : (
         <div

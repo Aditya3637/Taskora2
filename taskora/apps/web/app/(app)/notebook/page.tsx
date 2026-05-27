@@ -1,11 +1,14 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import Goals from "./_components/Goals";
 import Checklist from "./_components/Checklist";
 import PageEditor from "./_components/PageEditor";
 import ShareModal from "./_components/ShareModal";
 import type { Page, Person, Project } from "./_lib/types";
+
+type FocusMode = null | "goals" | "checklist" | "notebook";
+const RATIO_KEY = "taskora_notebook_goals_pct";
 
 /**
  * Notebook surface (book-spread).
@@ -120,21 +123,110 @@ export default function NotebookPage() {
     setActivePageId(null);
   };
 
+  // Focus mode + adjustable Goals/Checklist split.
+  const [focus, setFocus] = useState<FocusMode>(null);
+  const [goalsPct, setGoalsPct] = useState<number>(40);
+  useEffect(() => {
+    const stored = typeof window !== "undefined" && localStorage.getItem(RATIO_KEY);
+    const n = stored ? Number(stored) : NaN;
+    if (Number.isFinite(n) && n >= 20 && n <= 80) setGoalsPct(n);
+  }, []);
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem(RATIO_KEY, String(goalsPct));
+  }, [goalsPct]);
+
+  // Drag handle between Goals and Checklist. Tracks the container's
+  // bounding box on mousedown, then translates the cursor's Y position
+  // into a percentage of total height.
+  const leftPanelRef = useRef<HTMLDivElement | null>(null);
+  const dragging = useRef<boolean>(false);
+  const startDrag = (e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    const move = (clientY: number) => {
+      if (!dragging.current || !leftPanelRef.current) return;
+      const box = leftPanelRef.current.getBoundingClientRect();
+      const offsetTop = clientY - box.top;
+      const pct = Math.round((offsetTop / box.height) * 100);
+      setGoalsPct(Math.max(20, Math.min(80, pct)));
+    };
+    const onMouseMove = (ev: MouseEvent) => move(ev.clientY);
+    const onTouchMove = (ev: TouchEvent) => move(ev.touches[0]?.clientY ?? 0);
+    const stop = () => {
+      dragging.current = false;
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", stop);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", stop);
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", stop);
+    window.addEventListener("touchmove", onTouchMove);
+    window.addEventListener("touchend", stop);
+  };
+
+  // Layout class names switch on focus mode. When a panel is focused, the
+  // grid collapses to a single column and the other panels hide.
+  const showLeft = focus === null || focus === "goals" || focus === "checklist";
+  const showRight = focus === null || focus === "notebook";
+  const gridCols =
+    focus === null ? "md:grid-cols-[3fr_7fr]" : "md:grid-cols-1";
+
   return (
     <div className="min-h-screen p-4 md:p-6 bg-mist">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-[1600px] mx-auto h-[calc(100vh-2rem)]">
-        {/* ── LEFT PAGE: Goals + Checklist ─────────────────────────── */}
-        <div className="bg-white rounded-2xl shadow-sm border border-pebble p-4 flex flex-col gap-4 overflow-hidden">
-          <div className="flex-shrink-0">
-            <Goals />
+      <div className={`grid grid-cols-1 ${gridCols} gap-4 max-w-[1600px] mx-auto h-[calc(100vh-2rem)]`}>
+        {/* ── LEFT PAGE: Goals + Checklist ──────────────────────────── */}
+        {showLeft && (
+          <div ref={leftPanelRef} className="bg-white rounded-2xl shadow-sm border border-pebble p-4 flex flex-col overflow-hidden">
+            {/* Goals */}
+            {(focus === null || focus === "goals") && (
+              <PanelFrame
+                focused={focus === "goals"}
+                onToggleFocus={() => setFocus(focus === "goals" ? null : "goals")}
+                style={focus === null ? { height: `${goalsPct}%` } : undefined}
+                className={focus === "goals" ? "flex-1" : ""}
+              >
+                <Goals />
+              </PanelFrame>
+            )}
+
+            {/* Resize handle — only when both panels are visible */}
+            {focus === null && (
+              <div
+                onMouseDown={startDrag}
+                onTouchStart={startDrag}
+                className="h-2 -my-1 cursor-row-resize flex items-center justify-center group flex-shrink-0"
+                aria-label="Resize between Goals and Checklist"
+                role="separator"
+              >
+                <div className="w-8 h-0.5 bg-pebble group-hover:bg-taskora-red/60 rounded transition-colors" />
+              </div>
+            )}
+
+            {/* Checklist */}
+            {(focus === null || focus === "checklist") && (
+              <PanelFrame
+                focused={focus === "checklist"}
+                onToggleFocus={() => setFocus(focus === "checklist" ? null : "checklist")}
+                className="flex-1 min-h-0 border-t border-pebble pt-3"
+              >
+                <Checklist />
+              </PanelFrame>
+            )}
           </div>
-          <div className="border-t border-pebble pt-4 flex-1 overflow-hidden">
-            <Checklist />
-          </div>
-        </div>
+        )}
 
         {/* ── RIGHT PAGE: AI Notebook ──────────────────────────────── */}
-        <div className="bg-white rounded-2xl shadow-sm border border-pebble p-4 flex flex-col overflow-hidden">
+        {showRight && (
+        <div className="bg-white rounded-2xl shadow-sm border border-pebble p-4 flex flex-col overflow-hidden relative">
+          <button
+            onClick={() => setFocus(focus === "notebook" ? null : "notebook")}
+            className="absolute top-2 right-3 z-10 text-steel/60 hover:text-midnight text-sm leading-none"
+            title={focus === "notebook" ? "Exit focus" : "Focus this panel"}
+            aria-label={focus === "notebook" ? "Exit focus" : "Focus this panel"}
+          >
+            {focus === "notebook" ? "×" : "⛶"}
+          </button>
           {/* Top bar: project + page selectors + actions */}
           <div className="flex items-center gap-2 mb-3 text-sm">
             <select
@@ -221,11 +313,48 @@ export default function NotebookPage() {
             )}
           </div>
         </div>
+        )}
       </div>
 
       {shareOpen && activePage && (
         <ShareModal pageId={activePage.id} onClose={() => setShareOpen(false)} />
       )}
+    </div>
+  );
+}
+
+/**
+ * Wraps Goals and Checklist with a small focus toggle in the top-right.
+ * When `focused` is true, the wrapper takes the full panel height and the
+ * button flips to a close affordance.
+ */
+function PanelFrame({
+  focused,
+  onToggleFocus,
+  className = "",
+  style,
+  children,
+}: {
+  focused: boolean;
+  onToggleFocus: () => void;
+  className?: string;
+  style?: React.CSSProperties;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className={`relative ${focused ? "flex-1" : ""} ${className} overflow-hidden`}
+      style={style}
+    >
+      <button
+        onClick={onToggleFocus}
+        className="absolute top-0 right-0 z-10 text-steel/60 hover:text-midnight text-sm leading-none p-1"
+        title={focused ? "Exit focus" : "Focus this panel"}
+        aria-label={focused ? "Exit focus" : "Focus this panel"}
+      >
+        {focused ? "×" : "⛶"}
+      </button>
+      <div className="h-full overflow-hidden pr-5">{children}</div>
     </div>
   );
 }
