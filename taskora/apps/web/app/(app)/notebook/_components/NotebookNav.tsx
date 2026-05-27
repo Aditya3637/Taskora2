@@ -323,7 +323,7 @@ function PageItem({
           : "text-midnight hover:bg-white"
       }`}
     >
-      <span className="w-4 text-center text-sm flex-shrink-0">
+      <span aria-hidden="true" className="w-4 text-center text-sm flex-shrink-0">
         {page.icon || (active ? "📄" : <span className="text-steel/40">·</span>)}
       </span>
       <span className="truncate flex-1">{page.title || "Untitled"}</span>

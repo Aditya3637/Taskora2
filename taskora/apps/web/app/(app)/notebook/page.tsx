@@ -208,27 +208,27 @@ export default function NotebookPage() {
             <div className="bg-white rounded-2xl shadow-sm border border-pebble flex flex-col items-center py-3 gap-3">
               <button
                 onClick={() => setLeftMinimized(false)}
-                className="w-9 h-9 flex items-center justify-center rounded text-lg hover:bg-pebble/60"
+                className="w-9 h-9 flex items-center justify-center rounded text-lg hover:bg-pebble/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40"
                 title="Expand Goals + Checklist"
                 aria-label="Expand Goals + Checklist"
               >
-                ↔
+                <span aria-hidden="true">↔</span>
               </button>
               <button
                 onClick={() => { setLeftMinimized(false); setFocus("goals"); }}
-                className="w-9 h-9 flex items-center justify-center rounded text-lg hover:bg-pebble/60"
+                className="w-9 h-9 flex items-center justify-center rounded text-lg hover:bg-pebble/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40"
                 title="Open Goals"
                 aria-label="Open Goals"
               >
-                🎯
+                <span aria-hidden="true">🎯</span>
               </button>
               <button
                 onClick={() => { setLeftMinimized(false); setFocus("checklist"); }}
-                className="w-9 h-9 flex items-center justify-center rounded text-lg hover:bg-pebble/60"
+                className="w-9 h-9 flex items-center justify-center rounded text-lg hover:bg-pebble/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40"
                 title="Open Checklist"
                 aria-label="Open Checklist"
               >
-                ☑
+                <span aria-hidden="true">☑</span>
               </button>
             </div>
           ) : (
@@ -236,11 +236,11 @@ export default function NotebookPage() {
               {focus === null && (
                 <button
                   onClick={() => setLeftMinimized(true)}
-                  className="absolute top-2 right-2 z-20 text-steel/60 hover:text-midnight text-sm leading-none p-1"
+                  className="absolute top-2 right-2 z-20 text-steel/60 hover:text-midnight text-sm leading-none p-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40"
                   title="Minimize Goals + Checklist"
                   aria-label="Minimize Goals + Checklist"
                 >
-                  ⇤
+                  <span aria-hidden="true">⇤</span>
                 </button>
               )}
 
@@ -419,9 +419,9 @@ function PanelFrame({
 function EmptyState({ onCreate, hasPages }: { onCreate: () => void; hasPages: boolean }) {
   return (
     <div className="h-full flex flex-col items-center justify-center text-center px-6">
-      <div className="text-4xl mb-3">📓</div>
+      <div aria-hidden="true" className="text-4xl mb-3">📓</div>
       <h3 className="text-base font-bold text-midnight mb-1">
-        {hasPages ? "Pick a page from the sidebar" : "Your notebook"}
+        {hasPages ? "Pick a Page from the Sidebar" : "Your Notebook"}
       </h3>
       <p className="text-sm text-steel max-w-xs mb-4">
         {hasPages
@@ -430,9 +430,9 @@ function EmptyState({ onCreate, hasPages }: { onCreate: () => void; hasPages: bo
       </p>
       <button
         onClick={onCreate}
-        className="text-sm px-3 py-1.5 bg-taskora-red text-white rounded hover:opacity-90"
+        className="text-sm px-3 py-1.5 bg-taskora-red text-white rounded hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40"
       >
-        {hasPages ? "+ New page" : "+ Start your first page"}
+        {hasPages ? "+ New Page" : "+ Start Your First Page"}
       </button>
     </div>
   );

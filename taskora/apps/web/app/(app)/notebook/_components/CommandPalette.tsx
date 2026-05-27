@@ -59,15 +59,21 @@ export default function CommandPalette({
     >
       <div
         onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Quick switcher"
         className="bg-white border border-pebble rounded-xl shadow-2xl w-full max-w-lg overflow-hidden"
       >
         <div className="border-b border-pebble px-3 py-2 flex items-center gap-2">
-          <span className="text-steel/50">⌕</span>
+          <span aria-hidden="true" className="text-steel/50">⌕</span>
           <input
             ref={inputRef}
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search pages…"
+            aria-label="Search pages"
+            autoComplete="off"
+            spellCheck={false}
             className="flex-1 text-sm bg-transparent focus:outline-none"
             onKeyDown={(e) => {
               if (e.key === "Escape") { e.preventDefault(); onClose(); return; }
@@ -87,7 +93,7 @@ export default function CommandPalette({
           <kbd className="text-[10px] text-steel/60 border border-pebble rounded px-1">esc</kbd>
         </div>
 
-        <div className="max-h-80 overflow-y-auto py-1">
+        <div className="max-h-80 overflow-y-auto py-1" style={{ overscrollBehavior: "contain" }}>
           {items.length === 0 && (
             <div className="px-3 py-4 text-sm text-steel/60 italic text-center">
               No pages match &quot;{q}&quot;
@@ -95,7 +101,7 @@ export default function CommandPalette({
                 <div className="mt-2">
                   <button
                     onClick={() => { onCreateNew(); onClose(); }}
-                    className="text-xs px-2 py-1 bg-midnight text-white rounded hover:opacity-90"
+                    className="text-xs px-2 py-1 bg-midnight text-white rounded hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40"
                   >
                     + Create &quot;{q}&quot;
                   </button>
@@ -108,11 +114,11 @@ export default function CommandPalette({
               key={p.id}
               onClick={() => { onPick(p.id); onClose(); }}
               onMouseEnter={() => setIdx(i)}
-              className={`w-full text-left flex items-center gap-2 px-3 py-1.5 text-sm ${
+              className={`w-full text-left flex items-center gap-2 px-3 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-taskora-red/40 ${
                 i === idx ? "bg-pebble/60" : "hover:bg-pebble/30"
               }`}
             >
-              <span className="w-5 text-center text-base flex-shrink-0">
+              <span aria-hidden="true" className="w-5 text-center text-base flex-shrink-0">
                 {p.icon || "📄"}
               </span>
               <span className="flex-1 truncate text-midnight">{p.title || "Untitled"}</span>

@@ -361,13 +361,15 @@ export default function PageEditor({
         <div className="flex items-center gap-2 flex-1 min-w-0 relative">
           <button
             onClick={() => !readOnly && setIconPickerOpen((v) => !v)}
-            className={`h-9 w-9 flex items-center justify-center rounded text-2xl flex-shrink-0 ${
+            className={`h-9 w-9 flex items-center justify-center rounded text-2xl flex-shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40 ${
               readOnly ? "cursor-default" : "hover:bg-pebble/60"
             }`}
             title={readOnly ? "" : "Change icon"}
-            aria-label="Page icon"
+            aria-label={icon ? `Page icon ${icon}, change` : "Add page icon"}
+            aria-haspopup="dialog"
+            aria-expanded={iconPickerOpen}
           >
-            {icon || <span className="text-base text-steel/40">＋</span>}
+            {icon || <span aria-hidden="true" className="text-base text-steel/40">＋</span>}
           </button>
           {iconPickerOpen && !readOnly && (
             <div className="absolute top-10 left-0">
@@ -407,12 +409,14 @@ export default function PageEditor({
           )}
           <button
             onClick={() => setReadingMode((v) => !v)}
-            className={`px-1.5 py-0.5 rounded text-[11px] ${
+            aria-pressed={readingMode}
+            className={`px-1.5 py-0.5 rounded text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40 ${
               readingMode ? "bg-midnight text-white" : "border border-pebble text-steel hover:text-midnight"
             }`}
             title={readingMode ? "Exit reading mode" : "Reading mode — hide editor chrome"}
           >
-            {readingMode ? "📖 reading" : "👁 read"}
+            <span aria-hidden="true">{readingMode ? "📖" : "👁"}</span>{" "}
+            {readingMode ? "reading" : "read"}
           </button>
         </div>
       </div>
@@ -556,7 +560,7 @@ export default function PageEditor({
           <span className="ml-auto text-[11px] text-steel/50 flex items-center gap-2">
             <span>{computeWordCount(blocks)} words</span>
             <span className="text-steel/30">·</span>
-            <span>Type <code className="bg-pebble/60 px-1 rounded">/</code> for blocks · <code className="bg-pebble/60 px-1 rounded">⌘K</code> to switch</span>
+            <span>Type <code className="bg-pebble/60 px-1 rounded">/</code> for blocks · <code className="bg-pebble/60 px-1 rounded">⌘&nbsp;K</code> to switch</span>
           </span>
         </div>
       )}
