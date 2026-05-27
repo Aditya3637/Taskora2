@@ -14,6 +14,7 @@ const coreNavItems = [
   { href: "/tasks",       label: "Tasks",       icon: "✅" },
   { href: "/gantt",       label: "Gantt",       icon: "📊" },
   { href: "/analytics",   label: "Analytics",   icon: "📈" },
+  { href: "/notebook",    label: "Notebook",    icon: "📓" },
 ];
 
 const SIDEBAR_KEY = "taskora_sidebar_expanded";

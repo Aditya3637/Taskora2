@@ -159,6 +159,10 @@ class _Query:
         self._filters.append(("cs", col, val))
         return self
 
+    def ilike(self, col, pattern):
+        self._filters.append(("ilike", col, pattern))
+        return self
+
     def order(self, col, desc=False):
         self._order = (col, desc)
         return self
@@ -199,6 +203,15 @@ class _Query:
                         break
                 elif kind == "cs":
                     if val[0] not in (r.get(col) or []):
+                        ok = False
+                        break
+                elif kind == "ilike":
+                    # PostgREST ilike: '%foo%' = case-insensitive substring.
+                    # Only handles leading/trailing % patterns — good enough
+                    # for the people-picker name search.
+                    raw = (r.get(col) or "")
+                    needle = val.strip("%").lower()
+                    if needle not in raw.lower():
                         ok = False
                         break
             if ok:
