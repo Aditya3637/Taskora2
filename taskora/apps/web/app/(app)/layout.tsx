@@ -2,36 +2,49 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
+import {
+  Sunrise,
+  Users,
+  FolderKanban,
+  CheckSquare,
+  BarChart3,
+  LineChart,
+  Notebook,
+  ShieldCheck,
+  Settings,
+  LogOut,
+  PanelLeftClose,
+  PanelLeftOpen,
+  ChevronsUpDown,
+  Menu,
+  X as XIcon,
+} from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { apiFetch } from "@/lib/api";
 import PersonaSwitcher from "@/components/testing/PersonaSwitcher";
+import { Avatar, Tooltip, Spinner, Badge, cn } from "@/components/ui";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
-const coreNavItems = [
-  { href: "/daily-brief", label: "Daily Brief", icon: "☀️" },
-  { href: "/people",      label: "People",      icon: "👥" },
-  { href: "/programs",    label: "Programs",    icon: "🗂️" },
-  { href: "/tasks",       label: "Tasks",       icon: "✅" },
-  { href: "/gantt",       label: "Gantt",       icon: "📊" },
-  { href: "/analytics",   label: "Analytics",   icon: "📈" },
-  { href: "/notebook",    label: "Notebook",    icon: "📓" },
+type NavItem = {
+  href: string;
+  label: string;
+  Icon: typeof Sunrise;
+};
+
+const coreNavItems: NavItem[] = [
+  { href: "/daily-brief", label: "Daily Brief", Icon: Sunrise },
+  { href: "/people",      label: "People",      Icon: Users },
+  { href: "/programs",    label: "Programs",    Icon: FolderKanban },
+  { href: "/tasks",       label: "Tasks",       Icon: CheckSquare },
+  { href: "/gantt",       label: "Gantt",       Icon: BarChart3 },
+  { href: "/analytics",   label: "Analytics",   Icon: LineChart },
+  { href: "/notebook",    label: "Notebook",    Icon: Notebook },
 ];
 
 const SIDEBAR_KEY = "taskora_sidebar_expanded";
-
-// "Business Excellence" → "BE". First letter of up to the first two words.
-function workspaceInitials(name: string): string {
-  if (!name) return "?";
-  const words = name.trim().split(/\s+/).slice(0, 2);
-  const initials = words.map((w) => w[0]?.toUpperCase() ?? "").join("");
-  return initials || "?";
-}
-
-// Hard cap on the visible workspace-name label in the sidebar identity row.
-// CSS `truncate` already handles overflow, but a char cap gives a predictable
-// max length regardless of sidebar width and avoids a single very long word
-// (which CSS truncates aggressively) eating the whole row.
 const SIDEBAR_NAME_MAX = 24;
+
 function clampLabel(s: string, max = SIDEBAR_NAME_MAX): string {
   return s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s;
 }
@@ -49,18 +62,22 @@ function SidebarContent({
   const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
   const [trialDaysLeft, setTrialDaysLeft] = useState<number | null>(null);
   const [workspaceName, setWorkspaceName] = useState<string>("");
+  const [workspaces, setWorkspaces] = useState<{ id: string; name: string; role: string; is_owner: boolean }[]>([]);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
   const [userName, setUserName] = useState<string>("");
 
   useEffect(() => {
     async function loadRoles() {
       const { data: { user } } = await supabase.auth.getUser();
-      if (user?.user_metadata?.is_admin) setIsPlatformAdmin(true);
-      // Display name: prefer user_metadata.name (set during signup), else email.
       const meta = (user?.user_metadata ?? {}) as Record<string, unknown>;
       const metaName = typeof meta.name === "string" ? meta.name : "";
       setUserName(metaName || user?.email || "");
 
-      // Ensure business_id is in localStorage — auto-resolve if missing
+      try {
+        const me = await apiFetch("/api/v1/users/me");
+        if (me?.is_platform_admin) setIsPlatformAdmin(true);
+      } catch { /* not signed in / transient */ }
+
       try {
         const { data: { session } } = await supabase.auth.getSession();
         if (!session) return;
@@ -70,13 +87,11 @@ function SidebarContent({
             ? localStorage.getItem("business_id") ?? ""
             : "";
 
-        // Always reconcile the cached business_id against the user's
-        // actual business. A stale id (a prior account, a deleted test
-        // workspace, the persona switcher) otherwise makes every
-        // business-scoped call 403 "Not a member of this business".
-        // Keep the cached id only as a fallback if the lookup fails.
         try {
-          const res = await fetch(`${API}/api/v1/businesses/my`, {
+          const url = businessId
+            ? `${API}/api/v1/businesses/my?prefer=${encodeURIComponent(businessId)}`
+            : `${API}/api/v1/businesses/my`;
+          const res = await fetch(url, {
             headers: { Authorization: `Bearer ${session.access_token}` },
           });
           if (res.ok) {
@@ -90,6 +105,11 @@ function SidebarContent({
         } catch {
           /* network blip — fall back to the cached id below */
         }
+
+        try {
+          const list = await apiFetch("/api/v1/businesses/mine");
+          if (Array.isArray(list)) setWorkspaces(list);
+        } catch { /* non-critical */ }
 
         if (businessId) {
           const subRes = await fetch(`${API}/api/v1/billing/status/${businessId}`, {
@@ -114,8 +134,12 @@ function SidebarContent({
   }, []);
 
   async function handleSignOut() {
-    // Scrub owner/persona state so the next account on this browser
-    // (e.g. a fresh signup) can't inherit the testing switcher.
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm("Sign out of Taskora?")
+    ) {
+      return;
+    }
     localStorage.removeItem("taskora_owner_session");
     localStorage.removeItem("taskora_owner_mode");
     sessionStorage.removeItem("taskora_persona_active");
@@ -124,144 +148,273 @@ function SidebarContent({
     router.push("/login");
   }
 
-  const navItems = [
+  const navItems: NavItem[] = [
     ...coreNavItems,
     ...(isPlatformAdmin
-      ? [{ href: "/admin", label: "Admin", icon: "🛡️" }]
+      ? [{ href: "/admin", label: "Admin", Icon: ShieldCheck }]
       : []),
   ];
 
   return (
-    <div className="flex flex-col h-full bg-midnight overflow-hidden">
-      {/* Logo + collapse toggle */}
-      <div className={`h-14 flex items-center border-b border-white/10 flex-shrink-0 px-3 ${expanded ? "justify-between" : "justify-center"}`}>
+    <div className="flex flex-col h-full bg-chrome overflow-hidden chrome-scroll text-chrome-fg">
+      {/* ── Brand + collapse ───────────────────────────────────────── */}
+      <div
+        className={cn(
+          "h-14 flex items-center border-b border-chrome-line flex-shrink-0 px-3",
+          expanded ? "justify-between" : "justify-center",
+        )}
+      >
         {expanded && (
-          <Link href="/daily-brief" className="text-white font-bold text-lg truncate mr-2">
-            Taskora
+          <Link
+            href="/daily-brief"
+            className="flex items-center gap-2 min-w-0"
+            aria-label="Taskora — go to Daily Brief"
+          >
+            <span
+              aria-hidden="true"
+              className="h-7 w-7 rounded-md bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-sm"
+            >
+              <span className="text-white font-display font-bold text-sm leading-none">T</span>
+            </span>
+            <span className="font-display font-semibold text-chrome-fg text-[15px] tracking-tighter-1 truncate">
+              Taskora
+            </span>
           </Link>
         )}
-        <button
-          onClick={onToggle}
-          className="w-8 h-8 flex items-center justify-center text-white/50 hover:text-white hover:bg-white/10 rounded-lg transition-colors flex-shrink-0"
-          title={expanded ? "Collapse sidebar" : "Expand sidebar"}
-        >
-          <svg
-            className={`w-4 h-4 transition-transform duration-200 ${expanded ? "" : "rotate-180"}`}
-            viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
-            strokeLinecap="round" strokeLinejoin="round"
+        <Tooltip label={expanded ? "Collapse sidebar" : "Expand sidebar"} side="right">
+          <button
+            onClick={onToggle}
+            aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
+            className="h-8 w-8 inline-flex items-center justify-center text-chrome-fg-muted hover:text-chrome-fg hover:bg-white/5 rounded-md transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
           >
-            <path d="M15 18l-6-6 6-6" />
-          </svg>
-        </button>
+            {expanded ? <PanelLeftClose className="h-[18px] w-[18px]" /> : <PanelLeftOpen className="h-[18px] w-[18px]" />}
+          </button>
+        </Tooltip>
       </div>
 
-      {/* Nav items */}
-      <nav className="flex-1 py-2 overflow-y-auto overflow-x-hidden">
-        {navItems.map((item) => {
-          const active = pathname.startsWith(item.href);
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              title={!expanded ? item.label : undefined}
-              className={`flex items-center gap-3 my-0.5 mx-2 rounded-lg transition-colors ${
-                expanded ? "px-3 py-2.5" : "py-2.5 justify-center"
-              } ${active
-                ? "bg-white/15 text-white"
-                : "text-white/60 hover:text-white hover:bg-white/10"
-              }`}
-            >
-              <span className="text-[1.1rem] leading-none flex-shrink-0">{item.icon}</span>
-              {expanded && (
-                <span className="text-sm font-medium whitespace-nowrap">{item.label}</span>
-              )}
-            </Link>
-          );
-        })}
+      {/* ── Nav ────────────────────────────────────────────────────── */}
+      <nav className="flex-1 py-3 overflow-y-auto overflow-x-hidden" aria-label="Primary">
+        <ul className="space-y-0.5 px-2">
+          {navItems.map(({ href, label, Icon }) => {
+            const active = pathname.startsWith(href);
+            const link = (
+              <Link
+                href={href}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "group relative flex items-center rounded-md transition-colors duration-fast",
+                  expanded ? "gap-3 px-2.5 py-2" : "justify-center py-2",
+                  active
+                    ? "bg-white/[0.08] text-chrome-fg"
+                    : "text-chrome-fg-muted hover:text-chrome-fg hover:bg-white/[0.04]",
+                )}
+              >
+                {/* Active accent rail. */}
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-full transition-opacity duration-fast",
+                    active ? "bg-brand-500 opacity-100" : "opacity-0",
+                  )}
+                />
+                <Icon
+                  className={cn(
+                    "h-[17px] w-[17px] flex-shrink-0",
+                    active ? "text-chrome-fg" : "text-chrome-fg-muted group-hover:text-chrome-fg",
+                  )}
+                  strokeWidth={active ? 2.2 : 1.8}
+                />
+                {expanded && (
+                  <span className="text-[13px] font-medium tracking-tight whitespace-nowrap">
+                    {label}
+                  </span>
+                )}
+              </Link>
+            );
+            return (
+              <li key={href}>
+                {expanded ? link : <Tooltip label={label} side="right">{link}</Tooltip>}
+              </li>
+            );
+          })}
+        </ul>
       </nav>
 
-      {/* Trial indicator */}
+      {/* ── Trial chip ─────────────────────────────────────────────── */}
       {trialDaysLeft !== null && (
-        <div className={`mx-2 mb-1 rounded-lg px-3 py-2 text-xs ${
-          trialDaysLeft <= 7 ? "bg-red-900/60 text-red-200" : "bg-white/10 text-white/70"
-        }`}>
+        <div className="px-2 pb-2 flex-shrink-0">
           {expanded ? (
-            trialDaysLeft > 0
-              ? <span><span className="font-bold text-white">{trialDaysLeft}d</span> left in free trial</span>
-              : <span className="text-red-300 font-medium">Trial expired — upgrade to continue</span>
+            <div
+              className={cn(
+                "rounded-md px-3 py-2 text-[12px] flex items-center gap-2",
+                trialDaysLeft <= 7
+                  ? "bg-brand-700/30 text-brand-100 border border-brand-700/60"
+                  : "bg-white/[0.06] text-chrome-fg-muted border border-white/[0.08]",
+              )}
+            >
+              {trialDaysLeft > 0 ? (
+                <>
+                  <span className="tabular font-semibold text-chrome-fg">{trialDaysLeft}d</span>
+                  <span className="opacity-80">left in trial</span>
+                </>
+              ) : (
+                <span className="font-medium text-brand-100">Trial expired — upgrade to continue</span>
+              )}
+            </div>
           ) : (
-            <span className="font-bold text-center block" title={`${trialDaysLeft} days left in trial`}>
-              {trialDaysLeft}d
-            </span>
+            <Tooltip label={trialDaysLeft > 0 ? `${trialDaysLeft} days left in trial` : "Trial expired"} side="right">
+              <div className="mx-auto w-9 h-7 inline-flex items-center justify-center rounded-md border border-white/10 bg-white/[0.04] text-[10.5px] font-bold text-chrome-fg tabular">
+                {trialDaysLeft}d
+              </div>
+            </Tooltip>
           )}
         </div>
       )}
 
-      {/* Footer actions */}
-      <div className="border-t border-white/10 py-2 flex-shrink-0 space-y-0.5">
-        {/* Identity row — workspace initials + user/workspace names. Anchors
-            the sidebar to "what am I logged into right now." Becomes the
-            structural seed for the multi-workspace switcher later. */}
-        <div
-          title={!expanded ? `${workspaceName || "Workspace"} · ${userName || ""}` : undefined}
-          className={`flex items-center gap-2.5 mx-2 mb-1 rounded-lg ${
-            expanded ? "px-2 py-2" : "py-2 justify-center"
-          }`}
-        >
-          <div
-            className="w-8 h-8 rounded-lg bg-gradient-to-br from-taskora-red to-taskora-red/70 text-white flex items-center justify-center text-xs font-bold flex-shrink-0 shadow-sm"
-            aria-label={workspaceName ? `${workspaceName} workspace` : "Workspace"}
+      {/* ── Identity + footer actions ──────────────────────────────── */}
+      <div className="border-t border-chrome-line p-2 flex-shrink-0">
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() =>
+              workspaces.length > 1 && setSwitcherOpen((v) => !v)
+            }
+            disabled={workspaces.length <= 1}
+            aria-haspopup={workspaces.length > 1 ? "menu" : undefined}
+            aria-expanded={workspaces.length > 1 ? switcherOpen : undefined}
+            title={!expanded ? `${workspaceName || "Workspace"} · ${userName || ""}` : undefined}
+            className={cn(
+              "w-full flex items-center gap-2.5 rounded-md transition-colors duration-fast",
+              "hover:bg-white/[0.05] disabled:cursor-default disabled:hover:bg-transparent",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40",
+              expanded ? "px-2 py-2" : "p-1.5 justify-center",
+            )}
           >
-            {workspaceInitials(workspaceName)}
-          </div>
-          {expanded && (
-            <div className="min-w-0 flex-1">
-              <p
-                className="text-sm font-semibold text-white truncate leading-tight"
-                title={workspaceName || undefined}
-              >
-                {clampLabel(workspaceName || "Workspace")}
-              </p>
-              {userName && (
-                <p
-                  className="text-[11px] text-white/60 truncate leading-tight mt-0.5"
-                  title={userName}
-                >
-                  {clampLabel(userName)}
-                </p>
-              )}
+            <Avatar
+              name={workspaceName || "?"}
+              size="md"
+              square
+              className="shadow-sm"
+            />
+            {expanded && (
+              <>
+                <span className="min-w-0 flex-1 text-left">
+                  <span className="block text-[13px] font-semibold text-chrome-fg truncate leading-tight">
+                    {clampLabel(workspaceName || "Workspace")}
+                  </span>
+                  {userName && (
+                    <span className="block text-[11px] text-chrome-fg-muted truncate leading-tight mt-0.5">
+                      {clampLabel(userName)}
+                    </span>
+                  )}
+                </span>
+                {workspaces.length > 1 && (
+                  <ChevronsUpDown className="h-3.5 w-3.5 text-chrome-fg-muted flex-shrink-0" />
+                )}
+              </>
+            )}
+          </button>
+
+          {switcherOpen && (
+            <div
+              role="menu"
+              className="absolute left-0 right-0 bottom-full mb-2 bg-chrome-2 border border-chrome-line rounded-lg shadow-xl z-30 py-1 max-h-72 overflow-y-auto chrome-scroll animate-scale-in origin-bottom"
+            >
+              {workspaces.map((w) => {
+                const active =
+                  typeof window !== "undefined" &&
+                  localStorage.getItem("business_id") === w.id;
+                return (
+                  <button
+                    key={w.id}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      if (typeof window === "undefined") return;
+                      localStorage.setItem("business_id", w.id);
+                      window.location.reload();
+                    }}
+                    className={cn(
+                      "w-full text-left px-3 py-2 flex items-center gap-2.5 transition-colors duration-fast",
+                      active
+                        ? "bg-white/[0.08] text-chrome-fg"
+                        : "text-chrome-fg-muted hover:bg-white/[0.04] hover:text-chrome-fg",
+                    )}
+                  >
+                    <Avatar name={w.name || "?"} size="sm" square />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[12.5px] font-medium truncate leading-tight">
+                        {w.name || "Workspace"}
+                      </span>
+                      <span className="block text-[10.5px] opacity-70 capitalize leading-tight mt-0.5">
+                        {w.role}{w.is_owner ? " · owner" : ""}
+                      </span>
+                    </span>
+                    {active && <Badge tone="brand" size="sm" dot>active</Badge>}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
 
-        <Link
-          href="/workspace/settings"
-          title={!expanded ? "Workspace" : undefined}
-          className={`flex items-center gap-3 mx-2 rounded-lg py-2.5 text-white/60 hover:text-white hover:bg-white/10 transition-colors ${
-            expanded ? "px-3" : "justify-center"
-          }`}
-        >
-          <svg className="w-[1.1rem] h-[1.1rem] flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
-          </svg>
-          {expanded && <span className="text-sm font-medium">Workspace</span>}
-        </Link>
-
-        <button
-          onClick={handleSignOut}
-          title={!expanded ? "Sign out" : undefined}
-          className={`flex items-center gap-3 mx-2 rounded-lg py-2.5 text-white/60 hover:text-white hover:bg-white/10 transition-colors ${
-            expanded ? "px-3 w-[calc(100%-1rem)]" : "justify-center w-[calc(100%-1rem)]"
-          }`}
-        >
-          <svg className="w-[1.1rem] h-[1.1rem] flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />
-          </svg>
-          {expanded && <span className="text-sm font-medium">Sign out</span>}
-        </button>
+        <div className="mt-1 space-y-0.5">
+          <FooterAction
+            href="/workspace/settings"
+            label="Workspace"
+            expanded={expanded}
+            Icon={Settings}
+          />
+          <FooterAction
+            label="Sign out"
+            expanded={expanded}
+            Icon={LogOut}
+            onClick={handleSignOut}
+          />
+        </div>
       </div>
     </div>
   );
+}
+
+function FooterAction({
+  href,
+  label,
+  expanded,
+  Icon,
+  onClick,
+}: {
+  href?: string;
+  label: string;
+  expanded: boolean;
+  Icon: typeof Settings;
+  onClick?: () => void;
+}) {
+  const cls = cn(
+    "w-full flex items-center rounded-md text-chrome-fg-muted hover:text-chrome-fg hover:bg-white/[0.05]",
+    "transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40",
+    expanded ? "gap-3 px-2.5 py-2" : "justify-center py-2",
+  );
+  const content = (
+    <>
+      <Icon className="h-[16px] w-[16px] flex-shrink-0" strokeWidth={1.8} />
+      {expanded && <span className="text-[13px] font-medium">{label}</span>}
+    </>
+  );
+  if (href) {
+    const link = (
+      <Link href={href} className={cls} aria-label={label}>
+        {content}
+      </Link>
+    );
+    return expanded ? link : <Tooltip label={label} side="right">{link}</Tooltip>;
+  }
+  const btn = (
+    <button type="button" onClick={onClick} className={cls} aria-label={label}>
+      {content}
+    </button>
+  );
+  return expanded ? btn : <Tooltip label={label} side="right">{btn}</Tooltip>;
 }
 
 // ── App Layout ────────────────────────────────────────────────────────────────
@@ -271,33 +424,17 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const [expanded, setExpanded] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
-  // null = checking, true = onboarded (render app), false = redirecting out
   const [onboarded, setOnboarded] = useState<boolean | null>(null);
-  // Gate child rendering until localStorage.business_id is reconciled.
-  // React fires child useEffects bottom-up on mount, so without this gate
-  // a multi-workspace user with empty localStorage (post-logout, fresh
-  // signup, workspace deletion) hits /tasks/my and /daily-brief BEFORE
-  // the sidebar's reconciliation populates business_id — backend then
-  // either 400s (tasks, strict mode) or pools data across workspaces
-  // (daily brief). Sidebar already calls /businesses/my for its own
-  // workspace-name display; this just enforces ordering so children see
-  // a populated pin before they fetch. Fast path: if localStorage
-  // already has business_id, ready=true on first render and no extra
-  // fetch happens.
   const [workspaceReady, setWorkspaceReady] = useState<boolean>(
     typeof window !== "undefined" && !!localStorage.getItem("business_id"),
   );
 
-  // Force any user whose onboarding isn't complete back into the wizard.
-  // No app page is usable half-set-up. Only block on a definitive signal
-  // (explicit incomplete, or no business yet); let transient API errors
-  // through so a backend blip can't trap everyone on /onboarding.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        if (!session) return; // middleware handles unauthenticated users
+        if (!session) return;
         const storedBizId =
           typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
         const res = await fetch(
@@ -306,9 +443,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         );
         if (cancelled) return;
         if (res.status === 404) {
-          // No business yet. If they have a pending invite, send them to
-          // accept it (join the existing workspace) instead of onboarding,
-          // which would spawn a duplicate business.
           try {
             const inv = await fetch(`${API}/api/v1/invites/pending-for-me`, {
               headers: { Authorization: `Bearer ${session.access_token}` },
@@ -333,7 +467,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         }
         setOnboarded(true);
       } catch {
-        // Network/unknown error: don't trap the user — let them through.
         if (!cancelled) setOnboarded(true);
       }
     })();
@@ -346,10 +479,6 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     setMounted(true);
   }, []);
 
-  // Workspace reconciliation. Only runs when localStorage was empty at
-  // mount (the empty-pin race case). Calls /businesses/my to populate
-  // the pin so child pages can fetch with business_id from their first
-  // useEffect.
   useEffect(() => {
     if (workspaceReady) return;
     let cancelled = false;
@@ -371,12 +500,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               localStorage.setItem("business_id", biz.id);
             }
           }
-        } catch {
-          // Network blip — let children through; better usable page
-          // than spin forever.
-        }
+        } catch { /* network blip */ }
       } catch {
-        /* unknown error — fall through */
+        /* unknown error */
       } finally {
         if (!cancelled) setWorkspaceReady(true);
       }
@@ -388,78 +514,87 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     if (mounted) localStorage.setItem(SIDEBAR_KEY, String(expanded));
   }, [expanded, mounted]);
 
-  // Close mobile drawer on navigation
   useEffect(() => { setMobileOpen(false); }, [pathname]);
 
-  const sidebarW = mounted ? (expanded ? "14rem" : "3.5rem") : "14rem";
+  const sidebarW = mounted ? (expanded ? "15rem" : "3.75rem") : "15rem";
 
-  // Don't render the app shell until we know onboarding is complete —
-  // prevents a half-set-up flash before the redirect to /onboarding.
-  // Also wait for workspace reconciliation so child pages don't fetch
-  // business-scoped data before localStorage.business_id is populated.
   if (onboarded !== true || !workspaceReady) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-mist">
-        <div className="w-7 h-7 border-2 border-pebble border-t-taskora-red rounded-full animate-spin" />
+      <div className="min-h-screen flex flex-col items-center justify-center bg-bg gap-3">
+        <span
+          aria-hidden="true"
+          className="h-10 w-10 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-sm animate-pulse-soft"
+        >
+          <span className="text-white font-display font-bold text-base leading-none">T</span>
+        </span>
+        <Spinner size="sm" />
+        <span className="text-xs text-fg-subtle">Loading your workspace…</span>
       </div>
     );
   }
 
   return (
     <>
-    <div className="flex min-h-screen bg-mist">
-      {/* ── Desktop sidebar (sticky in flex) ─────────────────────────────── */}
-      <aside
-        className="hidden md:flex flex-col sticky top-0 self-start h-screen z-50 border-r border-white/10 overflow-hidden flex-shrink-0"
-        style={{ width: sidebarW, transition: "width 0.2s ease" }}
-      >
-        <SidebarContent
-          expanded={expanded}
-          onToggle={() => setExpanded(v => !v)}
-        />
-      </aside>
-
-      {/* ── Mobile top bar ────────────────────────────────────────────────── */}
-      <header className="md:hidden fixed top-0 left-0 right-0 h-14 bg-midnight border-b border-white/10 z-50 flex items-center px-4 gap-3">
-        <button
-          onClick={() => setMobileOpen(v => !v)}
-          className="w-9 h-9 flex flex-col items-center justify-center gap-1.5 text-white/70 hover:text-white rounded-lg hover:bg-white/10 transition-colors flex-shrink-0"
-          aria-label="Toggle menu"
+      <div className="flex min-h-screen bg-bg">
+        {/* Desktop sidebar */}
+        <aside
+          className="hidden md:flex flex-col sticky top-0 self-start h-screen z-50 border-r border-chrome-line overflow-hidden flex-shrink-0"
+          style={{ width: sidebarW, transition: "width 220ms cubic-bezier(0.16, 1, 0.3, 1)" }}
         >
-          <span className={`block w-5 h-0.5 bg-current transition-transform origin-center ${mobileOpen ? "translate-y-2 rotate-45" : ""}`} />
-          <span className={`block w-5 h-0.5 bg-current transition-opacity ${mobileOpen ? "opacity-0" : ""}`} />
-          <span className={`block w-5 h-0.5 bg-current transition-transform origin-center ${mobileOpen ? "-translate-y-2 -rotate-45" : ""}`} />
-        </button>
-        <Link href="/daily-brief" className="text-white font-bold text-lg">Taskora</Link>
-      </header>
+          <SidebarContent
+            expanded={expanded}
+            onToggle={() => setExpanded(v => !v)}
+          />
+        </aside>
 
-      {/* ── Mobile backdrop ───────────────────────────────────────────────── */}
-      {mobileOpen && (
-        <div
-          className="md:hidden fixed inset-0 bg-black/50 z-40"
-          onClick={() => setMobileOpen(false)}
-        />
-      )}
+        {/* Mobile top bar */}
+        <header className="md:hidden fixed top-0 left-0 right-0 h-14 bg-chrome border-b border-chrome-line z-50 flex items-center px-3 gap-3">
+          <button
+            onClick={() => setMobileOpen(v => !v)}
+            className="h-9 w-9 inline-flex items-center justify-center text-chrome-fg-muted hover:text-chrome-fg rounded-md hover:bg-white/[0.06] transition-colors flex-shrink-0"
+            aria-label={mobileOpen ? "Close menu" : "Open menu"}
+          >
+            {mobileOpen ? <XIcon className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </button>
+          <Link href="/daily-brief" className="flex items-center gap-2">
+            <span
+              aria-hidden="true"
+              className="h-7 w-7 rounded-md bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-sm"
+            >
+              <span className="text-white font-display font-bold text-sm leading-none">T</span>
+            </span>
+            <span className="font-display font-semibold text-chrome-fg text-[15px] tracking-tighter-1">
+              Taskora
+            </span>
+          </Link>
+        </header>
 
-      {/* ── Mobile drawer ─────────────────────────────────────────────────── */}
-      <aside
-        className={`md:hidden fixed top-0 left-0 h-full w-64 z-50 transition-transform duration-200 ${
-          mobileOpen ? "translate-x-0" : "-translate-x-full"
-        }`}
-      >
-        <SidebarContent
-          expanded={true}
-          onToggle={() => setMobileOpen(false)}
-        />
-      </aside>
+        {mobileOpen && (
+          <div
+            className="md:hidden fixed inset-0 bg-black/50 z-40 animate-fade-in"
+            onClick={() => setMobileOpen(false)}
+          />
+        )}
 
-      {/* ── Main content ──────────────────────────────────────────────────── */}
-      <main className="min-h-screen pt-14 md:pt-0 flex-1 min-w-0">
-        {children}
-      </main>
+        <aside
+          className={cn(
+            "md:hidden fixed top-0 left-0 h-full w-64 z-50",
+            "transition-transform duration-slow ease-out-soft",
+            mobileOpen ? "translate-x-0" : "-translate-x-full",
+          )}
+        >
+          <SidebarContent
+            expanded={true}
+            onToggle={() => setMobileOpen(false)}
+          />
+        </aside>
 
-    </div>
-    <PersonaSwitcher />
+        {/* Main content */}
+        <main className="min-h-screen pt-14 md:pt-0 flex-1 min-w-0">
+          {children}
+        </main>
+      </div>
+      <PersonaSwitcher />
     </>
   );
 }

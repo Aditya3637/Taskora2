@@ -1,5 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
+import { cn } from "@/components/ui";
 
 const PRESETS = [
   "📓", "📝", "📒", "📔", "📕", "📗", "📘", "📙",
@@ -27,8 +29,6 @@ export default function EmojiPicker({
   const [custom, setCustom] = useState("");
   const rootRef = useRef<HTMLDivElement | null>(null);
 
-  // Escape dismisses; click-outside dismisses. Bound at document level
-  // because the picker is positioned absolute inside an arbitrary parent.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") { e.preventDefault(); onClose(); }
@@ -37,8 +37,6 @@ export default function EmojiPicker({
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) onClose();
     }
     document.addEventListener("keydown", onKey);
-    // Defer mousedown listener by a tick so the click that opened the
-    // picker doesn't immediately close it.
     const t = setTimeout(() => document.addEventListener("mousedown", onClick), 0);
     return () => {
       document.removeEventListener("keydown", onKey);
@@ -53,23 +51,26 @@ export default function EmojiPicker({
       role="dialog"
       aria-modal="true"
       aria-label="Pick an icon"
-      className="absolute z-30 bg-white border border-pebble rounded-lg shadow-lg p-2 w-64"
+      className="absolute z-30 bg-surface border border-line rounded-xl shadow-lg p-2 w-[260px] animate-scale-in origin-top-left"
     >
-      <div className="grid grid-cols-8 gap-1 mb-2">
+      <div className="grid grid-cols-8 gap-0.5 mb-2">
         {PRESETS.map((e) => (
           <button
             key={e}
             onClick={() => { onChange(e); onClose(); }}
             aria-label={`Pick ${e}`}
-            className={`h-7 w-7 flex items-center justify-center rounded text-lg hover:bg-pebble/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40 ${
-              value === e ? "bg-pebble" : ""
-            }`}
+            className={cn(
+              "h-7 w-7 inline-flex items-center justify-center rounded text-base transition-colors duration-fast",
+              "hover:bg-muted",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40",
+              value === e ? "bg-brand-50 ring-1 ring-brand-500/30" : "",
+            )}
           >
             {e}
           </button>
         ))}
       </div>
-      <div className="flex items-center gap-1 border-t border-pebble pt-2">
+      <div className="flex items-center gap-1 border-t border-line pt-2">
         <input
           type="text"
           value={custom}
@@ -78,12 +79,12 @@ export default function EmojiPicker({
           aria-label="Custom emoji"
           autoComplete="off"
           spellCheck={false}
-          className="flex-1 text-sm border border-pebble rounded px-2 py-1 focus:outline-none focus:border-taskora-red"
+          className="flex-1 text-[13px] border border-line rounded-md px-2 py-1 bg-surface focus:outline-none focus:border-brand-500/60 focus:ring-2 focus:ring-brand-500/20 transition-colors duration-fast"
         />
         <button
           onClick={() => { if (custom) { onChange(custom); onClose(); } }}
-          className="text-xs px-2 py-1 bg-midnight text-white rounded hover:opacity-90 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40"
           disabled={!custom}
+          className="text-xs px-2.5 py-1 bg-fg text-bg rounded-md hover:bg-fg/85 disabled:opacity-40 transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
         >
           Use
         </button>
@@ -91,10 +92,10 @@ export default function EmojiPicker({
           <button
             onClick={() => { onChange(null); onClose(); }}
             aria-label="Remove icon"
-            className="text-xs px-2 py-1 border border-pebble text-steel rounded hover:text-red-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40"
             title="Remove icon"
+            className="h-7 w-7 inline-flex items-center justify-center rounded text-fg-subtle hover:text-danger-600 hover:bg-danger-50 transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
           >
-            ×
+            <X className="h-3.5 w-3.5" strokeWidth={2} />
           </button>
         )}
       </div>

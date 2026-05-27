@@ -1,5 +1,17 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Target,
+  ListChecks,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Share2,
+  Trash2,
+  Maximize2,
+  Minimize2,
+  Notebook as NotebookIcon,
+  Sparkles,
+} from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import Goals from "./_components/Goals";
 import Checklist from "./_components/Checklist";
@@ -8,6 +20,7 @@ import NotebookNav from "./_components/NotebookNav";
 import PageEditor from "./_components/PageEditor";
 import ShareModal from "./_components/ShareModal";
 import type { Page, Person, Project } from "./_lib/types";
+import { Button, EmptyState, Kbd, Tooltip, cn } from "@/components/ui";
 
 type FocusMode = null | "goals" | "checklist" | "notebook";
 const RATIO_KEY = "taskora_notebook_goals_pct";
@@ -199,49 +212,54 @@ export default function NotebookPage() {
       : "md:grid-cols-[3fr_7fr]";
 
   return (
-    <div className="min-h-screen p-4 md:p-6 bg-mist">
+    <div className="min-h-screen p-4 md:p-6 bg-bg">
       <div className={`grid grid-cols-1 ${gridCols} gap-4 max-w-[1600px] mx-auto h-[calc(100vh-2rem)]`}>
         {/* ── LEFT PAGE: Goals + Checklist (with minimize rail) ─────── */}
         {showLeft && (
           leftMinimized && focus === null ? (
             // Compact rail — restores to default on click.
-            <div className="bg-white rounded-2xl shadow-sm border border-pebble flex flex-col items-center py-3 gap-3">
-              <button
-                onClick={() => setLeftMinimized(false)}
-                className="w-9 h-9 flex items-center justify-center rounded text-lg hover:bg-pebble/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40"
-                title="Expand Goals + Checklist"
-                aria-label="Expand Goals + Checklist"
-              >
-                <span aria-hidden="true">↔</span>
-              </button>
-              <button
-                onClick={() => { setLeftMinimized(false); setFocus("goals"); }}
-                className="w-9 h-9 flex items-center justify-center rounded text-lg hover:bg-pebble/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40"
-                title="Open Goals"
-                aria-label="Open Goals"
-              >
-                <span aria-hidden="true">🎯</span>
-              </button>
-              <button
-                onClick={() => { setLeftMinimized(false); setFocus("checklist"); }}
-                className="w-9 h-9 flex items-center justify-center rounded text-lg hover:bg-pebble/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40"
-                title="Open Checklist"
-                aria-label="Open Checklist"
-              >
-                <span aria-hidden="true">☑</span>
-              </button>
+            <div className="surface-card flex flex-col items-center py-3 gap-1.5 animate-fade-in">
+              <Tooltip label="Expand Goals + Checklist" side="right">
+                <button
+                  onClick={() => setLeftMinimized(false)}
+                  aria-label="Expand Goals + Checklist"
+                  className="h-9 w-9 inline-flex items-center justify-center rounded-md text-fg-muted hover:text-fg hover:bg-muted transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
+                >
+                  <PanelLeftOpen className="h-[17px] w-[17px]" strokeWidth={1.8} />
+                </button>
+              </Tooltip>
+              <div className="h-px w-6 bg-line my-1" aria-hidden="true" />
+              <Tooltip label="Open Goals" side="right">
+                <button
+                  onClick={() => { setLeftMinimized(false); setFocus("goals"); }}
+                  aria-label="Open Goals"
+                  className="h-9 w-9 inline-flex items-center justify-center rounded-md text-fg-muted hover:text-fg hover:bg-muted transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
+                >
+                  <Target className="h-[17px] w-[17px]" strokeWidth={1.8} />
+                </button>
+              </Tooltip>
+              <Tooltip label="Open Checklist" side="right">
+                <button
+                  onClick={() => { setLeftMinimized(false); setFocus("checklist"); }}
+                  aria-label="Open Checklist"
+                  className="h-9 w-9 inline-flex items-center justify-center rounded-md text-fg-muted hover:text-fg hover:bg-muted transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
+                >
+                  <ListChecks className="h-[17px] w-[17px]" strokeWidth={1.8} />
+                </button>
+              </Tooltip>
             </div>
           ) : (
-            <div ref={leftPanelRef} className="bg-white rounded-2xl shadow-sm border border-pebble p-4 flex flex-col overflow-hidden relative">
+            <div ref={leftPanelRef} className="surface-card p-4 flex flex-col overflow-hidden relative animate-fade-in">
               {focus === null && (
-                <button
-                  onClick={() => setLeftMinimized(true)}
-                  className="absolute top-2 right-2 z-20 text-steel/60 hover:text-midnight text-sm leading-none p-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40"
-                  title="Minimize Goals + Checklist"
-                  aria-label="Minimize Goals + Checklist"
-                >
-                  <span aria-hidden="true">⇤</span>
-                </button>
+                <Tooltip label="Minimize Goals + Checklist" side="left">
+                  <button
+                    onClick={() => setLeftMinimized(true)}
+                    aria-label="Minimize Goals + Checklist"
+                    className="absolute top-2 right-2 z-20 h-7 w-7 inline-flex items-center justify-center rounded-md text-fg-subtle hover:text-fg hover:bg-muted transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
+                  >
+                    <PanelLeftClose className="h-4 w-4" strokeWidth={1.8} />
+                  </button>
+                </Tooltip>
               )}
 
               {(focus === null || focus === "goals") && (
@@ -263,7 +281,7 @@ export default function NotebookPage() {
                   aria-label="Resize between Goals and Checklist"
                   role="separator"
                 >
-                  <div className="w-8 h-0.5 bg-pebble group-hover:bg-taskora-red/60 rounded transition-colors" />
+                  <div className="w-8 h-0.5 bg-line group-hover:bg-brand-500/60 rounded transition-colors duration-fast" />
                 </div>
               )}
 
@@ -282,7 +300,7 @@ export default function NotebookPage() {
 
         {/* ── RIGHT PAGE: Nav + AI Notebook ─────────────────────────── */}
         {showRight && (
-          <div className="bg-white rounded-2xl shadow-sm border border-pebble flex flex-row overflow-hidden relative">
+          <div className="surface-card flex flex-row overflow-hidden relative animate-fade-in">
             {/* Sidebar */}
             {navOpen ? (
               <NotebookNav
@@ -296,62 +314,74 @@ export default function NotebookPage() {
                 onCollapse={() => setNavOpen(false)}
               />
             ) : (
-              <button
-                onClick={() => setNavOpen(true)}
-                className="w-8 flex-shrink-0 bg-pebble/30 border-r border-pebble flex items-start justify-center pt-3 text-steel/60 hover:text-midnight"
-                title="Open notebook sidebar"
-                aria-label="Open notebook sidebar"
-              >
-                ▶
-              </button>
+              <Tooltip label="Open notebook sidebar" side="right">
+                <button
+                  onClick={() => setNavOpen(true)}
+                  aria-label="Open notebook sidebar"
+                  className="w-9 flex-shrink-0 bg-surface-2 border-r border-line flex items-start justify-center pt-3 text-fg-subtle hover:text-fg hover:bg-muted transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500/40"
+                >
+                  <PanelLeftOpen className="h-4 w-4" strokeWidth={1.8} />
+                </button>
+              </Tooltip>
             )}
 
             {/* Editor area */}
             <div className="flex-1 flex flex-col overflow-hidden p-4 min-w-0">
               {/* Top action bar */}
-              <div className="flex items-center justify-between gap-2 mb-2 flex-shrink-0">
-                <div className="text-xs text-steel/60 truncate">
+              <div className="flex items-center justify-between gap-2 mb-3 flex-shrink-0 min-h-[28px]">
+                <div className="text-[11px] text-fg-subtle truncate font-medium uppercase tracking-wider">
                   {activePage
                     ? activePage.follower_role
                       ? `Shared with you · ${activePage.follower_role}`
                       : "Your page"
                     : ""}
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1">
                   {activePage && isOwnerOfActive && (
                     <>
-                      <button
+                      <Button
+                        size="xs"
+                        variant="secondary"
+                        iconLeft={<Share2 className="h-3.5 w-3.5" strokeWidth={1.8} />}
                         onClick={() => setShareOpen(true)}
-                        className="text-xs px-2 py-1 bg-midnight text-white rounded hover:opacity-90"
                       >
                         Share
-                      </button>
-                      <button
-                        onClick={archivePage}
-                        className="text-xs px-2 py-1 border border-pebble text-steel rounded hover:text-red-500 hover:border-red-300"
-                        title="Delete page"
-                      >
-                        ⌫
-                      </button>
+                      </Button>
+                      <Tooltip label="Delete page">
+                        <button
+                          onClick={archivePage}
+                          aria-label="Delete page"
+                          className="h-7 w-7 inline-flex items-center justify-center rounded text-fg-subtle hover:text-danger-600 hover:bg-danger-50 transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" strokeWidth={1.8} />
+                        </button>
+                      </Tooltip>
                     </>
                   )}
-                  <button
-                    onClick={() => setFocus(focus === "notebook" ? null : "notebook")}
-                    className="text-steel/60 hover:text-midnight text-sm leading-none px-1.5"
-                    title={focus === "notebook" ? "Exit focus" : "Focus this panel"}
-                    aria-label={focus === "notebook" ? "Exit focus" : "Focus this panel"}
-                  >
-                    {focus === "notebook" ? "×" : "⛶"}
-                  </button>
+                  <Tooltip label={focus === "notebook" ? "Exit focus" : "Focus this panel"}>
+                    <button
+                      onClick={() => setFocus(focus === "notebook" ? null : "notebook")}
+                      aria-label={focus === "notebook" ? "Exit focus" : "Focus this panel"}
+                      aria-pressed={focus === "notebook"}
+                      className="h-7 w-7 inline-flex items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-muted transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
+                    >
+                      {focus === "notebook"
+                        ? <Minimize2 className="h-3.5 w-3.5" strokeWidth={1.8} />
+                        : <Maximize2 className="h-3.5 w-3.5" strokeWidth={1.8} />}
+                    </button>
+                  </Tooltip>
                 </div>
               </div>
 
               {/* Editor or empty state */}
               <div className="flex-1 overflow-hidden">
                 {loading ? (
-                  <div className="text-sm text-steel/60">Loading notebook…</div>
+                  <NotebookLoadingState />
                 ) : !activePage ? (
-                  <EmptyState onCreate={() => createPage(null)} hasPages={pages.length > 0} />
+                  <NotebookEmpty
+                    hasPages={pages.length > 0}
+                    onCreate={() => createPage(null)}
+                  />
                 ) : (
                   <PageEditor
                     page={activePage}
@@ -403,37 +433,65 @@ function PanelFrame({
       className={`relative ${focused ? "flex-1" : ""} ${className} overflow-hidden`}
       style={style}
     >
-      <button
-        onClick={onToggleFocus}
-        className="absolute top-0 right-0 z-10 text-steel/60 hover:text-midnight text-sm leading-none p-1"
-        title={focused ? "Exit focus" : "Focus this panel"}
-        aria-label={focused ? "Exit focus" : "Focus this panel"}
-      >
-        {focused ? "×" : "⛶"}
-      </button>
-      <div className="h-full overflow-hidden pr-5">{children}</div>
+      <Tooltip label={focused ? "Exit focus" : "Focus this panel"}>
+        <button
+          onClick={onToggleFocus}
+          aria-label={focused ? "Exit focus" : "Focus this panel"}
+          aria-pressed={focused}
+          className="absolute top-0 right-0 z-10 h-7 w-7 inline-flex items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-muted transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
+        >
+          {focused
+            ? <Minimize2 className="h-3.5 w-3.5" strokeWidth={1.8} />
+            : <Maximize2 className="h-3.5 w-3.5" strokeWidth={1.8} />}
+        </button>
+      </Tooltip>
+      <div className="h-full overflow-hidden pr-6">{children}</div>
     </div>
   );
 }
 
-function EmptyState({ onCreate, hasPages }: { onCreate: () => void; hasPages: boolean }) {
+function NotebookLoadingState() {
   return (
-    <div className="h-full flex flex-col items-center justify-center text-center px-6">
-      <div aria-hidden="true" className="text-4xl mb-3">📓</div>
-      <h3 className="text-base font-bold text-midnight mb-1">
-        {hasPages ? "Pick a Page from the Sidebar" : "Your Notebook"}
-      </h3>
-      <p className="text-sm text-steel max-w-xs mb-4">
-        {hasPages
-          ? "Or start something new below."
-          : "A private thinking space. Drop a thought, add a table with formulas, or @mention a teammate to assign them a task — they’ll see it in their inbox."}
-      </p>
-      <button
-        onClick={onCreate}
-        className="text-sm px-3 py-1.5 bg-taskora-red text-white rounded hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-taskora-red/40"
-      >
-        {hasPages ? "+ New Page" : "+ Start Your First Page"}
-      </button>
+    <div className="h-full px-1 py-2 animate-fade-in">
+      <div className="space-y-3 max-w-2xl">
+        <div className="skeleton h-7 w-1/3 rounded" />
+        <div className="skeleton h-3 w-full rounded" />
+        <div className="skeleton h-3 w-11/12 rounded" />
+        <div className="skeleton h-3 w-9/12 rounded" />
+        <div className="skeleton h-24 w-full rounded-lg mt-6" />
+      </div>
     </div>
+  );
+}
+
+function NotebookEmpty({
+  hasPages,
+  onCreate,
+}: {
+  hasPages: boolean;
+  onCreate: () => void;
+}) {
+  return (
+    <EmptyState
+      icon={<NotebookIcon className="h-6 w-6" strokeWidth={1.6} />}
+      title={hasPages ? "Pick a page to keep writing" : "Your private thinking space"}
+      description={
+        hasPages
+          ? "Choose a page from the sidebar — or start something new."
+          : "Capture a thought, sketch a table with formulas, or @mention a teammate to send them a task. Nothing here leaves your workspace."
+      }
+      primary={
+        <Button variant="primary" size="md" onClick={onCreate} iconLeft={<Sparkles className="h-4 w-4" strokeWidth={1.8} />}>
+          {hasPages ? "New page" : "Start your first page"}
+        </Button>
+      }
+      hint={
+        <>
+          <span>Quick switch</span>
+          <Kbd>⌘</Kbd>
+          <Kbd>K</Kbd>
+        </>
+      }
+    />
   );
 }
