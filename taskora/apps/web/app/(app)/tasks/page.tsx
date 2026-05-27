@@ -1,9 +1,10 @@
 "use client";
 import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck, GanttChartSquare, MoreHorizontal, Search, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck, GanttChartSquare, MoreHorizontal, Search, Trash2, Inbox, Filter, ChevronsUpDown } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { GanttModal } from "../gantt/GanttChart";
+import { Button, Badge, Skeleton, EmptyState, PageHeader, cn } from "@/components/ui";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -64,6 +65,10 @@ type Watcher = {
   subtask_id?: string | null;
   entity_id?: string | null;
   entity_type?: string | null;
+  // P4: present on read paths that cascade parent-task watchers down to
+  // subtask rows. Underlying row stays at task scope; this just tags the
+  // chip so the UI fades it and skips the remove button.
+  inherited_from?: "task" | null;
 };
 
 type TaskEntity = {
@@ -117,6 +122,10 @@ type Subtask = {
   approval_state?: string;
   watchers?: Watcher[];
   latest_comment?: LatestComment;
+  // P2 field parity with tasks (migration 039).
+  description?: string | null;
+  due_date?: string | null;
+  priority?: "low" | "medium" | "high" | "urgent" | null;
 };
 
 type DateChange = {
@@ -146,6 +155,13 @@ type Comment = {
   author_id?: string;
   kind?: string;
   created_at: string;
+  // P5: present on the task-level rollup so the UI can render a source chip.
+  scope_type?: "task" | "subtask" | "entity";
+  subtask_id?: string | null;
+  subtask_title?: string | null;
+  entity_id?: string | null;
+  entity_type?: string | null;
+  entity_name?: string | null;
 };
 
 type LatestComment = {
@@ -211,6 +227,21 @@ const PRIORITY_BORDER: Record<string, string> = {
   low: "border-l-gray-300",
 };
 
+// Inline pill shown next to task titles for high/urgent priority so the
+// signal isn't carried by the left-border color alone (which is easy to
+// miss in a long list).
+const PRIORITY_CHIP: Record<string, { label: string; cls: string }> = {
+  urgent: {
+    label: "Urgent",
+    cls: "bg-red-50 text-red-700 border-red-200",
+  },
+  critical: {
+    label: "Critical",
+    cls: "bg-red-100 text-red-800 border-red-300",
+  },
+  high: { label: "High", cls: "bg-amber-50 text-amber-700 border-amber-200" },
+};
+
 const IMPACT_CATEGORY_COLOR: Record<string, string> = {
   cost: "bg-green-100 text-green-700 border-green-200",
   customer_experience: "bg-blue-100 text-blue-700 border-blue-200",
@@ -259,6 +290,59 @@ const TASKS_FILTERS_KEY = "taskora_tasks_filters_v1";
 const TASKS_EXPANDED_GROUPS_KEY = "taskora_tasks_expanded_groups_v1";
 
 // Approval-aware predicate for the special filter pills.
+// Compact filter dropdown — styled <select> with a leading chevron and
+// brand-colored active state (when a non-default value is picked).
+function FilterSelect({
+  value,
+  onChange,
+  label,
+  placeholder,
+  options,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  label: string;
+  placeholder?: string;
+  options: { value: string; label: string }[];
+}) {
+  // Active = a value other than the *first* option (typically the default
+  // "all"/"me" choice). Highlights the chip when filtering is engaged so
+  // the toolbar reads at a glance.
+  const defaultValue = options[0]?.value ?? "";
+  const active = value !== defaultValue && value !== "";
+  return (
+    <div className="relative">
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        title={label}
+        aria-label={label}
+        className={cn(
+          "h-9 pl-3 pr-8 bg-surface border rounded-md text-[13px] appearance-none cursor-pointer",
+          "transition-colors duration-fast",
+          "focus:outline-none focus:ring-2 focus:ring-brand-500/20",
+          active
+            ? "border-brand-500/50 text-brand-700 focus:border-brand-500"
+            : "border-line text-fg-muted hover:border-line-strong focus:border-brand-500/60",
+        )}
+      >
+        {placeholder && <option value="">{placeholder}</option>}
+        {options.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+      <ChevronsUpDown
+        aria-hidden="true"
+        className={cn(
+          "h-3 w-3 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none",
+          active ? "text-brand-600" : "text-fg-subtle",
+        )}
+        strokeWidth={2}
+      />
+    </div>
+  );
+}
+
 function matchesApprovalFilter(t: Task, filter: string): boolean {
   if (filter === "approval_pending") {
     return (
@@ -288,6 +372,11 @@ function SubtaskRow({
   currentUserId,
   canManage,
   onChanged,
+  parentTask,
+  programName,
+  programColor,
+  initiativeName,
+  onOpenSheet,
 }: {
   subtask: Subtask;
   // Named `subChildren` (not `children`) so callers don't trip React's
@@ -298,6 +387,13 @@ function SubtaskRow({
   currentUserId: string;
   canManage: boolean;
   onChanged: () => void;
+  // P3: breadcrumb + sheet handoff. Optional so the deep-link / War Room
+  // callers that don't render via TaskCard still work.
+  parentTask?: Task;
+  programName?: string;
+  programColor?: string;
+  initiativeName?: string;
+  onOpenSheet?: (scope: SheetScope) => void;
 }) {
   const [updating, setUpdating] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -318,8 +414,16 @@ function SubtaskRow({
 
   const scope: WatcherScope = { scope_type: "subtask", subtask_id: subtask.id };
   const watchers = subtask.watchers ?? [];
+  // P4: subtask.watchers now includes parent-task watchers tagged
+  // inherited_from='task' so the cascade renders. Approval rights stay
+  // scoped to the subtask — derive isApprover from non-inherited rows only,
+  // otherwise a task-scope approver would see Approve/Reject buttons on
+  // every subtask row and the backend would 4xx those calls.
   const isApprover = watchers.some(
-    (w) => w.role === "approver" && w.user_id === currentUserId
+    (w) =>
+      w.role === "approver" &&
+      w.user_id === currentUserId &&
+      !w.inherited_from
   );
   const isRejected =
     subtask.approval_state === "rejected" || subtask.status === "reopened";
@@ -504,23 +608,51 @@ function SubtaskRow({
             maxLength={500}
           />
         ) : (
-          <button
-            type="button"
-            onClick={() => {
-              if (!canManage) return;
-              setTitleInput(subtask.title);
-              setEditingTitle(true);
-            }}
-            disabled={!canManage}
-            title={canManage ? "Click to edit" : undefined}
-            className={`text-xs flex-1 min-w-0 text-left truncate px-1 py-0.5 rounded ${
-              subtask.status === "done"
-                ? "line-through text-steel/50"
-                : "text-midnight"
-            } ${canManage ? "hover:bg-mist cursor-text" : "cursor-default"}`}
-          >
-            {subtask.title}
-          </button>
+          <div className="flex-1 min-w-0 flex items-center gap-1 group/title">
+            <button
+              type="button"
+              onClick={() => {
+                if (onOpenSheet && parentTask) {
+                  onOpenSheet({
+                    kind: "subtask",
+                    subtask,
+                    task: parentTask,
+                    programName,
+                    programColor,
+                    initiativeName,
+                  });
+                  return;
+                }
+                // Fallback (no sheet wired): preserve legacy inline edit.
+                if (!canManage) return;
+                setTitleInput(subtask.title);
+                setEditingTitle(true);
+              }}
+              title="Open subtask details"
+              className={`text-xs min-w-0 text-left truncate px-1 py-0.5 rounded flex-1 ${
+                subtask.status === "done"
+                  ? "line-through text-steel/50"
+                  : "text-midnight"
+              } hover:bg-mist hover:text-ocean focus:outline-none focus:text-ocean`}
+            >
+              {subtask.title}
+            </button>
+            {canManage && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setTitleInput(subtask.title);
+                  setEditingTitle(true);
+                }}
+                aria-label="Rename inline"
+                title="Rename inline"
+                className="opacity-0 group-hover/title:opacity-100 focus:opacity-100 text-[10px] text-steel/50 hover:text-midnight px-1 transition-opacity"
+              >
+                ✎
+              </button>
+            )}
+          </div>
         )}
 
         {/* Full status select */}
@@ -608,6 +740,15 @@ function SubtaskRow({
             </div>
           )}
         </div>
+
+        {subtask.due_date && (
+          <span
+            className="inline-flex items-center gap-1 text-[11px] text-steel flex-shrink-0"
+            title={`Due ${subtask.due_date}`}
+          >
+            📅 {subtask.due_date}
+          </span>
+        )}
 
         <ClosedStamp at={subtask.closed_at} />
 
@@ -697,6 +838,11 @@ function SubtaskRow({
               currentUserId={currentUserId}
               canManage={canManage}
               onChanged={onChanged}
+              parentTask={parentTask}
+              programName={programName}
+              programColor={programColor}
+              initiativeName={initiativeName}
+              onOpenSheet={onOpenSheet}
             />
           ))}
           {showAddChild && (
@@ -984,38 +1130,51 @@ function WatcherStrip({
 
   return (
     <span className="inline-flex items-center gap-1 flex-wrap">
-      {watchers.map((w) => (
-        <span
-          key={w.id}
-          className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] border ${
-            w.role === "approver"
-              ? "bg-violet-50 text-violet-700 border-violet-200"
-              : "bg-gray-50 text-steel border-pebble"
-          }`}
-          title={`${w.role === "approver" ? "Approver" : "Follower"}: ${
-            w.name || w.email || "Member"
-          }`}
-        >
-          {w.role === "approver" ? (
-            <ShieldCheck className="w-3 h-3 flex-shrink-0" />
-          ) : (
-            <Eye className="w-3 h-3 flex-shrink-0" />
-          )}
-          <span className="max-w-[70px] truncate">
-            {w.name || w.email || "Member"}
+      {watchers.map((w) => {
+        // P4: parent-task watchers surface on subtask rows tagged inherited_from
+        // = 'task'. Render them faded so users see the cascade, and disable
+        // the remove × (the underlying row lives at task scope, not here).
+        const inherited = w.inherited_from === "task";
+        return (
+          <span
+            key={`${w.id}-${inherited ? "inh" : "own"}`}
+            className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] border ${
+              w.role === "approver"
+                ? "bg-violet-50 text-violet-700 border-violet-200"
+                : "bg-gray-50 text-steel border-pebble"
+            } ${inherited ? "opacity-60" : ""}`}
+            title={
+              inherited
+                ? `${w.role === "approver" ? "Approver" : "Follower"} on parent task: ${w.name || w.email || "Member"}`
+                : `${w.role === "approver" ? "Approver" : "Follower"}: ${w.name || w.email || "Member"}`
+            }
+          >
+            {w.role === "approver" ? (
+              <ShieldCheck className="w-3 h-3 flex-shrink-0" />
+            ) : (
+              <Eye className="w-3 h-3 flex-shrink-0" />
+            )}
+            <span className="max-w-[70px] truncate">
+              {w.name || w.email || "Member"}
+            </span>
+            {inherited && (
+              <span className="text-[8px] uppercase tracking-wide text-steel/60 ml-0.5">
+                inh
+              </span>
+            )}
+            {canManage && !inherited && (
+              <button
+                type="button"
+                onClick={() => remove(w.id)}
+                disabled={busy}
+                className="ml-0.5 text-steel/40 hover:text-red-500 leading-none"
+              >
+                ×
+              </button>
+            )}
           </span>
-          {canManage && (
-            <button
-              type="button"
-              onClick={() => remove(w.id)}
-              disabled={busy}
-              className="ml-0.5 text-steel/40 hover:text-red-500 leading-none"
-            >
-              ×
-            </button>
-          )}
-        </span>
-      ))}
+        );
+      })}
 
       {canManage && (
         <span className="inline-flex items-center gap-1">
@@ -1039,8 +1198,14 @@ function WatcherStrip({
                 {members
                   .filter(
                     (m) =>
+                      // P4: inherited rows reflect membership at a higher
+                      // scope; admins can still explicitly add the same
+                      // person here. Only filter own-scope duplicates.
                       !watchers.some(
-                        (w) => w.user_id === m.user_id && w.role === addRole
+                        (w) =>
+                          w.user_id === m.user_id &&
+                          w.role === addRole &&
+                          !w.inherited_from
                       )
                   )
                   .map((m) => (
@@ -1312,6 +1477,7 @@ function CommentsPopup({
   title,
   onClose,
   onPosted,
+  includeDescendants,
 }: {
   apiPath: string;
   title: string;
@@ -1319,6 +1485,11 @@ function CommentsPopup({
   // Fired after a successful post with the freshly-created comment so callers
   // can refresh their inline "latest comment" preview instantly.
   onPosted?: (created: Comment) => void;
+  // P5: when true, the task-scope thread is loaded with ?include_descendants=true
+  // so the rollup of every subtree comment renders here with scope chips.
+  // Posting still hits the base apiPath (task scope) — posts under subtasks
+  // happen by clicking into that subtask's own thread.
+  includeDescendants?: boolean;
 }) {
   const [comments, setComments] = useState<Comment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1328,7 +1499,10 @@ function CommentsPopup({
   async function loadComments() {
     setLoading(true);
     try {
-      const data = await apiFetch(apiPath);
+      const url = includeDescendants
+        ? `${apiPath}${apiPath.includes("?") ? "&" : "?"}include_descendants=true`
+        : apiPath;
+      const data = await apiFetch(url);
       setComments(Array.isArray(data) ? data : []);
     } catch {
       /* silent */
@@ -1406,16 +1580,32 @@ function CommentsPopup({
                 }`}
               >
                 <div className="flex items-center justify-between gap-2 mb-1">
-                  <span className="text-xs font-semibold text-midnight">
-                    {c.author_name ?? "Team member"}
+                  <span className="text-xs font-semibold text-midnight flex items-center gap-1.5 min-w-0">
+                    <span className="truncate">{c.author_name ?? "Team member"}</span>
                     {c.kind === "rejection" && (
-                      <span className="ml-1.5 text-[10px] font-bold text-red-700 uppercase">
+                      <span className="text-[10px] font-bold text-red-700 uppercase">
                         Rejected
                       </span>
                     )}
                     {c.kind === "approval" && (
-                      <span className="ml-1.5 text-[10px] font-bold text-green-700 uppercase">
+                      <span className="text-[10px] font-bold text-green-700 uppercase">
                         Approved
+                      </span>
+                    )}
+                    {/* P5: scope chip — only shown when the rollup is on AND
+                        the comment is from a descendant scope. */}
+                    {c.scope_type && c.scope_type !== "task" && (
+                      <span
+                        className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-ocean/10 text-ocean border border-ocean/20 truncate max-w-[140px]"
+                        title={
+                          c.scope_type === "subtask"
+                            ? `Subtask: ${c.subtask_title || ""}`
+                            : `${c.entity_type ?? "Entity"}: ${c.entity_name || ""}`
+                        }
+                      >
+                        {c.scope_type === "subtask"
+                          ? `↳ ${c.subtask_title || "subtask"}`
+                          : `▢ ${c.entity_name || "entity"}`}
                       </span>
                     )}
                   </span>
@@ -1472,6 +1662,11 @@ function EntitySubtaskRow({
   subtasksLoading,
   onEntityUpdate,
   onSubtasksChanged,
+  parentTask,
+  programName,
+  programColor,
+  initiativeName,
+  onOpenSheet,
 }: {
   entity: TaskEntity;
   taskId: string;
@@ -1484,6 +1679,12 @@ function EntitySubtaskRow({
   subtasksLoading: boolean;
   onEntityUpdate?: (entityId: string, updates: Partial<TaskEntity>) => void;
   onSubtasksChanged: () => void;
+  // P3: pass-through so the entity-scoped subtasks can also open the sheet.
+  parentTask?: Task;
+  programName?: string;
+  programColor?: string;
+  initiativeName?: string;
+  onOpenSheet?: (scope: SheetScope) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
@@ -1709,6 +1910,11 @@ function EntitySubtaskRow({
               currentUserId={currentUserId}
               canManage={canManage}
               onChanged={onSubtasksChanged}
+              parentTask={parentTask}
+              programName={programName}
+              programColor={programColor}
+              initiativeName={initiativeName}
+              onOpenSheet={onOpenSheet}
             />
           ))}
           {!subtasksLoading && totalCount === 0 && (
@@ -1828,6 +2034,10 @@ function TaskCard({
   onDelete,
   focusTaskId,
   focusSubtaskId,
+  programName,
+  programColor,
+  initiativeName,
+  onOpenSheet,
 }: {
   task: Task;
   members: Member[];
@@ -1837,6 +2047,11 @@ function TaskCard({
   onDelete: (taskId: string) => void;
   focusTaskId?: string | null;
   focusSubtaskId?: string | null;
+  // P3: breadcrumb context for the detail sheet — supplied by InitiativeGroup.
+  programName?: string;
+  programColor?: string;
+  initiativeName?: string;
+  onOpenSheet?: (scope: SheetScope) => void;
 }) {
   const isFocused = !!focusTaskId && task.id === focusTaskId;
   const [expanded, setExpanded] = useState(isFocused);
@@ -2049,6 +2264,27 @@ function TaskCard({
     }
   }
 
+  // Mark-done quick-toggle — mirrors SubtaskRow.toggleDone so tasks and
+  // subtasks share the round-checkbox affordance.
+  const [togglingDone, setTogglingDone] = useState(false);
+  async function toggleDone(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (togglingDone) return;
+    const next = task.status === "done" ? "todo" : "done";
+    setTogglingDone(true);
+    try {
+      await apiFetch(`/api/v1/tasks/${task.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: next }),
+      });
+      onStatusChange(task.id, next);
+    } catch {
+      /* silent — parent will eventually refetch */
+    } finally {
+      setTogglingDone(false);
+    }
+  }
+
   // doneCount only meaningful for the flat (no-entity) view; entity-scoped
   // tasks display their own X/Y counts per building.
   const doneCount = grouped.task_flat.filter((s) => s.status === "done").length;
@@ -2064,7 +2300,7 @@ function TaskCard({
   return (
     <div
       ref={cardRef}
-      className={`rounded-xl border border-l-4 shadow-sm scroll-mt-20 ${
+      className={`rounded-xl border border-l-4 shadow-sm hover:shadow-md transition-shadow scroll-mt-20 ${
         PRIORITY_BORDER[task.priority] ?? "border-l-gray-300"
       } ${
         taskRejected
@@ -2072,11 +2308,61 @@ function TaskCard({
           : "bg-white border-pebble"
       } ${isFocused ? "ring-2 ring-ocean ring-offset-2" : ""}`}
     >
-      <div className="p-4">
+      <div className="p-3">
         <div className="flex items-start justify-between gap-3">
-          <div className="flex-1 min-w-0">
-            <p className="font-medium text-midnight truncate">{task.title}</p>
-            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+          <div className="flex-1 min-w-0 flex items-start gap-2">
+            {/* Quick-done checkbox — same affordance subtasks use. Disabled
+                for users who can't write to this task. */}
+            <button
+              type="button"
+              onClick={toggleDone}
+              disabled={!canEditTask || togglingDone}
+              className={`mt-0.5 w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center transition-colors disabled:opacity-40 ${
+                task.status === "done"
+                  ? "bg-green-500 border-green-500"
+                  : "border-pebble hover:border-ocean"
+              }`}
+              title={
+                task.status === "done"
+                  ? "Mark as not done"
+                  : canEditTask
+                  ? "Mark as done"
+                  : "Read-only"
+              }
+              aria-label="Toggle done"
+            >
+              {task.status === "done" && (
+                <span className="text-white text-[10px] font-bold leading-none">✓</span>
+              )}
+            </button>
+            <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <button
+                type="button"
+                onClick={() => onOpenSheet?.({
+                  kind: "task",
+                  task,
+                  programName,
+                  programColor,
+                  initiativeName,
+                })}
+                className={`text-sm font-medium truncate text-left hover:text-ocean focus:outline-none focus:text-ocean ${
+                  task.status === "done" ? "line-through text-steel/60" : "text-midnight"
+                }`}
+                title="Open task details"
+              >
+                {task.title}
+              </button>
+              {PRIORITY_CHIP[task.priority] && (
+                <span
+                  className={`text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded border flex-shrink-0 ${PRIORITY_CHIP[task.priority].cls}`}
+                  title={`Priority: ${PRIORITY_CHIP[task.priority].label}`}
+                >
+                  {PRIORITY_CHIP[task.priority].label}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2 mt-1 flex-wrap">
               {/* Inline status select */}
               <StatusSelect task={task} onStatusChange={onStatusChange} />
 
@@ -2147,45 +2433,105 @@ function TaskCard({
                 onActed={handleTaskApprovalActed}
                 onOpenThread={() => setShowComments(true)}
               />
+
+              {/* Quick "+ Subtask" — expands the card and opens the
+                  AddSubtaskInline form so users can add a subtask without
+                  first hunting for the chevron. Visible only for users who
+                  can write to this task. */}
+              {canManageWatchers && localEnts.length === 0 && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (!expanded) toggleExpand();
+                    setShowAddSubtask(true);
+                  }}
+                  className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border border-pebble text-steel hover:border-taskora-red hover:text-taskora-red transition-colors"
+                  title="Add a subtask"
+                >
+                  <Plus className="w-3 h-3" /> Subtask
+                </button>
+              )}
             </div>
 
 
 
           </div>
+          </div>
 
-          <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
-            {/* Task-level comments — shows latest inline; click opens thread */}
-            <div className="px-2 py-1 rounded border border-pebble flex items-center">
-              <LatestCommentButton
-                latest={taskLatest}
-                onClick={() => setShowComments(true)}
-              />
-            </div>
-            <button
-              onClick={toggleExpand}
-              className="flex items-center gap-1 text-xs text-steel hover:text-midnight"
-            >
-              <span className="font-medium">
-                {localEnts.length > 0
-                  ? `${localEnts.length} ${localEnts[0]?.entity_type === "client" ? "client" : "building"}${localEnts.length !== 1 ? "s" : ""}`
-                  : flatTotal > 0
-                  ? `${doneCount}/${flatTotal}`
-                  : "Subtasks"}
-              </span>
-              {expanded ? (
-                <ChevronDown className="w-3.5 h-3.5" />
-              ) : (
-                <ChevronRight className="w-3.5 h-3.5" />
-              )}
-            </button>
+          <div className="flex items-center gap-1.5 flex-shrink-0 mt-0.5">
+            {/* Assignee chip — primary stakeholder. Sits before the
+                comments/remarks button so the eye lands on "who owns this"
+                first when scanning the right edge of the card. */}
+            {(() => {
+              const assigneeId = task.primary_stakeholder_id;
+              if (!assigneeId) return null;
+              const isMe = assigneeId === currentUserId;
+              const assignee = members.find((m) => m.user_id === assigneeId);
+              const name = isMe ? "Me" : assignee?.name || assignee?.email || "Member";
+              const inits = isMe
+                ? "Me"
+                : (name.trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "").join("") || "?");
+              return (
+                <span
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium max-w-[140px] ${
+                    isMe
+                      ? "bg-taskora-red/10 text-taskora-red"
+                      : "bg-ocean/10 text-ocean"
+                  }`}
+                  title={isMe ? "Assigned to you" : `Assigned to ${name}`}
+                >
+                  <span
+                    className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold flex-shrink-0 ${
+                      isMe ? "bg-taskora-red text-white" : "bg-ocean/20 text-ocean"
+                    }`}
+                  >
+                    {inits}
+                  </span>
+                  <span className="truncate hidden sm:inline">{name}</span>
+                </span>
+              );
+            })()}
 
-            {/* Turnaround time — right-most, only once closed */}
-            <TatBadge createdAt={task.created_at} closedAt={task.closed_at} />
-
-            {/* Overflow menu — keeps Delete out of the always-visible
-                bar where it was both noisy (red) and easy to mis-click. */}
-            {canDelete && (
-              <div ref={cardMenuRef} className="relative">
+            {/* Action group — comments / details / overflow live inside one
+                bordered container with subtle inner dividers so the right
+                edge reads as a single control surface instead of three
+                detached pills. TatBadge floats outside since it's a status
+                indicator, not an action. */}
+            <div className="inline-flex items-stretch rounded-md border border-pebble divide-x divide-pebble/60 bg-white overflow-hidden">
+              {/* Comments / remarks — opens the rollup thread */}
+              <div className="px-2 py-1 flex items-center">
+                <LatestCommentButton
+                  latest={taskLatest}
+                  onClick={() => setShowComments(true)}
+                />
+              </div>
+              {/* Inline expand — same pattern as InitiativeCard in /programs.
+                  Toggles the inline detail (watchers, team, subtasks). Title
+                  click opens the wider sheet for the full-screen edit
+                  surface. */}
+              <button
+                onClick={toggleExpand}
+                className="px-2 py-1 flex items-center gap-1 text-xs text-steel hover:bg-mist hover:text-midnight transition-colors"
+                title={expanded ? "Hide details" : "Show details"}
+              >
+                <span className="font-medium">
+                  {localEnts.length > 0
+                    ? `${localEnts.length} ${localEnts[0]?.entity_type === "client" ? "client" : "building"}${localEnts.length !== 1 ? "s" : ""}`
+                    : flatTotal > 0
+                    ? `${doneCount}/${flatTotal}`
+                    : "Details"}
+                </span>
+                {expanded ? (
+                  <ChevronDown className="w-3.5 h-3.5" />
+                ) : (
+                  <ChevronRight className="w-3.5 h-3.5" />
+                )}
+              </button>
+              {/* Overflow menu — Delete lives behind the kebab so the bar
+                  stays calm. */}
+              {canDelete && (
+                <div ref={cardMenuRef} className="relative">
                 <button
                   type="button"
                   onClick={(e) => {
@@ -2196,7 +2542,7 @@ function TaskCard({
                   title="More actions"
                   aria-label="More actions"
                   aria-expanded={cardMenuOpen}
-                  className="w-7 h-7 rounded text-steel/60 hover:bg-mist hover:text-midnight flex items-center justify-center transition-colors disabled:opacity-50"
+                  className="h-full px-2 text-steel/60 hover:bg-mist hover:text-midnight flex items-center justify-center transition-colors disabled:opacity-50"
                 >
                   <MoreHorizontal className="w-4 h-4" />
                 </button>
@@ -2217,11 +2563,20 @@ function TaskCard({
                   </div>
                 )}
               </div>
-            )}
+              )}
+            </div>
+
+            {/* Turnaround time — outside the action group; informational
+                badge, not an action. Only visible once closed. */}
+            <TatBadge createdAt={task.created_at} closedAt={task.closed_at} />
           </div>
         </div>
       </div>
 
+      {/* Inline expand mirrors the InitiativeCard pattern: the row stays
+          scannable; click chevron to expose team / watchers / subtasks /
+          add-subtask. Title click opens the wider sheet for the full-screen
+          edit surface — both paths share onChanged so state stays in sync. */}
       {expanded && (
         <div className="border-t border-pebble/50 px-4 pb-3 pt-2 bg-mist/10">
 
@@ -2303,6 +2658,11 @@ function TaskCard({
                   subtasksLoading={loadingSubtasks}
                   onEntityUpdate={handleEntityUpdate}
                   onSubtasksChanged={loadSubtasksGrouped}
+                  parentTask={task}
+                  programName={programName}
+                  programColor={programColor}
+                  initiativeName={initiativeName}
+                  onOpenSheet={onOpenSheet}
                 />
               ))}
             </>
@@ -2322,6 +2682,11 @@ function TaskCard({
                   currentUserId={currentUserId}
                   canManage={canManageWatchers}
                   onChanged={loadSubtasksGrouped}
+                  parentTask={task}
+                  programName={programName}
+                  programColor={programColor}
+                  initiativeName={initiativeName}
+                  onOpenSheet={onOpenSheet}
                 />
               ))}
               {flatTotal === 0 && !loadingSubtasks && (
@@ -2356,6 +2721,7 @@ function TaskCard({
         <CommentsPopup
           apiPath={`/api/v1/tasks/${task.id}/comments`}
           title={task.title}
+          includeDescendants
           onClose={() => setShowComments(false)}
           onPosted={(c) =>
             setTaskLatest({
@@ -3084,6 +3450,7 @@ function InitiativeGroup({
   onDelete,
   focusTaskId,
   focusSubtaskId,
+  onOpenSheet,
 }: {
   initiative: MyInitiative | null; // null = "Unlinked"
   tasks: Task[];
@@ -3105,6 +3472,8 @@ function InitiativeGroup({
   onDelete?: () => void;
   focusTaskId?: string | null;
   focusSubtaskId?: string | null;
+  // P3: bubble up sheet-open requests so the page owns the open scope.
+  onOpenSheet?: (scope: SheetScope) => void;
 }) {
   const groupRef = useRef<HTMLDivElement>(null);
   const containsFocus = !!focusTaskId && tasks.some((t) => t.id === focusTaskId);
@@ -3320,6 +3689,10 @@ function InitiativeGroup({
                 onDelete={onTaskDeleted}
                 focusTaskId={focusTaskId}
                 focusSubtaskId={focusSubtaskId}
+                programName={initiative?.programs?.name}
+                programColor={initiative?.programs?.color}
+                initiativeName={initiative?.name}
+                onOpenSheet={onOpenSheet}
               />
             ))
           )}
@@ -3374,6 +3747,9 @@ function TasksPageInner() {
   // Per-initiative modals — owned by the page so any group can open them.
   const [breakdownFor, setBreakdownFor] = useState<MyInitiative | null>(null);
   const [ganttFor, setGanttFor] = useState<MyInitiative | null>(null);
+  // P3: TaskDetailSheet — opens on title click, replaces inline-expand for
+  // detail. Inline expand-children stays alongside this phase.
+  const [sheetScope, setSheetScope] = useState<SheetScope | null>(null);
 
   // Fetches a page of tasks. When `append` is true, results are appended to the
   // current list (used by Load More). Otherwise the list is replaced and the
@@ -3388,6 +3764,12 @@ function TasksPageInner() {
         statusFilter === "approval_pending" || statusFilter === "reopened";
       if (statusFilter !== "All" && !isApprovalPill)
         params.set("status", statusFilter);
+      // Scope to the active workspace (multi-workspace members otherwise
+      // fall back to the user's "first" workspace by default).
+      if (typeof window !== "undefined") {
+        const bid = localStorage.getItem("business_id");
+        if (bid) params.set("business_id", bid);
+      }
       const page = await apiFetch(`/api/v1/tasks/my/page?${params.toString()}`);
       const items: Task[] = Array.isArray(page?.items) ? page.items : [];
       setTasks((prev) => (append ? [...prev, ...items] : items));
@@ -3409,10 +3791,21 @@ function TasksPageInner() {
       setCurrentUserId(userId);
 
       // Fetch biz, first page of tasks, and initiatives in parallel.
+      // /businesses/my honours the cached preference; /initiatives/my needs
+      // the workspace id explicitly so multi-workspace members see the
+      // right list.
+      const cachedBid =
+        typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
+      const initQ = cachedBid
+        ? `/api/v1/initiatives/my?business_id=${encodeURIComponent(cachedBid)}`
+        : "/api/v1/initiatives/my";
+      const myBizQ = cachedBid
+        ? `/api/v1/businesses/my?prefer=${encodeURIComponent(cachedBid)}`
+        : "/api/v1/businesses/my";
       const [biz, , initData] = await Promise.all([
-        apiFetch("/api/v1/businesses/my"),
+        apiFetch(myBizQ),
         fetchTaskPage(filter, null, false),
-        apiFetch("/api/v1/initiatives/my"),
+        apiFetch(initQ),
       ]);
 
       setInitiatives(Array.isArray(initData) ? initData : []);
@@ -3737,147 +4130,181 @@ function TasksPageInner() {
     (search.trim() ? 1 : 0);
 
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
-      {/* Tasks Section — initiatives now render as group headers inline */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h1 className="text-2xl font-bold text-midnight">My Work</h1>
-          <button
+    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 sm:py-10 animate-fade-up">
+      <PageHeader
+        eyebrow="Workspace"
+        title="My Work"
+        description="Active initiatives and the tasks driving them forward."
+        className="mb-6"
+        actions={
+          <Button
+            variant="primary"
+            size="md"
             onClick={() => setShowCreate(true)}
-            className="flex items-center gap-1.5 px-4 py-2 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90"
+            iconLeft={<Plus className="h-4 w-4" strokeWidth={2} />}
           >
-            <Plus className="w-4 h-4" />
-            New Task
-          </button>
-        </div>
+            New task
+          </Button>
+        }
+      />
 
-        {/* Filter toolbar: search + program + owner + clear. */}
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          <div className="relative flex-1 min-w-[180px]">
-            <Search className="w-3.5 h-3.5 text-steel/60 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-            <input
-              type="search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search tasks…"
-              className="w-full h-9 pl-9 pr-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red focus:ring-2 focus:ring-taskora-red/10"
-            />
+      {/* Filter toolbar: search + program + owner + clear. */}
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search aria-hidden="true" className="h-4 w-4 text-fg-subtle absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" strokeWidth={1.8} />
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search tasks…"
+            aria-label="Search tasks"
+            autoComplete="off"
+            spellCheck={false}
+            className="w-full h-9 pl-9 pr-3 bg-surface border border-line rounded-md text-[13px] text-fg placeholder:text-fg-subtle focus:outline-none focus:border-brand-500/60 focus:ring-2 focus:ring-brand-500/20 transition-colors duration-fast"
+          />
+        </div>
+        <FilterSelect
+          value={programFilter}
+          onChange={setProgramFilter}
+          label="Filter by program"
+          placeholder="All programs"
+          options={programs.map((p) => ({ value: p.id, label: p.name }))}
+        />
+        {isAdmin ? (
+          <FilterSelect
+            value={ownerFilter}
+            onChange={setOwnerFilter}
+            label="Filter by primary owner"
+            options={[
+              { value: "__me__", label: "Owner: Me" },
+              { value: "", label: "Anyone" },
+              ...members.map((m) => ({ value: m.user_id, label: m.name || m.email || "" })),
+            ]}
+          />
+        ) : (
+          <div
+            className="h-9 px-3 border border-line rounded-md text-[13px] bg-muted/60 flex items-center gap-2 text-fg-subtle cursor-not-allowed select-none"
+            title="Only admins and owners can filter by other people"
+            aria-disabled
+          >
+            <User className="h-3.5 w-3.5" strokeWidth={1.8} />
+            Me
           </div>
-          <select
-            value={programFilter}
-            onChange={(e) => setProgramFilter(e.target.value)}
-            className="h-9 px-3 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red"
-            title="Filter by program"
+        )}
+        {activeFilterCount > 0 && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setSearch("");
+              setProgramFilter("");
+              setOwnerFilter("__me__");
+            }}
+            iconLeft={<X className="h-3.5 w-3.5" strokeWidth={1.8} />}
           >
-            <option value="">All programs</option>
-            {programs.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
-          {isAdmin ? (
-            <select
-              value={ownerFilter}
-              onChange={(e) => setOwnerFilter(e.target.value)}
-              className="h-9 px-3 border border-pebble rounded-lg text-sm bg-white focus:outline-none focus:border-taskora-red"
-              title="Filter by primary owner"
-            >
-              <option value="__me__">Owner: Me</option>
-              <option value="">Anyone</option>
-              {members.map((m) => (
-                <option key={m.user_id} value={m.user_id}>
-                  {m.name || m.email}
-                </option>
-              ))}
-            </select>
-          ) : (
-            // Members can only filter by themselves — admins/owners get the
-            // full picker above. Static chip makes the lock visible and the
-            // resolvedOwnerId computation forces the current user even if
-            // state somehow holds a different value.
-            <div
-              className="h-9 px-3 border border-pebble rounded-lg text-sm bg-mist/40 flex items-center text-steel/80 cursor-not-allowed select-none"
-              title="Only admins and owners can filter by other people"
-              aria-disabled
-            >
-              Owner: Me
-            </div>
-          )}
-          {activeFilterCount > 0 && (
-            <button
-              onClick={() => {
-                setSearch("");
-                setProgramFilter("");
-                setOwnerFilter("__me__");
-              }}
-              className="h-9 px-3 text-xs font-medium text-steel hover:text-midnight rounded-lg hover:bg-mist transition-colors"
-            >
-              Clear filters
-            </button>
-          )}
-        </div>
+            Clear
+          </Button>
+        )}
+      </div>
 
-        {/* Status filter tabs */}
-        <div className="flex gap-2 flex-wrap mb-6">
-          {STATUSES.map((s) => (
+      {/* Status filter tabs */}
+      <div role="tablist" aria-label="Status filter" className="flex gap-1.5 flex-wrap mb-6 p-0.5 bg-muted rounded-lg w-fit">
+        {STATUSES.map((s) => {
+          const active = filter === s;
+          return (
             <button
               key={s}
+              role="tab"
+              aria-selected={active}
               onClick={() => setFilter(s)}
-              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-colors ${
-                filter === s
-                  ? "bg-taskora-red text-white"
-                  : "bg-white border border-pebble text-steel hover:text-midnight"
-              }`}
+              className={cn(
+                "px-3 py-1.5 rounded-md text-[12px] font-semibold transition-all duration-fast",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40",
+                active
+                  ? "bg-surface text-fg shadow-xs"
+                  : "text-fg-muted hover:text-fg",
+              )}
             >
               {FILTER_LABELS[s] ?? s}
             </button>
+          );
+        })}
+      </div>
+
+      {/* Loading / error states */}
+      {loading && (
+        <div className="space-y-3">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="surface-card p-4">
+              <div className="flex items-center gap-3 mb-3">
+                <Skeleton className="h-3 w-3 rounded" />
+                <Skeleton className="h-3.5 w-2/5" />
+              </div>
+              <div className="space-y-2 pl-6">
+                {[...Array(2)].map((_, j) => (
+                  <div key={j} className="flex items-center gap-3">
+                    <Skeleton className="h-4 w-4 rounded-sm" />
+                    <Skeleton className="h-3 w-3/5" />
+                    <Skeleton className="ml-auto h-5 w-16 rounded-full" />
+                  </div>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
+      )}
+      {error && (
+        <div className="surface-card p-4 flex items-center justify-between gap-3">
+          <p className="text-sm text-danger-700">{error}</p>
+          <Button size="sm" variant="secondary" onClick={load}>Retry</Button>
+        </div>
+      )}
 
-        {/* Loading / error states */}
-        {loading && (
-          <div className="space-y-3">
-            {[...Array(4)].map((_, i) => (
-              <div key={i} className="bg-white rounded-xl border border-pebble p-4 animate-pulse">
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="w-3 h-3 rounded bg-gray-200" />
-                  <div className="h-4 bg-gray-200 rounded w-2/5" />
-                </div>
-                <div className="space-y-2 pl-6">
-                  {[...Array(2)].map((_, j) => (
-                    <div key={j} className="flex items-center gap-3">
-                      <div className="w-4 h-4 rounded border border-gray-200 bg-gray-100" />
-                      <div className="h-3 bg-gray-200 rounded w-3/5" />
-                      <div className="ml-auto h-5 bg-gray-200 rounded-full w-16" />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
+      {!loading &&
+        !error &&
+        displayInitiativeIds.length === 0 &&
+        unlinkedTasks.length === 0 && (
+          <div className="surface-card">
+            <EmptyState
+              icon={<Inbox className="h-6 w-6" strokeWidth={1.6} />}
+              title={
+                activeFilterCount > 0
+                  ? "No matches for these filters"
+                  : "Nothing on your plate"
+              }
+              description={
+                activeFilterCount > 0
+                  ? "Try clearing a filter, or broaden the search."
+                  : "When you create or get assigned to a task, it lands here."
+              }
+              primary={
+                activeFilterCount > 0 ? (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    iconLeft={<X className="h-3.5 w-3.5" strokeWidth={1.8} />}
+                    onClick={() => {
+                      setSearch("");
+                      setProgramFilter("");
+                      setOwnerFilter("__me__");
+                    }}
+                  >
+                    Clear filters
+                  </Button>
+                ) : (
+                  <Button
+                    size="md"
+                    variant="primary"
+                    iconLeft={<Plus className="h-4 w-4" strokeWidth={2} />}
+                    onClick={() => setShowCreate(true)}
+                  >
+                    New task
+                  </Button>
+                )
+              }
+            />
           </div>
         )}
-        {error && (
-          <p className="text-red-600 text-sm">
-            {error}{" "}
-            <button onClick={load} className="underline">
-              Retry
-            </button>
-          </p>
-        )}
-
-        {!loading &&
-          !error &&
-          displayInitiativeIds.length === 0 &&
-          unlinkedTasks.length === 0 && (
-            <div className="text-center py-16 bg-white rounded-xl border border-pebble">
-              <p className="text-steel text-sm italic">
-                {activeFilterCount > 0
-                  ? "No tasks or initiatives match your filters."
-                  : "No tasks here yet."}
-              </p>
-            </div>
-          )}
 
         {/* Grouped tasks */}
         {!loading &&
@@ -3912,6 +4339,7 @@ function TasksPageInner() {
                   }
                   focusTaskId={focusTaskId}
                   focusSubtaskId={focusSubtaskId}
+                  onOpenSheet={setSheetScope}
                 />
               );
             })}
@@ -3932,24 +4360,26 @@ function TasksPageInner() {
                 onTaskDeleted={handleTaskDelete}
                 focusTaskId={focusTaskId}
                 focusSubtaskId={focusSubtaskId}
+                onOpenSheet={setSheetScope}
               />
             )}
 
             {/* B5: Load more — visible only when the server says there are more pages */}
             {nextCursor && (
-              <div className="flex justify-center pt-2">
-                <button
+              <div className="flex justify-center pt-3">
+                <Button
+                  size="sm"
+                  variant="secondary"
                   onClick={loadMore}
-                  disabled={loadingMore}
-                  className="px-4 py-2 text-xs font-semibold rounded-lg border border-pebble bg-white text-steel hover:bg-mist disabled:opacity-50"
+                  loading={loadingMore}
+                  iconLeft={!loadingMore ? <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.8} /> : undefined}
                 >
-                  {loadingMore ? "Loading…" : "Load more"}
-                </button>
+                  {loadingMore ? "Loading" : "Load more"}
+                </Button>
               </div>
             )}
           </div>
         )}
-      </div>
 
       {showCreate && (
         <NewTaskModal
@@ -3981,7 +4411,627 @@ function TasksPageInner() {
           onClose={() => setGanttFor(null)}
         />
       )}
+
+      {/* P3: TaskDetailSheet — opens on row title click. Single instance per
+          page; replacing scope swaps the contents. */}
+      <TaskDetailSheet
+        scope={sheetScope}
+        members={members}
+        currentUserId={currentUserId}
+        myRole={myRole}
+        onClose={() => setSheetScope(null)}
+        onChanged={() => {
+          // Refetch the current page so row state matches sheet edits.
+          fetchTaskPage(filter, null, false);
+        }}
+        onNavigate={setSheetScope}
+      />
     </div>
+  );
+}
+
+// ── TaskDetailSheet (P3) ──────────────────────────────────────────────────────
+// Right-edge slide-over panel that renders the full detail of one Task,
+// Subtask, or Sub-subtask. Opens when the row's title is clicked. The inline
+// expand-children chevron still works independently — this sheet replaces
+// only the *detail* surface, not the children tree. See feedback-no-big-
+// rewrites: ships *alongside* the inline expanded section; that section is
+// cut in a follow-up phase after browser verification.
+
+type SheetScope =
+  | {
+      kind: "task";
+      task: Task;
+      programName?: string;
+      programColor?: string;
+      initiativeName?: string;
+    }
+  | {
+      kind: "subtask";
+      subtask: Subtask;
+      task: Task;
+      programName?: string;
+      programColor?: string;
+      initiativeName?: string;
+    };
+
+const PRIORITY_OPTIONS = ["low", "medium", "high", "urgent"] as const;
+
+function TaskDetailSheet({
+  scope,
+  members,
+  currentUserId,
+  myRole,
+  onClose,
+  onChanged,
+  onNavigate,
+}: {
+  scope: SheetScope | null;
+  members: Member[];
+  currentUserId: string;
+  myRole: string;
+  onClose: () => void;
+  onChanged: () => void;
+  // Click a subtask inside the sheet to drill in without closing.
+  onNavigate?: (next: SheetScope) => void;
+}) {
+  // Local field state seeded from the open scope. When `scope` changes, reset.
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [statusVal, setStatusVal] = useState("");
+  const [priority, setPriority] = useState("medium");
+  const [dueDate, setDueDate] = useState("");
+  const [assigneeId, setAssigneeId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+  const [watchers, setWatchers] = useState<Watcher[]>([]);
+  // Task stakeholders mirror the row's canManageWatchers gate — without this,
+  // a secondary stakeholder opening the sheet would see disabled inputs even
+  // though they CAN edit from the row. Loaded once per sheet open.
+  const [stakeholderIds, setStakeholderIds] = useState<Set<string>>(new Set());
+  // Subtree (children of the current scope) — rendered inline in the sheet
+  // so users don't bounce between the row's inline-expand and the sheet.
+  const [children, setChildren] = useState<Subtask[]>([]);
+  const [childrenLoading, setChildrenLoading] = useState(false);
+  const [showAddChild, setShowAddChild] = useState(false);
+  const [showComments, setShowComments] = useState(false);
+  // Local approval state so the Approve/Reject controls inside the sheet
+  // can react instantly without waiting for the parent refetch.
+  const [approvalState, setApprovalState] = useState<string | undefined>();
+
+  // Esc to close. Click on backdrop also closes (handled below).
+  useEffect(() => {
+    if (!scope) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [scope, onClose]);
+
+  // Seed fields when the open scope changes.
+  useEffect(() => {
+    if (!scope) return;
+    if (scope.kind === "task") {
+      setTitle(scope.task.title);
+      setStatusVal(scope.task.status);
+      setPriority(scope.task.priority || "medium");
+      setDueDate(scope.task.due_date ?? "");
+      setDescription("");
+      setAssigneeId(scope.task.primary_stakeholder_id ?? null);
+      setApprovalState(scope.task.approval_state);
+    } else {
+      setTitle(scope.subtask.title);
+      setStatusVal(scope.subtask.status);
+      setPriority((scope.subtask.priority ?? "medium") as string);
+      setDueDate(scope.subtask.due_date ?? "");
+      setDescription(scope.subtask.description ?? "");
+      setAssigneeId(scope.subtask.assignee_id ?? null);
+      setApprovalState(scope.subtask.approval_state);
+    }
+    setErr("");
+  }, [scope]);
+
+  // Pull stakeholders for the canEdit gate (same shape as the row).
+  useEffect(() => {
+    if (!scope) return;
+    const tid = scope.task.id;
+    apiFetch(`/api/v1/tasks/${tid}/stakeholders`)
+      .then((rows: any) => {
+        if (!Array.isArray(rows)) return setStakeholderIds(new Set());
+        setStakeholderIds(new Set(rows.map((r: any) => r.user_id)));
+      })
+      .catch(() => setStakeholderIds(new Set()));
+  }, [scope]);
+
+  // Pull the latest watchers for this scope (the row may have a stale snapshot).
+  useEffect(() => {
+    if (!scope) return;
+    const taskId = scope.kind === "task" ? scope.task.id : scope.task.id;
+    apiFetch(`/api/v1/tasks/${taskId}/watchers`)
+      .then((all: any) => {
+        if (!Array.isArray(all)) return setWatchers([]);
+        if (scope.kind === "task") {
+          setWatchers(all.filter((w: Watcher) => w.scope_type === "task"));
+        } else {
+          setWatchers(
+            all.filter(
+              (w: Watcher) =>
+                w.scope_type === "subtask" && w.subtask_id === scope.subtask.id
+            )
+          );
+        }
+      })
+      .catch(() => setWatchers([]));
+  }, [scope]);
+
+  // Load children (subtasks for a task; sub-subtasks for a subtask). Uses the
+  // existing grouped endpoint so the row's data stays in sync — saving here
+  // also calls onChanged() which refetches the row.
+  const loadChildren = useCallback(async () => {
+    if (!scope) return;
+    setChildrenLoading(true);
+    try {
+      const data = await apiFetch(
+        `/api/v1/tasks/${scope.task.id}/subtasks-grouped`,
+      );
+      const all: Subtask[] = [
+        ...(data?.task_flat ?? []),
+        ...Object.values(data?.by_entity ?? {}).flat() as Subtask[],
+      ];
+      if (scope.kind === "task") {
+        // Show only top-level subtasks; sub-subtasks belong to a subtask scope.
+        setChildren(all.filter((s) => !s.parent_subtask_id));
+      } else {
+        setChildren(
+          all.filter((s) => s.parent_subtask_id === scope.subtask.id),
+        );
+      }
+    } catch {
+      setChildren([]);
+    } finally {
+      setChildrenLoading(false);
+    }
+  }, [scope]);
+
+  useEffect(() => {
+    if (!scope) return;
+    setShowAddChild(false);
+    setShowComments(false);
+    loadChildren();
+  }, [scope, loadChildren]);
+
+  if (!scope) return null;
+
+  const isTask = scope.kind === "task";
+  const taskId = scope.task.id;
+  const subtaskId = isTask ? null : scope.subtask.id;
+  const apiPath = isTask
+    ? `/api/v1/tasks/${taskId}`
+    : `/api/v1/tasks/${taskId}/subtasks/${subtaskId}`;
+
+  const isPrivileged = myRole === "owner" || myRole === "admin";
+  // Mirror SubtaskRow/TaskCard canManageWatchers: primary | task-stakeholder
+  // | workspace owner/admin. Without the stakeholder branch a secondary
+  // stakeholder couldn't edit in the sheet though they can from the row.
+  const canEdit =
+    isPrivileged ||
+    scope.task.primary_stakeholder_id === currentUserId ||
+    stakeholderIds.has(currentUserId);
+
+  const watcherScope: WatcherScope = isTask
+    ? { scope_type: "task" }
+    : { scope_type: "subtask", subtask_id: subtaskId! };
+
+  async function save() {
+    const sc = scope;
+    if (!sc) return;
+    if (!title.trim()) {
+      setErr("Title required");
+      return;
+    }
+    setSaving(true);
+    setErr("");
+    try {
+      // Backend now respects explicit null (model_fields_set), so sending
+      // null actually clears the field. Single PATCH for both tasks and
+      // subtasks — update_task already handles closure + approval transitions
+      // on status change, so no second /status call is needed.
+      const payload: Record<string, any> = {
+        title: title.trim(),
+        priority,
+        // Empty input → null clears the column. Backend distinguishes
+        // "field absent" (no change) from "field explicitly null" (clear).
+        due_date: dueDate || null,
+        description: description || null,
+        status: statusVal,
+      };
+      if (!isTask) payload.assignee_id = assigneeId;
+      await apiFetch(apiPath, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+      onChanged();
+      onClose();
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const breadcrumb: string[] = [];
+  if (scope.programName) breadcrumb.push(scope.programName);
+  if (scope.initiativeName) breadcrumb.push(scope.initiativeName);
+  if (!isTask) breadcrumb.push(scope.task.title);
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-40 bg-black/30"
+        onClick={onClose}
+        aria-hidden
+      />
+      <aside
+        role="dialog"
+        aria-label="Task details"
+        className="fixed right-0 top-0 z-50 h-full w-full max-w-[760px] bg-white shadow-2xl border-l border-pebble flex flex-col"
+      >
+        <header className="flex items-start justify-between gap-3 p-4 border-b border-pebble">
+          <div className="min-w-0 flex-1">
+            {breadcrumb.length > 0 && (
+              <p className="text-[11px] text-steel truncate">
+                {breadcrumb.map((b, i) => (
+                  <span key={i}>
+                    {i > 0 && <span className="mx-1 text-steel/40">›</span>}
+                    {b}
+                  </span>
+                ))}
+              </p>
+            )}
+            <p className="text-[10px] uppercase tracking-wide text-steel/60 mt-1">
+              {isTask ? "Task" : scope.subtask.parent_subtask_id ? "Sub-subtask" : "Subtask"}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-steel hover:text-midnight"
+            aria-label="Close"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </header>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div>
+            <label className="block text-[11px] font-medium text-steel mb-1">Title</label>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              disabled={!canEdit || saving}
+              className="w-full border border-pebble rounded px-3 py-1.5 text-sm text-midnight focus:outline-none focus:border-ocean disabled:bg-mist/40"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-medium text-steel mb-1">Status</label>
+              <select
+                value={statusVal}
+                onChange={(e) => setStatusVal(e.target.value)}
+                disabled={!canEdit || saving}
+                className="w-full border border-pebble rounded px-2 py-1.5 text-sm focus:outline-none focus:border-ocean disabled:bg-mist/40"
+              >
+                {(isTask ? TASK_STATUS_ORDER : SUBTASK_STATUS_ORDER).map((s) => (
+                  <option key={s} value={s}>
+                    {STATUS_LABELS[s] ?? s}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-medium text-steel mb-1">Priority</label>
+              <select
+                value={priority}
+                onChange={(e) => setPriority(e.target.value)}
+                disabled={!canEdit || saving}
+                className="w-full border border-pebble rounded px-2 py-1.5 text-sm focus:outline-none focus:border-ocean disabled:bg-mist/40"
+              >
+                {PRIORITY_OPTIONS.map((p) => (
+                  <option key={p} value={p}>
+                    {p[0].toUpperCase() + p.slice(1)}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-medium text-steel mb-1">Due date</label>
+              <input
+                type="date"
+                value={dueDate}
+                onChange={(e) => setDueDate(e.target.value)}
+                disabled={!canEdit || saving}
+                className="w-full border border-pebble rounded px-2 py-1.5 text-sm focus:outline-none focus:border-ocean disabled:bg-mist/40"
+              />
+            </div>
+
+            {!isTask && (
+              <div>
+                <label className="block text-[11px] font-medium text-steel mb-1">Assignee</label>
+                <select
+                  value={assigneeId ?? ""}
+                  onChange={(e) => setAssigneeId(e.target.value || null)}
+                  disabled={!canEdit || saving}
+                  className="w-full border border-pebble rounded px-2 py-1.5 text-sm focus:outline-none focus:border-ocean disabled:bg-mist/40"
+                >
+                  <option value="">Unassigned</option>
+                  {members.map((m) => (
+                    <option key={m.user_id} value={m.user_id}>
+                      {m.name || m.email}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-[11px] font-medium text-steel mb-1">Description</label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              disabled={!canEdit || saving}
+              rows={4}
+              placeholder={isTask ? "Add a description for this task" : "Add a description for this subtask"}
+              className="w-full border border-pebble rounded px-3 py-2 text-sm text-midnight focus:outline-none focus:border-ocean disabled:bg-mist/40"
+            />
+          </div>
+
+          {/* ── Approval controls (only show when approval matters) ── */}
+          {(() => {
+            // Approver = explicit own-scope (non-inherited) approver row.
+            const isApprover = watchers.some(
+              (w) =>
+                w.role === "approver" &&
+                w.user_id === currentUserId &&
+                !w.inherited_from,
+            );
+            const hasApprover = watchers.some(
+              (w) => w.role === "approver" && !w.inherited_from,
+            );
+            // Show the strip whenever there's an approver or an approval has
+            // already happened — otherwise the section is noise.
+            const visible =
+              hasApprover ||
+              approvalState === "pending" ||
+              approvalState === "approved" ||
+              approvalState === "rejected";
+            if (!visible) return null;
+            return (
+              <div>
+                <label className="block text-[11px] font-medium text-steel mb-1">
+                  Approval
+                </label>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <ApprovalControls
+                    taskId={taskId}
+                    scope={watcherScope}
+                    approvalState={approvalState}
+                    isApprover={isApprover}
+                    onActed={(action) => {
+                      if (action === "approve") setApprovalState("approved");
+                      else setApprovalState("rejected");
+                      onChanged();
+                    }}
+                    onOpenThread={() => setShowComments(true)}
+                  />
+                </div>
+              </div>
+            );
+          })()}
+
+          <div>
+            <label className="block text-[11px] font-medium text-steel mb-1">Watchers</label>
+            <WatcherStrip
+              taskId={taskId}
+              scope={watcherScope}
+              watchers={watchers}
+              members={members}
+              canManage={canEdit}
+              onChanged={() => {
+                // Refresh local watcher list then bubble up so the row also updates.
+                apiFetch(`/api/v1/tasks/${taskId}/watchers`).then((all: any) => {
+                  if (!Array.isArray(all)) return;
+                  setWatchers(
+                    isTask
+                      ? all.filter((w: Watcher) => w.scope_type === "task")
+                      : all.filter(
+                          (w: Watcher) =>
+                            w.scope_type === "subtask" && w.subtask_id === subtaskId
+                        )
+                  );
+                });
+                onChanged();
+              }}
+            />
+          </div>
+
+          {/* ── Subtree (children of this scope) ── */}
+          {/* For tasks: top-level subtasks. For subtasks: sub-subtasks (one
+              level deep — the DB CHECK caps nesting). Click a row to drill
+              the sheet into that child's scope without closing. */}
+          {!(isTask && (scope.task.task_entities?.length ?? 0) > 0) && (
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-[11px] font-medium text-steel">
+                  {isTask ? "Subtasks" : "Sub-subtasks"}
+                  <span className="text-steel/50 ml-1.5">({children.length})</span>
+                </label>
+                {canEdit && !showAddChild && (isTask || !scope.subtask.parent_subtask_id) && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAddChild(true)}
+                    className="text-[11px] text-taskora-red hover:text-taskora-red/80 font-medium flex items-center gap-1"
+                  >
+                    <Plus className="w-3 h-3" />
+                    Add {isTask ? "subtask" : "sub-subtask"}
+                  </button>
+                )}
+              </div>
+              {childrenLoading && children.length === 0 && (
+                <p className="text-xs text-steel/50 italic py-2">Loading…</p>
+              )}
+              {!childrenLoading && children.length === 0 && !showAddChild && (
+                <p className="text-xs text-steel/50 italic py-2">
+                  No {isTask ? "subtasks" : "sub-subtasks"} yet.
+                </p>
+              )}
+              {children.length > 0 && (
+                <ul className="border border-pebble rounded divide-y divide-pebble/60">
+                  {children.map((s) => {
+                    const statusCls = STATUS_COLORS[s.status] ?? "bg-gray-100 text-gray-600";
+                    const assignee = members.find((m) => m.user_id === s.assignee_id);
+                    return (
+                      <li key={s.id}>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onNavigate?.({
+                              kind: "subtask",
+                              subtask: s,
+                              task: isTask ? scope.task : scope.task,
+                              programName: scope.programName,
+                              programColor: scope.programColor,
+                              initiativeName: scope.initiativeName,
+                            })
+                          }
+                          className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-mist/50 focus:outline-none focus:bg-mist/70"
+                        >
+                          <span
+                            className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${statusCls} flex-shrink-0`}
+                          >
+                            {STATUS_LABELS[s.status] ?? s.status}
+                          </span>
+                          <span
+                            className={`flex-1 min-w-0 truncate text-sm ${
+                              s.status === "done" ? "line-through text-steel/50" : "text-midnight"
+                            }`}
+                          >
+                            {s.title}
+                          </span>
+                          {s.due_date && (
+                            <span className="text-[11px] text-steel flex-shrink-0">
+                              📅 {s.due_date}
+                            </span>
+                          )}
+                          {assignee && (
+                            <span
+                              className="w-5 h-5 rounded-full bg-ocean/15 text-ocean text-[9px] font-bold flex items-center justify-center flex-shrink-0"
+                              title={assignee.name || assignee.email}
+                            >
+                              {(assignee.name || assignee.email || "?")
+                                .split(" ")
+                                .map((p) => p[0])
+                                .slice(0, 2)
+                                .join("")
+                                .toUpperCase()}
+                            </span>
+                          )}
+                          <ChevronRight className="w-3.5 h-3.5 text-steel/40 flex-shrink-0" />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              {showAddChild && (
+                <div className="mt-2">
+                  <AddSubtaskInline
+                    taskId={taskId}
+                    members={members}
+                    currentUserId={currentUserId}
+                    parentSubtaskId={isTask ? undefined : subtaskId!}
+                    onCreated={() => {
+                      setShowAddChild(false);
+                      loadChildren();
+                      onChanged();
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+          {/* For entity-scoped tasks the per-entity status / per-entity subtask
+              editor is non-trivial and stays on the row's inline expand for
+              now. Surface a hint so users don't think the sheet is broken. */}
+          {isTask && (scope.task.task_entities?.length ?? 0) > 0 && (
+            <div className="rounded-md bg-mist/40 border border-pebble/60 p-3 text-xs text-steel">
+              This task tracks <span className="font-medium text-midnight">
+                {scope.task.task_entities!.length}
+              </span> {scope.task.task_entities!.length === 1 ? "entity" : "entities"}.
+              Per-entity status &amp; subtasks are managed from the task row
+              below — close this panel to expand it.
+            </div>
+          )}
+
+          {/* ── Comments — open the existing thread in a modal ── */}
+          <div>
+            <label className="block text-[11px] font-medium text-steel mb-1">Comments</label>
+            <button
+              type="button"
+              onClick={() => setShowComments(true)}
+              className="w-full flex items-center justify-between gap-2 border border-pebble rounded px-3 py-2 text-sm text-steel hover:bg-mist/40 focus:outline-none focus:border-ocean"
+            >
+              <span className="inline-flex items-center gap-2">
+                <MessageSquare className="w-4 h-4 text-ocean" />
+                {isTask
+                  ? "Open task thread (rolls up subtree comments)"
+                  : "Open subtask thread"}
+              </span>
+              <ChevronRight className="w-4 h-4 text-steel/40" />
+            </button>
+          </div>
+        </div>
+
+        {showComments && (
+          <CommentsPopup
+            apiPath={
+              isTask
+                ? `/api/v1/tasks/${taskId}/comments`
+                : `/api/v1/tasks/${taskId}/subtasks/${subtaskId}/comments`
+            }
+            includeDescendants={isTask}
+            title={title || (isTask ? "Task" : "Subtask")}
+            onClose={() => setShowComments(false)}
+            onPosted={() => onChanged()}
+          />
+        )}
+
+        <footer className="border-t border-pebble p-3 flex items-center justify-end gap-2">
+          {err && <span className="text-xs text-red-600 mr-auto">{err}</span>}
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="px-3 py-1.5 text-sm rounded border border-pebble text-steel hover:bg-mist"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={!canEdit || saving}
+            className="px-3 py-1.5 text-sm rounded bg-taskora-red text-white hover:bg-taskora-red/90 disabled:opacity-50"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </footer>
+      </aside>
+    </>
   );
 }
 
