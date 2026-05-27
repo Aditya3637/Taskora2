@@ -309,6 +309,8 @@ export default function NotebookPage() {
                 workspacePeople={people}
                 readOnly={!canEditActive}
                 onSaved={updatePageInList}
+                allPages={[...pages, ...sharedPages]}
+                onOpenPage={(id) => setActivePageId(id)}
               />
             )}
           </div>
