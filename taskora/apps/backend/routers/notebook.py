@@ -49,6 +49,7 @@ class PageCreate(BaseModel):
     project_id: Optional[str] = None
     title: Optional[str] = Field(default=None, max_length=200)
     body: Optional[list] = None
+    icon: Optional[str] = Field(default=None, max_length=8)
 
 
 class PageUpdate(BaseModel):
@@ -56,6 +57,7 @@ class PageUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=200)
     body: Optional[list] = None
     sort_order: Optional[int] = None
+    icon: Optional[str] = Field(default=None, max_length=8)
 
 
 class GoalsUpdate(BaseModel):
@@ -310,6 +312,7 @@ def create_page(
         "project_id": body.project_id,
         "title": (body.title or "Untitled").strip()[:200],
         "body": body.body if body.body is not None else [],
+        "icon": body.icon,
     }
     result = sb.table("notebook_pages").insert(payload).execute()
     if not result.data:
@@ -355,6 +358,8 @@ def update_page(
         patch["body"] = body.body
     if body.sort_order is not None:
         patch["sort_order"] = body.sort_order
+    if "icon" in fields_set:
+        patch["icon"] = body.icon
     if not patch:
         return page
     result = sb.table("notebook_pages").update(patch).eq("id", page_id).execute()

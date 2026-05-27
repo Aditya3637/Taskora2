@@ -135,6 +135,8 @@ export interface Page {
   body: Block[];
   updated_at: string;
   follower_role?: "viewer" | "editor";
+  /** Optional emoji icon shown next to the title in editor + sidebar. */
+  icon?: string | null;
 }
 
 export interface ChecklistItem {

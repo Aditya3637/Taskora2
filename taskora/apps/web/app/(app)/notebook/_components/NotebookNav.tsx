@@ -317,12 +317,15 @@ function PageItem({
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left flex items-center justify-between gap-2 px-2 py-1 rounded text-sm truncate ${
+      className={`w-full text-left flex items-center gap-1.5 px-2 py-1 rounded text-sm truncate ${
         active
           ? "bg-midnight text-white"
           : "text-midnight hover:bg-white"
       }`}
     >
+      <span className="w-4 text-center text-sm flex-shrink-0">
+        {page.icon || (active ? "📄" : <span className="text-steel/40">·</span>)}
+      </span>
       <span className="truncate flex-1">{page.title || "Untitled"}</span>
       {rightLabel && (
         <span

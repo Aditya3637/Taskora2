@@ -29,6 +29,7 @@ import {
   type TableBlock,
   type TextLikeBlock,
 } from "../_lib/types";
+import EmojiPicker from "./EmojiPicker";
 import SlashMenu from "./SlashMenu";
 
 /**
@@ -77,12 +78,16 @@ export default function PageEditor({
   onOpenPage: (pageId: string) => void;
 }) {
   const [title, setTitle] = useState(page.title);
+  const [icon, setIcon] = useState<string | null>(page.icon ?? null);
   const [blocks, setBlocks] = useState<Block[]>(page.body || []);
   const [saving, setSaving] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [sentStatuses, setSentStatuses] = useState<Record<string, string>>({});
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [focusedBlockId, setFocusedBlockId] = useState<string | null>(null);
+  const [iconPickerOpen, setIconPickerOpen] = useState(false);
+  const [readingMode, setReadingMode] = useState(false);
 
   // Slash menu state — anchored to a block id; query is the text after `/`.
   const [slash, setSlash] = useState<{ blockId: string; query: string } | null>(null);
@@ -98,9 +103,11 @@ export default function PageEditor({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     setTitle(page.title);
+    setIcon(page.icon ?? null);
     setBlocks(page.body || []);
     setSlash(null);
     setFocusedBlockId(null);
+    setReadingMode(false);
   }, [page.id]);
 
   // Load sender-side assignment statuses so we can show the pill on a
@@ -164,14 +171,19 @@ export default function PageEditor({
 
   // ─── Persistence ─────────────────────────────────────────────────
   const persist = useCallback(
-    async (nextTitle: string, nextBlocks: Block[]) => {
+    async (
+      nextTitle: string,
+      nextBlocks: Block[],
+      nextIcon: string | null,
+    ) => {
       setSaving(true);
       try {
         const resp = (await apiFetch(`/api/v1/notebook/pages/${page.id}`, {
           method: "PATCH",
-          body: JSON.stringify({ title: nextTitle, body: nextBlocks }),
+          body: JSON.stringify({ title: nextTitle, body: nextBlocks, icon: nextIcon }),
         })) as Page;
         onSaved?.(resp);
+        setLastSavedAt(Date.now());
       } finally {
         setSaving(false);
       }
@@ -180,11 +192,11 @@ export default function PageEditor({
   );
 
   const scheduleSave = useCallback(
-    (nextTitle: string, nextBlocks: Block[]) => {
+    (nextTitle: string, nextBlocks: Block[], nextIcon: string | null = icon) => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
-      debounceRef.current = setTimeout(() => persist(nextTitle, nextBlocks), 600);
+      debounceRef.current = setTimeout(() => persist(nextTitle, nextBlocks, nextIcon), 600);
     },
-    [persist],
+    [persist, icon],
   );
 
   // ─── Block ops ───────────────────────────────────────────────────
@@ -343,31 +355,70 @@ export default function PageEditor({
 
   return (
     <div className="flex flex-col h-full">
-      {/* Title row */}
+      {/* Title row — icon + title + status. Reading mode hides the
+          edit chrome but keeps the title visible. */}
       <div className="flex items-center justify-between mb-3 gap-2 flex-shrink-0">
-        <input
-          type="text"
-          value={title}
-          onChange={(e) => onTitleChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              if (blocks.length === 0) appendBlock("text");
-              else setFocusedBlockId(blocks[0].id);
-            }
-          }}
-          disabled={readOnly}
-          className="text-2xl font-bold text-midnight bg-transparent focus:outline-none flex-1 min-w-0 disabled:cursor-not-allowed placeholder:text-steel/40"
-          placeholder="Untitled"
-        />
-        <div className="flex items-center gap-2 text-[11px] text-steel/70">
+        <div className="flex items-center gap-2 flex-1 min-w-0 relative">
+          <button
+            onClick={() => !readOnly && setIconPickerOpen((v) => !v)}
+            className={`h-9 w-9 flex items-center justify-center rounded text-2xl flex-shrink-0 ${
+              readOnly ? "cursor-default" : "hover:bg-pebble/60"
+            }`}
+            title={readOnly ? "" : "Change icon"}
+            aria-label="Page icon"
+          >
+            {icon || <span className="text-base text-steel/40">＋</span>}
+          </button>
+          {iconPickerOpen && !readOnly && (
+            <div className="absolute top-10 left-0">
+              <EmojiPicker
+                value={icon}
+                onChange={(next) => {
+                  setIcon(next);
+                  scheduleSave(title, blocks, next);
+                }}
+                onClose={() => setIconPickerOpen(false)}
+              />
+            </div>
+          )}
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => onTitleChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                if (blocks.length === 0) appendBlock("text");
+                else setFocusedBlockId(blocks[0].id);
+              }
+            }}
+            disabled={readOnly}
+            className="text-2xl font-bold text-midnight bg-transparent focus:outline-none flex-1 min-w-0 disabled:cursor-not-allowed placeholder:text-steel/40"
+            placeholder="Untitled"
+          />
+        </div>
+        <div className="flex items-center gap-2 text-[11px] text-steel/70 flex-shrink-0">
           {readOnly && <span className="px-1.5 py-0.5 bg-pebble/60 rounded">Read-only</span>}
           {saving && <span>saving…</span>}
+          {!saving && lastSavedAt && (
+            <span title={new Date(lastSavedAt).toLocaleTimeString()}>
+              saved
+            </span>
+          )}
+          <button
+            onClick={() => setReadingMode((v) => !v)}
+            className={`px-1.5 py-0.5 rounded text-[11px] ${
+              readingMode ? "bg-midnight text-white" : "border border-pebble text-steel hover:text-midnight"
+            }`}
+            title={readingMode ? "Exit reading mode" : "Reading mode — hide editor chrome"}
+          >
+            {readingMode ? "📖 reading" : "👁 read"}
+          </button>
         </div>
       </div>
 
-      {/* Suggestions pill */}
-      {suggestions.length > 0 && (
+      {/* Suggestions pill — hidden in reading mode. */}
+      {suggestions.length > 0 && !readingMode && (
         <div className="mb-3 flex-shrink-0">
           <button
             onClick={() => setShowSuggestions((v) => !v)}
@@ -423,7 +474,7 @@ export default function PageEditor({
               block={b}
               idx={idx}
               total={blocks.length}
-              readOnly={readOnly}
+              readOnly={readOnly || readingMode}
               focused={focusedBlockId === b.id}
               sentStatus={sentStatuses[b.id]}
               workspacePeople={workspacePeople}
@@ -493,17 +544,25 @@ export default function PageEditor({
         )}
       </div>
 
-      {/* Footer composer */}
-      {!readOnly && (
-        <div className="mt-3 flex gap-2 pt-2 border-t border-pebble flex-shrink-0">
+      {/* Footer — composer + word count. Reading mode hides the
+          composer but keeps a slim stats line. */}
+      {!readOnly && !readingMode && (
+        <div className="mt-3 flex gap-2 pt-2 border-t border-pebble flex-shrink-0 items-center flex-wrap">
           <button onClick={() => appendBlock("text")} className="text-xs px-3 py-1.5 border border-pebble rounded text-steel hover:text-midnight hover:bg-pebble/40">+ Text</button>
           <button onClick={() => appendBlock("heading")} className="text-xs px-3 py-1.5 border border-pebble rounded text-steel hover:text-midnight hover:bg-pebble/40">+ Heading</button>
           <button onClick={() => appendBlock("bullet")} className="text-xs px-3 py-1.5 border border-pebble rounded text-steel hover:text-midnight hover:bg-pebble/40">+ List</button>
           <button onClick={() => appendBlock("todo")} className="text-xs px-3 py-1.5 border border-pebble rounded text-steel hover:text-midnight hover:bg-pebble/40">+ Todo</button>
           <button onClick={() => appendBlock("table")} className="text-xs px-3 py-1.5 border border-pebble rounded text-steel hover:text-midnight hover:bg-pebble/40">+ Table</button>
-          <span className="ml-auto text-[11px] text-steel/50 self-center">
-            Type <code className="bg-pebble/60 px-1 rounded">/</code> on any empty line for more block types
+          <span className="ml-auto text-[11px] text-steel/50 flex items-center gap-2">
+            <span>{computeWordCount(blocks)} words</span>
+            <span className="text-steel/30">·</span>
+            <span>Type <code className="bg-pebble/60 px-1 rounded">/</code> for blocks · <code className="bg-pebble/60 px-1 rounded">⌘K</code> to switch</span>
           </span>
+        </div>
+      )}
+      {readingMode && (
+        <div className="mt-3 pt-2 border-t border-pebble flex-shrink-0 text-[11px] text-steel/50 flex items-center gap-2">
+          <span>{computeWordCount(blocks)} words · ~{Math.max(1, Math.round(computeWordCount(blocks) / 220))} min read</span>
         </div>
       )}
     </div>
@@ -1023,6 +1082,19 @@ function renderTextWithMath(
 function formatNumber(n: number): string {
   if (Number.isInteger(n)) return n.toString();
   return n.toFixed(4).replace(/\.?0+$/, "");
+}
+
+// Approximate word count over all text-like blocks. Cheap split on
+// whitespace; close enough for the footer indicator.
+function computeWordCount(blocks: Block[]): number {
+  let n = 0;
+  for (const b of blocks) {
+    if (!isTextLike(b)) continue;
+    const t = (b as TextLikeBlock).text;
+    if (!t) continue;
+    n += t.trim().split(/\s+/).filter(Boolean).length;
+  }
+  return n;
 }
 
 // ─────────────────────────────────────────────────────────────────────

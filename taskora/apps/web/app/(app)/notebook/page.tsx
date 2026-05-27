@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import Goals from "./_components/Goals";
 import Checklist from "./_components/Checklist";
+import CommandPalette from "./_components/CommandPalette";
 import NotebookNav from "./_components/NotebookNav";
 import PageEditor from "./_components/PageEditor";
 import ShareModal from "./_components/ShareModal";
@@ -11,6 +12,7 @@ import type { Page, Person, Project } from "./_lib/types";
 type FocusMode = null | "goals" | "checklist" | "notebook";
 const RATIO_KEY = "taskora_notebook_goals_pct";
 const NAV_OPEN_KEY = "taskora_notebook_nav_open";
+const LEFT_MIN_KEY = "taskora_notebook_left_minimized";
 
 /**
  * Notebook surface — three coordinated zones in a book-spread:
@@ -48,6 +50,30 @@ export default function NotebookPage() {
   useEffect(() => {
     if (typeof window !== "undefined") localStorage.setItem(NAV_OPEN_KEY, String(navOpen));
   }, [navOpen]);
+
+  // Left panel (Goals + Checklist) collapse to a thin rail so the
+  // notebook editor can take the bulk of the screen.
+  const [leftMinimized, setLeftMinimized] = useState<boolean>(false);
+  useEffect(() => {
+    const v = typeof window !== "undefined" && localStorage.getItem(LEFT_MIN_KEY);
+    if (v === "true") setLeftMinimized(true);
+  }, []);
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem(LEFT_MIN_KEY, String(leftMinimized));
+  }, [leftMinimized]);
+
+  // Cmd/Ctrl+K quick switcher.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Bootstrap: projects, pages, workspace people.
   useEffect(() => {
@@ -161,47 +187,97 @@ export default function NotebookPage() {
 
   const showLeft = focus === null || focus === "goals" || focus === "checklist";
   const showRight = focus === null || focus === "notebook";
-  const gridCols = focus === null ? "md:grid-cols-[3fr_7fr]" : "md:grid-cols-1";
+  // Grid columns reflect three states:
+  //   - focused: single column (the focused panel only)
+  //   - left minimized: a thin rail on the left, notebook takes the rest
+  //   - default: 30/70 book-spread
+  const gridCols =
+    focus !== null
+      ? "md:grid-cols-1"
+      : leftMinimized
+      ? "md:grid-cols-[56px_1fr]"
+      : "md:grid-cols-[3fr_7fr]";
 
   return (
     <div className="min-h-screen p-4 md:p-6 bg-mist">
       <div className={`grid grid-cols-1 ${gridCols} gap-4 max-w-[1600px] mx-auto h-[calc(100vh-2rem)]`}>
-        {/* ── LEFT PAGE: Goals + Checklist ──────────────────────────── */}
+        {/* ── LEFT PAGE: Goals + Checklist (with minimize rail) ─────── */}
         {showLeft && (
-          <div ref={leftPanelRef} className="bg-white rounded-2xl shadow-sm border border-pebble p-4 flex flex-col overflow-hidden">
-            {(focus === null || focus === "goals") && (
-              <PanelFrame
-                focused={focus === "goals"}
-                onToggleFocus={() => setFocus(focus === "goals" ? null : "goals")}
-                style={focus === null ? { height: `${goalsPct}%` } : undefined}
-                className={focus === "goals" ? "flex-1" : ""}
+          leftMinimized && focus === null ? (
+            // Compact rail — restores to default on click.
+            <div className="bg-white rounded-2xl shadow-sm border border-pebble flex flex-col items-center py-3 gap-3">
+              <button
+                onClick={() => setLeftMinimized(false)}
+                className="w-9 h-9 flex items-center justify-center rounded text-lg hover:bg-pebble/60"
+                title="Expand Goals + Checklist"
+                aria-label="Expand Goals + Checklist"
               >
-                <Goals />
-              </PanelFrame>
-            )}
+                ↔
+              </button>
+              <button
+                onClick={() => { setLeftMinimized(false); setFocus("goals"); }}
+                className="w-9 h-9 flex items-center justify-center rounded text-lg hover:bg-pebble/60"
+                title="Open Goals"
+                aria-label="Open Goals"
+              >
+                🎯
+              </button>
+              <button
+                onClick={() => { setLeftMinimized(false); setFocus("checklist"); }}
+                className="w-9 h-9 flex items-center justify-center rounded text-lg hover:bg-pebble/60"
+                title="Open Checklist"
+                aria-label="Open Checklist"
+              >
+                ☑
+              </button>
+            </div>
+          ) : (
+            <div ref={leftPanelRef} className="bg-white rounded-2xl shadow-sm border border-pebble p-4 flex flex-col overflow-hidden relative">
+              {focus === null && (
+                <button
+                  onClick={() => setLeftMinimized(true)}
+                  className="absolute top-2 right-2 z-20 text-steel/60 hover:text-midnight text-sm leading-none p-1"
+                  title="Minimize Goals + Checklist"
+                  aria-label="Minimize Goals + Checklist"
+                >
+                  ⇤
+                </button>
+              )}
 
-            {focus === null && (
-              <div
-                onMouseDown={startDrag}
-                onTouchStart={startDrag}
-                className="h-2 -my-1 cursor-row-resize flex items-center justify-center group flex-shrink-0"
-                aria-label="Resize between Goals and Checklist"
-                role="separator"
-              >
-                <div className="w-8 h-0.5 bg-pebble group-hover:bg-taskora-red/60 rounded transition-colors" />
-              </div>
-            )}
+              {(focus === null || focus === "goals") && (
+                <PanelFrame
+                  focused={focus === "goals"}
+                  onToggleFocus={() => setFocus(focus === "goals" ? null : "goals")}
+                  style={focus === null ? { height: `${goalsPct}%` } : undefined}
+                  className={focus === "goals" ? "flex-1" : ""}
+                >
+                  <Goals />
+                </PanelFrame>
+              )}
 
-            {(focus === null || focus === "checklist") && (
-              <PanelFrame
-                focused={focus === "checklist"}
-                onToggleFocus={() => setFocus(focus === "checklist" ? null : "checklist")}
-                className="flex-1 min-h-0 border-t border-pebble pt-3"
-              >
-                <Checklist />
-              </PanelFrame>
-            )}
-          </div>
+              {focus === null && (
+                <div
+                  onMouseDown={startDrag}
+                  onTouchStart={startDrag}
+                  className="h-2 -my-1 cursor-row-resize flex items-center justify-center group flex-shrink-0"
+                  aria-label="Resize between Goals and Checklist"
+                  role="separator"
+                >
+                  <div className="w-8 h-0.5 bg-pebble group-hover:bg-taskora-red/60 rounded transition-colors" />
+                </div>
+              )}
+
+              {(focus === null || focus === "checklist") && (
+                <PanelFrame
+                  focused={focus === "checklist"}
+                  onToggleFocus={() => setFocus(focus === "checklist" ? null : "checklist")}
+                  className="flex-1 min-h-0 border-t border-pebble pt-3"
+                >
+                  <Checklist />
+                </PanelFrame>
+              )}
+            </div>
+          )
         )}
 
         {/* ── RIGHT PAGE: Nav + AI Notebook ─────────────────────────── */}
@@ -294,6 +370,16 @@ export default function NotebookPage() {
 
       {shareOpen && activePage && (
         <ShareModal pageId={activePage.id} onClose={() => setShareOpen(false)} />
+      )}
+
+      {paletteOpen && (
+        <CommandPalette
+          pages={pages}
+          sharedPages={sharedPages}
+          onPick={setActivePageId}
+          onClose={() => setPaletteOpen(false)}
+          onCreateNew={() => createPage(null)}
+        />
       )}
     </div>
   );
