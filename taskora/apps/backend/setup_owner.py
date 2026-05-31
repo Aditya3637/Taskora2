@@ -54,19 +54,27 @@ sb.auth.admin.update_user_by_id(user_id, {
 })
 print("  Done.")
 
-# ── 2b. Upsert into public.users with is_admin=true ──────────────────────────
-print(f"\n[2b] Upserting public.users with admin flag...")
+# ── 2b. Upsert into public.users (settings carries persona flags only —
+#       is_admin moved to the platform_admins table by migration 040).
+print(f"\n[2b] Upserting public.users with persona flags...")
 sb.table("users").upsert({
     "id": user_id,
     "email": TARGET_EMAIL,
     "name": "Aditya Singh",
     "settings": {
-        "is_admin": True,
         "persona_switching": True,
         "can_access_sales_leads": True,
         "can_access_sales_pipeline": True,
     },
 }, on_conflict="id").execute()
+print("  Done.")
+
+# ── 2c. Grant platform-admin via the locked-RLS platform_admins table. ──
+print(f"\n[2c] Granting platform admin via platform_admins...")
+sb.table("platform_admins").upsert(
+    {"user_id": user_id, "note": "setup_owner.py seed"},
+    on_conflict="user_id",
+).execute()
 print("  Done.")
 
 # ── 3. Find or create Taskora HQ business ─────────────────────────────────────

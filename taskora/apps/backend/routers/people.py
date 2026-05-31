@@ -16,6 +16,7 @@ through the shared ``enrich_task_items`` once — query count is constant in the
 number of tasks (no N+1), mirroring Daily Brief / War Room.
 """
 from datetime import date, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from supabase import Client
@@ -70,12 +71,17 @@ def _member_biz_ids(sb: Client, uid: str) -> list[str]:
     ]
 
 
-def _scope(sb: Client, uid: str):
+def _scope(sb: Client, uid: str, prefer: Optional[str] = None):
     """(mode, biz_ids, init_meta, tasks). Raises 403 if no access.
 
     mode='full' — owner/admin or explicitly granted in ≥1 business: sees the
     whole roster. mode='self' — no full access but the caller owns work
     (a task's primary, or an initiative owner/primary): sees only themselves.
+
+    Multi-workspace: pass `prefer` (FE's active workspace) to narrow the
+    roster to that one workspace. Without it the People board would pool
+    every workspace the user is a member of — which leaked Smartworks data
+    into the Business Excellence view for Hitesh.
     """
     member = _member_biz_ids(sb, uid)
     if not member:
@@ -83,6 +89,9 @@ def _scope(sb: Client, uid: str):
             status_code=status.HTTP_403_FORBIDDEN,
             detail="People board access required",
         )
+    if prefer and prefer in member:
+        # Honour the active workspace; access check still runs below.
+        member = [prefer]
     full = [b for b in member if people_board_access_ok(sb, b, uid)]
     biz_ids = full if full else member
 
@@ -231,12 +240,15 @@ def _needs_push(status: str | None, due: str | None, today: str) -> str | None:
 
 @router.get("/board")
 def get_board(
+    business_id: Optional[str] = Query(default=None, description="Active workspace scope."),
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    """Gallery: people who own work, each with load counters + push-score."""
+    """Gallery: people who own work, each with load counters + push-score.
+    When the user belongs to multiple workspaces, pass business_id so the
+    roster reflects only the active workspace."""
     uid = user["id"]
-    mode, biz_ids, init_meta, tasks = _scope(sb, uid)
+    mode, biz_ids, init_meta, tasks = _scope(sb, uid, prefer=business_id)
 
     task_ids = [t["id"] for t in tasks if t.get("id")]
     stk_rows = (
@@ -407,13 +419,14 @@ def get_board(
 @router.get("/board/{target_user_id}")
 def get_person_focus(
     target_user_id: str,
+    business_id: Optional[str] = Query(default=None, description="Active workspace scope."),
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
     """Focus: one person's full picture — tasks grouped Program > Initiative,
     each pre-bucketed into a Kanban column."""
     uid = user["id"]
-    mode, biz_ids, init_meta, all_tasks = _scope(sb, uid)
+    mode, biz_ids, init_meta, all_tasks = _scope(sb, uid, prefer=business_id)
     if mode == "self" and target_user_id != uid:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

@@ -212,6 +212,13 @@ def enrich_task_items(sb: Client, tasks: List[dict]) -> List[dict]:
             [name_map.get(u, "") for u in appr_map.get(t["id"], [])]
             if t.get("approval_state") == "pending" else []
         )
+        # User-id form so the frontend can check if the current user is one
+        # of the approvers and show inline Approve/Reject without a second
+        # /watchers fetch per row.
+        t["pending_approver_ids"] = (
+            list(appr_map.get(t["id"], []))
+            if t.get("approval_state") == "pending" else []
+        )
         t["days_overdue"] = _days_overdue(t.get("due_date"), t.get("status"))
 
     return tasks

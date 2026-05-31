@@ -1,3 +1,4 @@
+import time
 from datetime import date, timedelta
 from typing import List, Optional
 
@@ -13,6 +14,127 @@ router = APIRouter(prefix="/api/v1/daily-brief", tags=["daily_brief"])
 # deliberately simple/explicit so the number is trustworthy at a glance.
 _TAT_OVERDUE_DAYS = 7
 _STALE_DAYS = 7
+
+# Per-user response cache. Daily Brief is expensive (15+ Supabase round
+# trips, ~1.2s cold / 0.7s warm) and re-rendered on every page focus by
+# the FE's auto-refresh. A 60s TTL absorbs cold-start / transient blips
+# without hiding meaningful state changes (a user who marks something done
+# sees their own change immediately because we invalidate on writes? —
+# no, we don't, so the cache window is the trade-off). In-memory means
+# each Vercel function instance has its own cache; cross-instance
+# coherence would require Redis.
+_BRIEF_CACHE_TTL_SECONDS = 60
+_brief_cache: dict[tuple, tuple[float, dict]] = {}
+
+
+def _cache_get(key: tuple) -> Optional[dict]:
+    entry = _brief_cache.get(key)
+    if not entry:
+        return None
+    when, payload = entry
+    if time.time() - when > _BRIEF_CACHE_TTL_SECONDS:
+        _brief_cache.pop(key, None)
+        return None
+    return payload
+
+
+def _cache_set(key: tuple, payload: dict) -> None:
+    # Keep the dict small — evict aggressively on overflow. 256 entries
+    # ≈ 64 distinct users × 4 scope/group combos, comfortable for a
+    # single function instance.
+    if len(_brief_cache) > 256:
+        _brief_cache.clear()
+    _brief_cache[key] = (time.time(), payload)
+
+# Sort key shared by every bucket — urgent + most-overdue first so the worst
+# items rise. Anything not in the priority map sorts as 0 (last).
+_PRIORITY_RANK = {"critical": 4, "urgent": 3, "high": 2, "medium": 1, "low": 0}
+
+
+def _task_severity(t: dict) -> tuple:
+    """Higher tuple = more urgent. Stable secondary sort by created_at desc
+    so the newest task wins between ties."""
+    return (
+        _PRIORITY_RANK.get(t.get("priority") or "", 0),
+        t.get("days_overdue") or 0,
+        t.get("created_at") or "",
+    )
+
+
+def _sort_bucket(items: list) -> list:
+    return sorted(items, key=_task_severity, reverse=True)
+
+
+def _pick_hero(
+    pending_decisions: list,
+    awaiting_approval: list,
+    overdue: list,
+    blocked: list,
+) -> dict | None:
+    """Choose the single most actionable item for the user. Order of
+    consideration matches the user's decision flow: explicit decisions first,
+    approvals second (someone is waiting), then overdue (slipping commitments),
+    then blocked. Within each bucket we already pre-sorted by severity, so
+    the head of each list is the best candidate."""
+    for label, src in (
+        ("decision", pending_decisions),
+        ("approval", awaiting_approval),
+        ("overdue", overdue),
+        ("blocked", blocked),
+    ):
+        if src:
+            t = src[0]
+            return {
+                "reason": label,
+                "task_id": t["id"],
+                "title": t.get("title"),
+                "priority": t.get("priority"),
+                "status": t.get("status"),
+                "days_overdue": t.get("days_overdue") or 0,
+                "initiative_name": t.get("initiative_name"),
+                "program_name": t.get("program_name"),
+                "primary_stakeholder_name": t.get("primary_stakeholder_name"),
+                "approval_state": t.get("approval_state"),
+                "link": t.get("link"),
+            }
+    return None
+
+
+def _people_rollup(sb: Client, tasks: list, today_str: str) -> list:
+    """Per-primary-stakeholder counts for the team-scope view. Resolves names
+    in one batched query so the FE can render `Jane — 5 overdue · 2 awaiting`
+    without N+1 lookups."""
+    by_uid: dict = {}
+    for t in tasks:
+        uid = t.get("primary_stakeholder_id")
+        if not uid:
+            continue
+        g = by_uid.setdefault(uid, {
+            "user_id": uid, "name": t.get("primary_stakeholder_name") or "",
+            "open": 0, "overdue": 0, "awaiting_approval": 0, "blocked": 0,
+        })
+        st = t.get("status")
+        if st not in ("done", "archived", "cancelled"):
+            g["open"] += 1
+        if (t.get("due_date") or "") < today_str and st not in ("done", "archived"):
+            g["overdue"] += 1
+        if t.get("approval_state") == "pending":
+            g["awaiting_approval"] += 1
+        if st == "blocked":
+            g["blocked"] += 1
+    # Backfill names if enrich didn't (defensive: it always does today, but
+    # this keeps the rollup correct if the contract drifts).
+    missing = [u for u, g in by_uid.items() if not g["name"]]
+    if missing:
+        rows = sb.table("users").select("id, name").in_("id", missing).execute().data
+        nm = {r["id"]: r.get("name") or "" for r in rows}
+        for uid, g in by_uid.items():
+            if not g["name"]:
+                g["name"] = nm.get(uid, "")
+    return sorted(
+        by_uid.values(),
+        key=lambda g: (-g["overdue"], -g["awaiting_approval"], -g["open"], g["name"]),
+    )
 
 
 def _resolve_entity_names(sb: Client, task_entities: list) -> list:
@@ -48,19 +170,28 @@ def get_daily_brief(
     (legacy behaviour). `scope=team` = every task across the businesses the
     caller belongs to (the leader/portfolio view). `initiative`/`program`/
     `owner` narrow it; `group_by` adds a rollup alongside the flat buckets.
-    The response is additive — existing keys are unchanged.
+    `business_id` scopes the brief to a single workspace — without it a
+    multi-workspace member would silently see pooled data from every
+    workspace they belong to (the original Hitesh report).
     """
     uid = user["id"]
     today = date.today()
     today_str = today.isoformat()
+
+    # Cache key includes business_id so a workspace switch invalidates.
+    cache_key = (id(sb), uid, scope, business_id, initiative, program, owner, group_by, today_str)
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     week_out = (today + timedelta(days=7)).isoformat()
     stale_threshold = (today - timedelta(days=_STALE_DAYS)).isoformat()
 
     biz_rows = sb.table("business_members").select("business_id").eq("user_id", uid).execute().data
     biz_ids = [r["business_id"] for r in biz_rows]
     # Active-workspace scoping. If the FE passes a business_id the user is
-    # a member of, restrict the brief to that workspace. Without this a
-    # multi-workspace user sees data from every workspace pooled together.
+    # a member of, narrow biz_ids to just that one so the brief reflects
+    # only the workspace they're currently looking at.
     if business_id and business_id in biz_ids:
         biz_ids = [business_id]
 
@@ -95,14 +226,14 @@ def get_daily_brief(
             for r in sb.table("task_stakeholders").select("task_id").eq("user_id", uid).execute().data
         ]
         all_task_ids = list(set(primary_ids + secondary_ids))
-        # Multi-workspace fix: primary_stakeholder_id / task_stakeholders
-        # rows are workspace-agnostic, so without this filter scope=mine
-        # would pool tasks across every workspace the caller belongs to —
-        # exactly what surfaced as "Workspace 1's data showing in
-        # Workspace 2". Drop any task whose initiative isn't in the active
-        # workspace's init_meta. Tasks with NULL initiative_id are also
-        # dropped (no workspace anchor — they'd otherwise appear in every
-        # workspace).
+        # Multi-workspace fix: a user's primary/stakeholder rows are
+        # workspace-agnostic, so without this filter the brief would pool
+        # tasks across every workspace they belong to — exactly what
+        # surfaced as "Workspace 1's data showing in Workspace 2". Drop
+        # any task whose initiative isn't in the active workspace's
+        # init_meta. Tasks with NULL initiative_id (legacy / unlinked) are
+        # also dropped because they have no workspace anchor — they'd
+        # otherwise appear in every workspace.
         if all_task_ids:
             scoped_init_ids = set(init_meta.keys())
             owned_tasks_meta = (
@@ -151,12 +282,12 @@ def get_daily_brief(
         return [t for t in rows if pred(t)]
 
     open_states = lambda s: s not in ("done", "archived", "cancelled")
-    pending_decisions = bucket(lambda t: t["status"] == "pending_decision")
-    overdue_tasks     = bucket(lambda t: (t.get("due_date") or "") < today_str and t["status"] not in ("done", "archived"))
-    stale_tasks       = bucket(lambda t: (t.get("updated_at") or "") < stale_threshold and t["status"] not in ("done", "archived"))
-    due_this_week     = bucket(lambda t: today_str <= (t.get("due_date") or "") <= week_out)
-    blocked_tasks     = bucket(lambda t: t["status"] == "blocked")
-    awaiting_approval = bucket(lambda t: t.get("approval_state") == "pending")
+    pending_decisions = _sort_bucket(bucket(lambda t: t["status"] == "pending_decision"))
+    overdue_tasks     = _sort_bucket(bucket(lambda t: (t.get("due_date") or "") < today_str and t["status"] not in ("done", "archived")))
+    stale_tasks       = _sort_bucket(bucket(lambda t: (t.get("updated_at") or "") < stale_threshold and t["status"] not in ("done", "archived")))
+    due_this_week     = _sort_bucket(bucket(lambda t: today_str <= (t.get("due_date") or "") <= week_out))
+    blocked_tasks     = _sort_bucket(bucket(lambda t: t["status"] == "blocked"))
+    awaiting_approval = _sort_bucket(bucket(lambda t: t.get("approval_state") == "pending"))
 
     def _is_breach(t: dict) -> bool:
         if t.get("days_overdue", 0) > _TAT_OVERDUE_DAYS:
@@ -167,7 +298,59 @@ def get_daily_brief(
            (t.get("closed_at") or "")[:10] < (today - timedelta(days=3)).isoformat():
             return True
         return False
-    tat_breaches = bucket(_is_breach)
+    tat_breaches = _sort_bucket(bucket(_is_breach))
+
+    # Hero "pick one" — single most-actionable item the user should tackle
+    # now, computed after sort so each list's head is the worst case.
+    top_pick = _pick_hero(
+        pending_decisions=pending_decisions,
+        awaiting_approval=awaiting_approval,
+        overdue=overdue_tasks,
+        blocked=blocked_tasks,
+    )
+
+    # Per-person rollup only meaningful when viewing the whole team. Skipped
+    # for `mine` because every row belongs to the caller anyway.
+    people_rollup = _people_rollup(sb, rows, today_str) if scope == "team" else []
+
+    # Workspace-wide options so the Daily Brief filter dropdowns can list
+    # every program / member, not just those that happen to have tasks in
+    # the current visible buckets (the source of the "missing programs in
+    # the dropdown" report).
+    workspace_programs: list = []
+    workspace_members: list = []
+    if biz_ids:
+        for p in (
+            sb.table("programs")
+            .select("id, name")
+            .in_("business_id", biz_ids)
+            .order("name")
+            .execute()
+            .data
+        ):
+            workspace_programs.append({"id": p["id"], "name": p["name"]})
+        member_uids = sorted({
+            r["user_id"]
+            for r in sb.table("business_members")
+            .select("user_id")
+            .in_("business_id", biz_ids)
+            .execute()
+            .data
+        })
+        if member_uids:
+            for u in (
+                sb.table("users")
+                .select("id, name")
+                .in_("id", member_uids)
+                .execute()
+                .data
+            ):
+                workspace_members.append({"user_id": u["id"], "name": u.get("name") or ""})
+            workspace_members.sort(key=lambda m: (m["name"] or "").lower())
+
+    # Dormant initiatives are computed after the initiative_progress block
+    # below where `inits` + `tasks_by_init` are populated.
+    dormant_initiatives: list = []
 
     # Quick stats (over the in-scope, filtered set)
     open_count = sum(1 for t in rows if open_states(t["status"]))
@@ -194,13 +377,14 @@ def get_daily_brief(
                 prog_names[r["id"]] = r["name"]
         # One batched fetch for every active initiative's tasks instead of a
         # query-per-initiative (the previous N+1 — the dominant Daily Brief
-        # cost when a workspace had many active initiatives).
+        # cost when a workspace had many active initiatives). updated_at is
+        # included so we can flag dormant initiatives below.
         all_init_ids = [i["id"] for i in inits]
         tasks_by_init: dict = {}
         if all_init_ids:
             for r in (
                 sb.table("tasks")
-                .select("id, status, due_date, approval_state, initiative_id")
+                .select("id, status, due_date, approval_state, initiative_id, updated_at")
                 .in_("initiative_id", all_init_ids)
                 .execute()
                 .data
@@ -226,6 +410,43 @@ def get_daily_brief(
                 "link": {"type": "initiative", "task_id": None, "subtask_id": None,
                          "initiative_id": init["id"], "program_id": init.get("program_id")},
             })
+
+        # Dormant initiatives — active initiatives that have either zero
+        # tasks OR no task updated in the last 14 days. Surfaces strategic
+        # gaps the rest of the brief (which only shows tasks that exist)
+        # would otherwise hide. Reuses inits + tasks_by_init from above.
+        dormant_cutoff = (today - timedelta(days=14)).isoformat()
+        for init in inits:
+            it_rows = tasks_by_init.get(init["id"], [])
+            link = {
+                "type": "initiative",
+                "task_id": None,
+                "subtask_id": None,
+                "initiative_id": init["id"],
+                "program_id": init.get("program_id"),
+            }
+            if not it_rows:
+                dormant_initiatives.append({
+                    "id": init["id"],
+                    "name": init["name"],
+                    "program_id": init.get("program_id"),
+                    "program_name": prog_names.get(init.get("program_id") or ""),
+                    "reason": "no_tasks",
+                    "last_update": None,
+                    "link": link,
+                })
+                continue
+            latest_update = max((t.get("updated_at") or "") for t in it_rows)
+            if latest_update[:10] < dormant_cutoff:
+                dormant_initiatives.append({
+                    "id": init["id"],
+                    "name": init["name"],
+                    "program_id": init.get("program_id"),
+                    "program_name": prog_names.get(init.get("program_id") or ""),
+                    "reason": "stale",
+                    "last_update": latest_update[:10] if latest_update else None,
+                    "link": link,
+                })
 
     # Optional rollup grouping over the in-scope, filtered tasks
     groups = []
@@ -263,7 +484,7 @@ def get_daily_brief(
                              "initiative_id": gid, "program_id": im.get("program_id")}
             groups.append(g)
 
-    return {
+    response = {
         "user_id": uid,
         "generated_at": today_str,
         "scope": scope,
@@ -277,9 +498,18 @@ def get_daily_brief(
         "tat_breaches": tat_breaches,
         "initiative_progress": initiative_progress,
         "groups": groups,
+        "top_pick": top_pick,
+        "people_rollup": people_rollup,
+        "workspace_programs": workspace_programs,
+        "workspace_members": workspace_members,
+        "dormant_initiatives": dormant_initiatives,
         "quick_stats": {
             "open_tasks": open_count,
             "completion_rate_this_week": completion_rate,
+            # Raw count so the UI can render "3 done this week" instead of
+            # the previously-ambiguous "X%" that mixed done-this-week with
+            # currently-open.
+            "done_this_week_count": done_this_week,
             "stale_count": len(stale_tasks),
             "awaiting_approval_count": len(awaiting_approval),
             "tat_breach_count": len(tat_breaches),
@@ -291,3 +521,5 @@ def get_daily_brief(
             ),
         },
     }
+    _cache_set(cache_key, response)
+    return response
