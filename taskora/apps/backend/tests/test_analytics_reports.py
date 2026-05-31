@@ -6,6 +6,8 @@ on-time/late split, reopened, pending-approval, avg_delay_days from
 task_date_change_log, program schedule health + milestones + owners/leads,
 member-gating, and CSV headers.
 """
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
 from main import app
@@ -260,11 +262,15 @@ def test_business_overview_member_gated():
 
 # --------------------------------------------------------------------------
 # my_performance — bugs #3 (closed_at, not updated_at) and #4 (secondary
-# stakeholders count). today is 2026-05-18; default window is 30 days
-# (since_date = 2026-04-18).
+# stakeholders count). Dates are anchored to `now` (single base per store)
+# so the 30-day completion window and 7-day stale window stay valid no
+# matter when the suite runs — hardcoded May dates used to silently rot.
 # --------------------------------------------------------------------------
 
 def _perf_store():
+    now = datetime.now(timezone.utc)
+    def ago(d):
+        return (now - timedelta(days=d)).isoformat()
     return {
         "business_members": [{"business_id": BIZ, "user_id": U, "role": "owner"}],
         "tasks": [
@@ -272,29 +278,29 @@ def _perf_store():
             # is recent) — old code measured TAT off updated_at; correct TAT
             # is created->closed = 5 days.
             {"id": "MP1", "status": "done", "due_date": "2026-05-15",
-             "closed_at": "2026-05-10T00:00:00+00:00",
-             "created_at": "2026-05-05T00:00:00+00:00",
-             "updated_at": "2026-05-17T00:00:00+00:00",
+             "closed_at": ago(8),
+             "created_at": ago(13),
+             "updated_at": ago(1),
              "primary_stakeholder_id": U},
-            # MP2: done but closed 03-01, OUTSIDE the 30-day window. Its
+            # MP2: done but closed 90d ago, OUTSIDE the 30-day window. Its
             # updated_at is recent — the old `gte(updated_at, since)` bug
             # would wrongly count it as completed.
             {"id": "MP2", "status": "done", "due_date": None,
-             "closed_at": "2026-03-01T00:00:00+00:00",
-             "created_at": "2026-02-20T00:00:00+00:00",
-             "updated_at": "2026-05-17T00:00:00+00:00",
+             "closed_at": ago(90),
+             "created_at": ago(100),
+             "updated_at": ago(1),
              "primary_stakeholder_id": U},
             # MP3: U is only a SECONDARY stakeholder (primary is someone
             # else). Old code counted primary only -> bug #4.
             {"id": "MP3", "status": "done", "due_date": None,
-             "closed_at": "2026-05-12T00:00:00+00:00",
-             "created_at": "2026-05-09T00:00:00+00:00",
-             "updated_at": "2026-05-12T00:00:00+00:00",
+             "closed_at": ago(6),
+             "created_at": ago(9),
+             "updated_at": ago(6),
              "primary_stakeholder_id": "someone-else"},
             # MP4: open + overdue, recently touched -> overdue but NOT stale.
             {"id": "MP4", "status": "todo", "due_date": "2020-01-01",
-             "closed_at": None, "created_at": "2026-05-01T00:00:00+00:00",
-             "updated_at": "2026-05-17T00:00:00+00:00",
+             "closed_at": None, "created_at": ago(30),
+             "updated_at": ago(1),
              "primary_stakeholder_id": U},
         ],
         "task_stakeholders": [
@@ -303,10 +309,10 @@ def _perf_store():
         "subtasks": [],
         "decision_log": [
             {"user_id": U, "action": "delegate",
-             "created_at": "2026-05-15T00:00:00+00:00"},
+             "created_at": ago(3)},
             # Old decision outside the window — must be filtered by gte.
             {"user_id": U, "action": "approve",
-             "created_at": "2025-01-01T00:00:00+00:00"},
+             "created_at": ago(500)},
         ],
     }
 
@@ -336,24 +342,27 @@ def test_my_performance_closed_at_and_secondary():
 # --------------------------------------------------------------------------
 
 def _biz_bug_store():
+    now = datetime.now(timezone.utc)
+    def ago(d):
+        return (now - timedelta(days=d)).isoformat()
     return {
         "business_members": [{"business_id": BIZ, "user_id": U, "role": "owner"}],
         "initiatives": [{"id": "BI", "business_id": BIZ}],
         "tasks": [
             # Open but freshly updated -> must NOT be stale (bug #1).
             {"id": "B1", "status": "todo", "closed_at": None,
-             "updated_at": "2026-05-17T00:00:00+00:00", "initiative_id": "BI"},
+             "updated_at": ago(1), "initiative_id": "BI"},
             # Open and untouched for months -> stale.
             {"id": "B2", "status": "todo", "closed_at": None,
-             "updated_at": "2026-01-01T00:00:00+00:00", "initiative_id": "BI"},
+             "updated_at": ago(180), "initiative_id": "BI"},
             # Done recently -> completed for any reasonable window.
             {"id": "B3", "status": "done",
-             "closed_at": "2026-05-15T00:00:00+00:00",
-             "updated_at": "2026-05-15T00:00:00+00:00", "initiative_id": "BI"},
-            # Done long ago -> only inside a wide window (bug #2).
+             "closed_at": ago(5),
+             "updated_at": ago(5), "initiative_id": "BI"},
+            # Done long ago -> only inside a wide (365d) window (bug #2).
             {"id": "B4", "status": "done",
-             "closed_at": "2026-01-15T00:00:00+00:00",
-             "updated_at": "2026-01-15T00:00:00+00:00", "initiative_id": "BI"},
+             "closed_at": ago(100),
+             "updated_at": ago(100), "initiative_id": "BI"},
         ],
         "subtasks": [],
     }

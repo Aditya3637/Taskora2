@@ -46,10 +46,47 @@ def test_create_business_invalid_type_returns_422(sb):
     assert r.status_code == 422
 
 
-def test_create_business_conflict_when_one_exists(sb):
-    client.post("/api/v1/businesses/", json={"name": "A", "type": "building"})
-    r = client.post("/api/v1/businesses/", json={"name": "B", "type": "building"})
-    assert r.status_code == 409
+def test_one_owned_workspace_per_user_cap(sb):
+    """Cap: a user can own at most one workspace. Second create 409s.
+    Users may still be members of unlimited workspaces via invite — the
+    cap only applies to ownership."""
+    r1 = client.post("/api/v1/businesses/", json={"name": "A", "type": "building"})
+    assert r1.status_code == 201
+    r2 = client.post("/api/v1/businesses/", json={"name": "B", "type": "building"})
+    assert r2.status_code == 409, r2.text
+
+
+def test_delete_workspace_requires_owner(sb):
+    """Non-owner gets 403 even if they're an admin member."""
+    r = client.post("/api/v1/businesses/", json={"name": "Owned", "type": "building"})
+    biz_id = r.json()["id"]
+    # Pretend we're a different user
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": "other-user", "email": "other@example.com"}
+    sb.store["business_members"].append(
+        {"business_id": biz_id, "user_id": "other-user", "role": "admin"}
+    )
+    r = client.delete(f"/api/v1/businesses/{biz_id}?confirm_name=Owned")
+    assert r.status_code == 403
+
+
+def test_delete_workspace_requires_name_echo(sb):
+    r = client.post("/api/v1/businesses/", json={"name": "Real Name", "type": "building"})
+    biz_id = r.json()["id"]
+    r = client.delete(f"/api/v1/businesses/{biz_id}?confirm_name=Wrong")
+    assert r.status_code == 400
+
+
+def test_delete_workspace_cascades(sb):
+    """Owner with correct name confirmation deletes the workspace and
+    its membership rows (cascade verified by FakeSupabase manual cleanup
+    + the prod FK audit recorded in the migration plan)."""
+    r = client.post("/api/v1/businesses/", json={"name": "Doomed", "type": "building"})
+    biz_id = r.json()["id"]
+    assert len(sb.store["business_members"]) == 1
+    r = client.delete(f"/api/v1/businesses/{biz_id}?confirm_name=Doomed")
+    assert r.status_code == 204
+    assert len(sb.store["businesses"]) == 0
 
 
 def test_list_businesses_empty(sb):
