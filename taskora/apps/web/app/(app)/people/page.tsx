@@ -17,7 +17,11 @@ export default function PeoplePage() {
     setLoading(true);
     setErr("");
     try {
-      setBoard(await apiFetch("/api/v1/people/board"));
+      const bid = typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
+      const url = bid
+        ? `/api/v1/people/board?business_id=${encodeURIComponent(bid)}`
+        : "/api/v1/people/board";
+      setBoard(await apiFetch(url));
     } catch (e: any) {
       const msg = String(e?.message ?? e);
       if (msg.toLowerCase().includes("access required")) setDenied(true);
@@ -37,7 +41,11 @@ export default function PeoplePage() {
       return;
     }
     let live = true;
-    apiFetch(`/api/v1/people/board/${focusId}`)
+    const bid = typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
+    const url = bid
+      ? `/api/v1/people/board/${focusId}?business_id=${encodeURIComponent(bid)}`
+      : `/api/v1/people/board/${focusId}`;
+    apiFetch(url)
       .then((d) => live && setFocus(d))
       .catch((e) => live && setErr(String(e?.message ?? e)));
     return () => {

@@ -124,6 +124,14 @@ export default function AnalyticsPage() {
   const isReport = tab === "people" || tab === "programs";
 
   useEffect(() => {
+    // Multi-workspace: prefer the active workspace from localStorage so a
+    // user in workspace B doesn't see workspace A's analytics.
+    const cached =
+      typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
+    if (cached) {
+      setBusinessId(cached);
+      return;
+    }
     apiFetch("/api/v1/businesses/")
       .then((data: { id: string }[]) => { if (data?.length) setBusinessId(data[0].id); })
       .catch(() => {});
@@ -131,7 +139,13 @@ export default function AnalyticsPage() {
 
   const loadMyPerf = useCallback(async () => {
     setLoading(true); setError("");
-    try { setMyPerf(await apiFetch(`/api/v1/analytics/my-performance?days=${days}`)); }
+    try {
+      const bid = typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
+      const url = bid
+        ? `/api/v1/analytics/my-performance?days=${days}&business_id=${encodeURIComponent(bid)}`
+        : `/api/v1/analytics/my-performance?days=${days}`;
+      setMyPerf(await apiFetch(url));
+    }
     catch { setError("Failed to load analytics."); }
     finally { setLoading(false); }
   }, [days]);

@@ -3,8 +3,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const TABS = [
-  { href: "/workspace/settings",            label: "Team" },
-  { href: "/workspace/settings/onboarding", label: "Onboarding" },
+  { href: "/workspace/settings",           label: "Team" },
+  { href: "/workspace/settings/profile",   label: "Profile" },
+  { href: "/workspace/settings/buildings", label: "Buildings" },
+  { href: "/workspace/settings/clients",   label: "Clients" },
 ];
 
 export default function SettingsTabs() {

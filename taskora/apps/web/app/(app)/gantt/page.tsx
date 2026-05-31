@@ -30,7 +30,12 @@ function GanttPageInner() {
       // of this business"). Cached id is only a fallback.
       let bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
       try {
-        const biz = await ganttApiFetch("/api/v1/businesses/my");
+        // Honour the cached active workspace via ?prefer= so a multi-
+        // workspace user doesn't get bounced to their "first" workspace.
+        const url = bizId
+          ? `/api/v1/businesses/my?prefer=${encodeURIComponent(bizId)}`
+          : "/api/v1/businesses/my";
+        const biz = await ganttApiFetch(url);
         if (biz?.id) {
           bizId = biz.id;
           localStorage.setItem("business_id", bizId);
