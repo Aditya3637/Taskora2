@@ -138,9 +138,12 @@ def _empty_counts() -> dict:
             "pending_decision": 0, "stale": 0, "awaiting_their_approval": 0}
 
 
-def _count(tasks: list, approving_task_ids: set) -> dict:
+def _count(tasks: list, approving_task_ids: set, entities: list | None = None) -> dict:
     """Load counters over the given task rows. ``approving_task_ids`` are tasks
-    where this person is a pending approver (drives awaiting_their_approval)."""
+    where this person is a pending approver (drives awaiting_their_approval).
+    ``entities`` (building/client rows under those tasks) are work-items too,
+    so they fold into open / overdue / blocked / due_this_week via their
+    per_entity_status + per_entity_end_date."""
     today = date.today().isoformat()
     week = (date.today() + timedelta(days=7)).isoformat()
     stale_cut = (date.today() - timedelta(days=_STALE_DAYS)).isoformat()
@@ -161,6 +164,18 @@ def _count(tasks: list, approving_task_ids: set) -> dict:
             c["pending_decision"] += 1
         if open_ and (t.get("updated_at") or "") < stale_cut:
             c["stale"] += 1
+    for e in (entities or []):
+        s = e.get("per_entity_status")
+        open_ = s not in _DONE
+        due = e.get("per_entity_end_date") or ""
+        if open_:
+            c["open"] += 1
+        if open_ and due and due < today:
+            c["overdue"] += 1
+        if s == "blocked":
+            c["blocked"] += 1
+        if due and today <= due <= week:
+            c["due_this_week"] += 1
     c["awaiting_their_approval"] = len(approving_task_ids)
     return c
 
@@ -266,6 +281,19 @@ def get_board(
     for r in stk_rows:
         stk_by_task.setdefault(r["task_id"], set()).add(r["user_id"])
 
+    # Building/client work-items per task, so each person's tallies fold in
+    # their entities (entities attached to work are work to be solved).
+    ent_by_task: dict = {}
+    for e in (
+        sb.table("task_entities")
+        .select("task_id, entity_id, per_entity_status, per_entity_end_date")
+        .in_("task_id", task_ids)
+        .execute()
+        .data
+        if task_ids else []
+    ):
+        ent_by_task.setdefault(e["task_id"], []).append(e)
+
     # Roster = people who own work: a task's primary stakeholder, or an
     # initiative's owner / primary stakeholder.
     owner_ids: set = {t["primary_stakeholder_id"] for t in tasks
@@ -346,7 +374,8 @@ def get_board(
                      if pid in us
                      and next((t for t in tasks if t["id"] == tid), {})
                          .get("approval_state") == "pending"}
-        counts = _count(owned, approving)
+        owned_ents = [e for t in owned for e in ent_by_task.get(t["id"], [])]
+        counts = _count(owned, approving, owned_ents)
         prog_ids = {init_meta[t["initiative_id"]].get("program_id")
                     for t in owned
                     if t.get("initiative_id") in init_meta}
