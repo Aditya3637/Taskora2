@@ -79,7 +79,7 @@ def enrich_task_items(sb: Client, tasks: List[dict]) -> List[dict]:
     if init_ids:
         for r in (
             sb.table("initiatives")
-            .select("id, name, program_id, owner_id")
+            .select("id, name, program_id, owner_id, target_end_date")
             .in_("id", init_ids)
             .execute()
             .data
@@ -183,6 +183,9 @@ def enrich_task_items(sb: Client, tasks: List[dict]) -> List[dict]:
         t["program_id"] = init.get("program_id")
         t["link"] = make_link(t)
         t["initiative_name"] = init.get("name")
+        # So the UI can flag item due dates that fall beyond the initiative's
+        # own target end date (#6).
+        t["initiative_target_end_date"] = init.get("target_end_date")
         t["program_name"] = prog_map.get(t.get("program_id") or "")
         t["primary_stakeholder_name"] = name_map.get(
             t.get("primary_stakeholder_id") or "", ""

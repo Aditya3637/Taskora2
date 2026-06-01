@@ -2,7 +2,7 @@ from typing import List, Literal, Optional
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
@@ -16,7 +16,21 @@ from deps import (
 )
 from notifications import send_push_to_user
 
-router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
+def _bust_brief_cache_on_write(request: Request) -> None:
+    """Any write to a task (create / update / status / due-date / subtask /
+    entity / comment / etc.) invalidates the cached Daily Brief, so overdue
+    and TAT-breach figures recompute from the new state on the next read
+    instead of lingering on the pre-edit value for up to the 60s TTL."""
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        from routers.daily_brief import invalidate_brief_cache
+        invalidate_brief_cache()
+
+
+router = APIRouter(
+    prefix="/api/v1/tasks",
+    tags=["tasks"],
+    dependencies=[Depends(_bust_brief_cache_on_write)],
+)
 
 
 def _parallel(*thunks):
@@ -240,10 +254,17 @@ def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
             "kind": c.get("kind") or "note",
             "author_name": c_name_map.get(c.get("user_id") or "", ""),
             "created_at": c["created_at"],
+            # Where the remark was made, so the task row can show
+            # "on subtask" / "on <building>" context.
+            "source": "entity" if eid else "subtask" if sid else "task",
         }
         if eid:
             latest_entity_comment.setdefault((tid, eid), preview)
-        elif not sid:
+        # Roll EVERY remark — task-, subtask-, or entity-level — up to the
+        # parent task's latest remark. A note on a subtask or building is
+        # still activity on the task and must surface at the task row.
+        # c_rows is newest-first, so the first hit per task wins.
+        if tid:
             latest_task_comment.setdefault(tid, preview)
 
     for task in tasks:

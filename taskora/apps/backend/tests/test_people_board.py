@@ -141,8 +141,11 @@ def test_counts_and_push_score_ordering(sb):
     _CUR["u"] = MGR  # admin can view
     b = client.get("/api/v1/people/board").json()
     alice = next(p for p in b["people"] if p["user_id"] == ALICE)
+    # Alice is primary on 4 INI tasks AND a contributor on T5 (INI2, due
+    # soon) — the complete-view fix surfaces that secondary work in her
+    # bucket too, so open 3→4 and due_this_week 2→3.
     assert alice["counts"] == {
-        "open": 3, "overdue": 1, "blocked": 1, "due_this_week": 2,
+        "open": 4, "overdue": 1, "blocked": 1, "due_this_week": 3,
         "pending_decision": 1, "stale": 2, "awaiting_their_approval": 1,
     }
     assert alice["name"] == "Alice Ace" and alice["avatar_url"] == "http://a"
@@ -161,8 +164,10 @@ def test_gallery_card_detail(sb):
     b = client.get("/api/v1/people/board").json()
     a = next(p for p in b["people"] if p["user_id"] == ALICE)
 
+    # +T5 (Alice is a contributor on this open, non-urgent INI2 task) under
+    # the complete-view fix → one extra open item in her workload.
     assert a["workload"] == {"overdue": 1, "blocked": 1,
-                             "pending_decision": 1, "open": 0, "done": 1}
+                             "pending_decision": 1, "open": 1, "done": 1}
 
     # Spotlight: most-urgent first (overdue T1, then blocked T2, then T3),
     # Done T4 excluded.

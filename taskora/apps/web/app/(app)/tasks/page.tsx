@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from "react";
+import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck, GanttChartSquare, MoreHorizontal, Search, Trash2, Inbox, Filter, ChevronsUpDown } from "lucide-react";
 import { supabase } from "@/lib/supabase";
@@ -1534,7 +1535,12 @@ function CommentsPopup({
     }
   }
 
-  return (
+  // Portal to <body>: rendered in place, `fixed` is relative to any
+  // transformed/scrolled ancestor panel (so the modal lands at the top of
+  // that container and you must scroll up to see it). Mounted on <body>
+  // it's truly viewport-centered regardless of where it's opened from.
+  if (typeof document === "undefined") return null;
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
       onClick={onClose}
@@ -1646,7 +1652,8 @@ function CommentsPopup({
           </button>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

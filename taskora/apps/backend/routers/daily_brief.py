@@ -46,6 +46,14 @@ def _cache_set(key: tuple, payload: dict) -> None:
         _brief_cache.clear()
     _brief_cache[key] = (time.time(), payload)
 
+
+def invalidate_brief_cache() -> None:
+    """Drop every cached brief. Called by task mutations so a due-date /
+    status / assignment change is reflected immediately instead of after the
+    60s TTL — otherwise overdue / TAT-breach counts keep showing the value
+    from before the edit (e.g. a moved due date appears 'still overdue')."""
+    _brief_cache.clear()
+
 # Sort key shared by every bucket — urgent + most-overdue first so the worst
 # items rise. Anything not in the priority map sorts as 0 (last).
 _PRIORITY_RANK = {"critical": 4, "urgent": 3, "high": 2, "medium": 1, "low": 0}
@@ -100,17 +108,17 @@ def _pick_hero(
     return None
 
 
-def _people_rollup(sb: Client, tasks: list, today_str: str) -> list:
-    """Per-primary-stakeholder counts for the team-scope view. Resolves names
-    in one batched query so the FE can render `Jane — 5 overdue · 2 awaiting`
-    without N+1 lookups."""
+def _people_rollup(sb: Client, tasks: list, today_str: str, init_meta: dict) -> list:
+    """Per-person counts for the team-scope view. A task contributes to a
+    person if they're its primary OR a secondary/tertiary stakeholder OR
+    they own the initiative it sits under — so the rollup is each person's
+    full accountable bucket, not just tasks where they're the primary owner.
+    Names resolved in one batched query (no N+1)."""
     by_uid: dict = {}
-    for t in tasks:
-        uid = t.get("primary_stakeholder_id")
-        if not uid:
-            continue
+
+    def _bump(uid: str, t: dict) -> None:
         g = by_uid.setdefault(uid, {
-            "user_id": uid, "name": t.get("primary_stakeholder_name") or "",
+            "user_id": uid, "name": "",
             "open": 0, "overdue": 0, "awaiting_approval": 0, "blocked": 0,
         })
         st = t.get("status")
@@ -122,15 +130,28 @@ def _people_rollup(sb: Client, tasks: list, today_str: str) -> list:
             g["awaiting_approval"] += 1
         if st == "blocked":
             g["blocked"] += 1
-    # Backfill names if enrich didn't (defensive: it always does today, but
-    # this keeps the rollup correct if the contract drifts).
-    missing = [u for u, g in by_uid.items() if not g["name"]]
-    if missing:
-        rows = sb.table("users").select("id, name").in_("id", missing).execute().data
+
+    for t in tasks:
+        owners: set = set()
+        if t.get("primary_stakeholder_id"):
+            owners.add(t["primary_stakeholder_id"])
+        for s in (t.get("task_stakeholders") or []):
+            if s.get("user_id"):
+                owners.add(s["user_id"])
+        im = init_meta.get(t.get("initiative_id") or "")
+        if im and im.get("owner_id"):
+            owners.add(im["owner_id"])
+        for uid in owners:
+            _bump(uid, t)
+
+    # Resolve every contributing person's name in one query (owners now
+    # include non-primary people the enrich pass didn't name).
+    uids = list(by_uid.keys())
+    if uids:
+        rows = sb.table("users").select("id, name").in_("id", uids).execute().data
         nm = {r["id"]: r.get("name") or "" for r in rows}
         for uid, g in by_uid.items():
-            if not g["name"]:
-                g["name"] = nm.get(uid, "")
+            g["name"] = nm.get(uid, "")
     return sorted(
         by_uid.values(),
         key=lambda g: (-g["overdue"], -g["awaiting_approval"], -g["open"], g["name"]),
@@ -200,7 +221,7 @@ def get_daily_brief(
     if biz_ids:
         for r in (
             sb.table("initiatives")
-            .select("id, name, business_id, program_id")
+            .select("id, name, business_id, program_id, owner_id")
             .in_("business_id", biz_ids)
             .execute()
             .data
@@ -268,8 +289,18 @@ def get_daily_brief(
             return False
         if program and (not im or im.get("program_id") != program):
             return False
-        if owner and t.get("primary_stakeholder_id") != owner:
-            return False
+        if owner:
+            # Complete view of a person's work: primary OR a
+            # secondary/tertiary stakeholder OR they own the initiative the
+            # task sits under (owners are accountable for everything in it).
+            on_task = (
+                t.get("primary_stakeholder_id") == owner
+                or any(s.get("user_id") == owner
+                       for s in (t.get("task_stakeholders") or []))
+                or bool(im and im.get("owner_id") == owner)
+            )
+            if not on_task:
+                return False
         return True
 
     rows = [t for t in rows if _keep(t)]
@@ -311,7 +342,7 @@ def get_daily_brief(
 
     # Per-person rollup only meaningful when viewing the whole team. Skipped
     # for `mine` because every row belongs to the caller anyway.
-    people_rollup = _people_rollup(sb, rows, today_str) if scope == "team" else []
+    people_rollup = _people_rollup(sb, rows, today_str, init_meta) if scope == "team" else []
 
     # Workspace-wide options so the Daily Brief filter dropdowns can list
     # every program / member, not just those that happen to have tasks in

@@ -260,6 +260,11 @@ def get_board(
         if task_ids else []
     )
     approver_ids = _approver_ids_by_task(sb, task_ids)
+    # task_id -> set of stakeholder user_ids (secondary/tertiary), so a
+    # person's bucket can include work where they're not the primary owner.
+    stk_by_task: dict = {}
+    for r in stk_rows:
+        stk_by_task.setdefault(r["task_id"], set()).add(r["user_id"])
 
     # Roster = people who own work: a task's primary stakeholder, or an
     # initiative's owner / primary stakeholder.
@@ -326,15 +331,22 @@ def get_board(
 
     people = []
     for pid in sorted(owner_ids):
-        owned = [t for t in tasks if t.get("primary_stakeholder_id") == pid]
+        led = [i for i in init_meta.values()
+               if i.get("owner_id") == pid or i.get("primary_stakeholder_id") == pid]
+        led_ids = {i["id"] for i in led}
+        # Complete view: tasks where the person is primary OR a
+        # secondary/tertiary stakeholder OR which sit under an initiative
+        # they own (the owner is accountable for all work inside it, even
+        # tasks pending with a secondary/tertiary owner).
+        owned = [t for t in tasks
+                 if t.get("primary_stakeholder_id") == pid
+                 or pid in stk_by_task.get(t["id"], ())
+                 or t.get("initiative_id") in led_ids]
         approving = {tid for tid, us in approver_ids.items()
                      if pid in us
                      and next((t for t in tasks if t["id"] == tid), {})
                          .get("approval_state") == "pending"}
         counts = _count(owned, approving)
-        led = [i for i in init_meta.values()
-               if i.get("owner_id") == pid or i.get("primary_stakeholder_id") == pid]
-        led_ids = {i["id"] for i in led}
         prog_ids = {init_meta[t["initiative_id"]].get("program_id")
                     for t in owned
                     if t.get("initiative_id") in init_meta}
@@ -451,12 +463,22 @@ def get_person_focus(
         tid for tid, us in approver_ids.items() if target_user_id in us
     }
 
-    # Tasks the person is on: primary, secondary, or pending approver.
+    # Initiatives this person owns — they're accountable for ALL tasks in
+    # them, even ones pending with a secondary/tertiary owner.
+    led_init_ids = {
+        i["id"] for i in init_meta.values()
+        if i.get("owner_id") == target_user_id
+        or i.get("primary_stakeholder_id") == target_user_id
+    }
+
+    # Tasks the person is on: primary, secondary/tertiary, pending approver,
+    # or anything under an initiative they own.
     def _on(t: dict) -> bool:
         return (
             t.get("primary_stakeholder_id") == target_user_id
             or t["id"] in stk_for
             or (t["id"] in approving_for and t.get("approval_state") == "pending")
+            or t.get("initiative_id") in led_init_ids
         )
 
     tasks = [t for t in all_tasks if _on(t)]
@@ -518,17 +540,22 @@ def get_person_focus(
             its = ig["tasks"]
             done = sum(1 for x in its if x.get("status") in _DONE)
             ig["completion_pct"] = round(done / len(its) * 100) if its else 0
+            # Owner of the initiative => `its` already holds every task in
+            # it; contributor => `its` is just the tasks they're on. Either
+            # way this is their full accountable slice for the initiative.
             ig["counts"] = _count(
-                [x for x in its if x.get("primary_stakeholder_id") == target_user_id],
-                {x["id"] for x in its
-                 if x["id"] in pending_appr},
+                its,
+                {x["id"] for x in its if x["id"] in pending_appr},
             )
         inits.sort(key=lambda x: (x["name"] or "").lower())
         pg["initiatives"] = inits
         programs.append(pg)
     programs.sort(key=lambda p: (p["program_name"] or "").lower())
 
-    owned = [t for t in tasks if t.get("primary_stakeholder_id") == target_user_id]
+    # Full accountable bucket (tasks already filtered by _on), so headline
+    # counts + "needs a push" reflect everything they're responsible for —
+    # including initiative work pending with a secondary/tertiary owner.
+    owned = list(tasks)
     counts = _count(owned, pending_appr)
 
     # ── Needs a push ────────────────────────────────────────────────────────
