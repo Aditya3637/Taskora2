@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
 import type { Assignment, ChecklistItem } from "../_lib/types";
 
@@ -18,6 +18,10 @@ export default function Checklist({ onChange }: { onChange?: () => void }) {
   const [assignedCount, setAssignedCount] = useState(0);
   const [newItem, setNewItem] = useState("");
   const [loading, setLoading] = useState(true);
+  // Inline edit of an existing item.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+  const addRef = useRef<HTMLInputElement | null>(null);
 
   const loadMine = useCallback(async () => {
     const data = await apiFetch("/api/v1/notebook/checklist?tab=mine");
@@ -49,6 +53,27 @@ export default function Checklist({ onChange }: { onChange?: () => void }) {
       body: JSON.stringify({ content }),
     });
     setNewItem("");
+    await loadMine();
+    onChange?.();
+    // Keep the cursor in the box so you can rattle off several items.
+    addRef.current?.focus();
+  };
+
+  const startEdit = (item: ChecklistItem) => {
+    setEditingId(item.id);
+    setEditText(item.content);
+  };
+
+  const saveEdit = async () => {
+    if (!editingId) return;
+    const content = editText.trim();
+    const id = editingId;
+    setEditingId(null);
+    if (!content) return;
+    await apiFetch(`/api/v1/notebook/checklist/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ content }),
+    });
     await loadMine();
     onChange?.();
   };
@@ -137,13 +162,30 @@ export default function Checklist({ onChange }: { onChange?: () => void }) {
                 onChange={() => toggleDone(item)}
                 className="mt-1 accent-taskora-red flex-shrink-0"
               />
-              <span
-                className={`flex-1 text-sm ${
-                  item.status === "done" ? "line-through text-steel/60" : "text-midnight"
-                }`}
-              >
-                {item.content}
-              </span>
+              {editingId === item.id ? (
+                <input
+                  type="text"
+                  autoFocus
+                  value={editText}
+                  onChange={(e) => setEditText(e.target.value)}
+                  onBlur={saveEdit}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); saveEdit(); }
+                    else if (e.key === "Escape") { e.preventDefault(); setEditingId(null); }
+                  }}
+                  className="flex-1 text-sm bg-transparent border-b border-taskora-red focus:outline-none"
+                />
+              ) : (
+                <span
+                  onClick={() => item.status !== "done" && startEdit(item)}
+                  title={item.status === "done" ? "" : "Click to edit"}
+                  className={`flex-1 text-sm cursor-text ${
+                    item.status === "done" ? "line-through text-steel/60 cursor-default" : "text-midnight"
+                  }`}
+                >
+                  {item.content}
+                </span>
+              )}
               <button
                 onClick={() => deleteItem(item.id)}
                 className="opacity-0 group-hover:opacity-100 text-steel/50 hover:text-red-500 text-xs"
@@ -155,11 +197,15 @@ export default function Checklist({ onChange }: { onChange?: () => void }) {
           ))}
           <div className="mt-2 flex gap-2">
             <input
+              ref={addRef}
               type="text"
               value={newItem}
               onChange={(e) => setNewItem(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addItem()}
-              placeholder="+ Add an item"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") addItem();
+                else if (e.key === "Escape") setNewItem("");
+              }}
+              placeholder="+ Add an item — press Enter"
               className="flex-1 text-sm bg-transparent border-b border-pebble focus:border-taskora-red focus:outline-none py-1"
             />
           </div>

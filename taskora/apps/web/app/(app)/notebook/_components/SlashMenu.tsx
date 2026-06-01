@@ -33,6 +33,7 @@ const ITEMS: MenuItem[] = [
   { kind: "callout",  label: "Callout",      hint: "Tip / note / warning",   icon: "💡", keywords: ["callout", "note", "tip", "warning"] },
   { kind: "divider",  label: "Divider",      hint: "Horizontal rule",        icon: "—",  keywords: ["divider", "hr", "separator"] },
   { kind: "table",    label: "Table",        hint: "Grid with formulas",     icon: "▦",  keywords: ["table", "spreadsheet", "grid"] },
+  { kind: "image",    label: "Image",        hint: "Paste, drop, or upload",  icon: "🖼", keywords: ["image", "picture", "photo", "img", "screenshot", "paste"] },
 ];
 
 /** The kind label uniquely identifies an item including heading level. */

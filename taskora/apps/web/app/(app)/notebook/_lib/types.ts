@@ -14,7 +14,8 @@ export type BlockKind =
   | "code"
   | "callout"
   | "divider"
-  | "table";
+  | "table"
+  | "image";
 
 export interface TextBlock {
   id: string;
@@ -82,6 +83,19 @@ export interface TableBlock {
   cells: string[];
 }
 
+export interface ImageBlock {
+  id: string;
+  type: "image";
+  /** Data URL (compressed) or external https URL. Empty = placeholder. */
+  src: string;
+  /** Optional caption shown under the image. */
+  caption?: string;
+  /** Rendered width as a % of the column (25–100). Defaults to 100. */
+  widthPct?: number;
+  /** Optional alt text for accessibility; falls back to caption. */
+  alt?: string;
+}
+
 export type Block =
   | TextBlock
   | HeadingBlock
@@ -92,7 +106,8 @@ export type Block =
   | CodeBlock
   | CalloutBlock
   | DividerBlock
-  | TableBlock;
+  | TableBlock
+  | ImageBlock;
 
 /** Convenience: blocks that hold an editable text field. */
 export type TextLikeBlock =
@@ -137,6 +152,8 @@ export interface Page {
   follower_role?: "viewer" | "editor";
   /** Optional emoji icon shown next to the title in editor + sidebar. */
   icon?: string | null;
+  /** Set when the page is soft-archived (in trash); null/absent when live. */
+  archived_at?: string | null;
 }
 
 export interface ChecklistItem {
@@ -197,6 +214,7 @@ export function freshBlock(kind: BlockKind): Block {
       id, type: "table", rows: 3, cols: 3,
       cells: Array(9).fill(""),
     };
+    case "image":   return { id, type: "image", src: "", caption: "", widthPct: 100 };
     case "text":
     default:        return { id, type: "text", text: "" };
   }

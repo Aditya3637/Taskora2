@@ -1,8 +1,16 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
+import { apiFetch } from "@/lib/api";
 import type { Page, Project } from "../_lib/types";
 
 const EXPANDED_KEY = "taskora_notebook_expanded_projects";
+
+type SearchPage = {
+  id: string; title: string; icon?: string | null;
+  snippet: string; shared: boolean;
+};
+type SearchItem = { id: string; content: string; status?: string };
+type SearchResults = { pages: SearchPage[]; checklist: SearchItem[] };
 
 /**
  * Collapsible left sidebar for the Notebook panel — the "ChatGPT for
@@ -33,6 +41,7 @@ export default function NotebookNav({
   onCreatePage,
   onCreateProject,
   onCollapse,
+  onOpenTrash,
 }: {
   projects: Project[];
   pages: Page[];
@@ -42,9 +51,13 @@ export default function NotebookNav({
   onCreatePage: (projectId: string | null) => void;
   onCreateProject: () => void;
   onCollapse: () => void;
+  onOpenTrash: () => void;
 }) {
   const [q, setQ] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Server-side search results (title + body + checklist). Debounced.
+  const [results, setResults] = useState<SearchResults>({ pages: [], checklist: [] });
+  const [searching, setSearching] = useState(false);
 
   // Hydrate the expand state from localStorage so the user's open
   // folders survive a reload.
@@ -93,14 +106,35 @@ export default function NotebookNav({
     [pages],
   );
 
-  const searchHits = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    if (!needle) return [];
-    const hit = (p: Page) => p.title.toLowerCase().includes(needle);
-    const own = pages.filter(hit);
-    const shared = sharedPages.filter(hit);
-    return [...own, ...shared].sort(byUpdatedAtDesc).slice(0, 50);
-  }, [q, pages, sharedPages]);
+  // Debounced backend search across titles + body + checklist. Needs ≥2
+  // chars; clears immediately when the box is emptied.
+  useEffect(() => {
+    const needle = q.trim();
+    if (needle.length < 2) {
+      setResults({ pages: [], checklist: [] });
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const handle = setTimeout(async () => {
+      try {
+        const data = await apiFetch(
+          `/api/v1/notebook/search?q=${encodeURIComponent(needle)}`,
+        );
+        setResults({
+          pages: data?.pages ?? [],
+          checklist: data?.checklist ?? [],
+        });
+      } catch {
+        setResults({ pages: [], checklist: [] });
+      } finally {
+        setSearching(false);
+      }
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [q]);
+
+  const hasResults = results.pages.length > 0 || results.checklist.length > 0;
 
   return (
     <aside className="w-60 flex-shrink-0 bg-pebble/30 border-r border-pebble flex flex-col overflow-hidden">
@@ -162,24 +196,54 @@ export default function NotebookNav({
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto px-1.5 py-2">
-        {q ? (
-          // ── Search results (flat) ───────────────────────────────
+        {q.trim() ? (
+          // ── Search results (title + body + checklist) ───────────
           <div>
-            {searchHits.length === 0 ? (
+            {q.trim().length < 2 ? (
               <p className="text-xs text-steel/60 italic px-2 py-2">
-                No pages match &quot;{q}&quot;
+                Type at least 2 characters…
+              </p>
+            ) : searching && !hasResults ? (
+              <p className="text-xs text-steel/60 italic px-2 py-2">Searching…</p>
+            ) : !hasResults ? (
+              <p className="text-xs text-steel/60 italic px-2 py-2">
+                No matches for &quot;{q.trim()}&quot;
               </p>
             ) : (
               <>
-                <SectionHeader label={`Results (${searchHits.length})`} />
-                {searchHits.map((p) => (
-                  <PageItem
-                    key={p.id}
-                    page={p}
-                    active={p.id === activePageId}
-                    onClick={() => onSelectPage(p.id)}
-                  />
-                ))}
+                {results.pages.length > 0 && (
+                  <>
+                    <SectionHeader label={`Pages (${results.pages.length})`} />
+                    {results.pages.map((p) => (
+                      <SearchResultItem
+                        key={p.id}
+                        result={p}
+                        active={p.id === activePageId}
+                        onClick={() => onSelectPage(p.id)}
+                      />
+                    ))}
+                  </>
+                )}
+                {results.checklist.length > 0 && (
+                  <div className="mt-2">
+                    <SectionHeader label={`Checklist (${results.checklist.length})`} />
+                    {results.checklist.map((c) => (
+                      <div
+                        key={c.id}
+                        className="flex items-start gap-1.5 px-2 py-1 text-sm text-steel"
+                      >
+                        <span aria-hidden className="flex-shrink-0 mt-0.5 text-xs">
+                          {c.status === "done" ? "☑" : "☐"}
+                        </span>
+                        <span
+                          className={`truncate ${c.status === "done" ? "line-through text-steel/50" : ""}`}
+                        >
+                          {c.content}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -291,6 +355,18 @@ export default function NotebookNav({
           </>
         )}
       </div>
+
+      {/* Footer — Trash */}
+      <div className="border-t border-pebble px-2 py-1.5 flex-shrink-0">
+        <button
+          onClick={onOpenTrash}
+          className="w-full text-left flex items-center gap-1.5 px-2 py-1 rounded text-sm text-steel hover:text-midnight hover:bg-white"
+          title="Recently deleted pages"
+        >
+          <span aria-hidden className="w-4 text-center flex-shrink-0">🗑</span>
+          <span className="truncate">Trash</span>
+        </button>
+      </div>
     </aside>
   );
 }
@@ -334,6 +410,52 @@ function PageItem({
           }`}
         >
           {rightLabel}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function SearchResultItem({
+  result,
+  active,
+  onClick,
+}: {
+  result: SearchPage;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`w-full text-left flex flex-col gap-0.5 px-2 py-1.5 rounded ${
+        active ? "bg-midnight text-white" : "hover:bg-white"
+      }`}
+    >
+      <span className="flex items-center gap-1.5 min-w-0">
+        <span aria-hidden className="w-4 text-center text-sm flex-shrink-0">
+          {result.icon || "📄"}
+        </span>
+        <span className={`truncate flex-1 text-sm ${active ? "" : "text-midnight"}`}>
+          {result.title || "Untitled"}
+        </span>
+        {result.shared && (
+          <span
+            className={`text-[10px] uppercase tracking-wide flex-shrink-0 ${
+              active ? "text-white/70" : "text-steel/50"
+            }`}
+          >
+            shared
+          </span>
+        )}
+      </span>
+      {result.snippet && (
+        <span
+          className={`text-[11px] leading-snug line-clamp-2 pl-6 ${
+            active ? "text-white/70" : "text-steel/70"
+          }`}
+        >
+          {result.snippet}
         </span>
       )}
     </button>

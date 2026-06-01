@@ -90,6 +90,105 @@ def test_pages_owner_only_until_shared(sb):
     assert r.status_code == 404
 
 
+def test_trash_restore_and_purge(sb):
+    # Create two pages, delete (soft-archive) one.
+    keep = client.post("/api/v1/notebook/pages", json={"title": "Keep"}).json()
+    gone = client.post("/api/v1/notebook/pages", json={"title": "Gone"}).json()
+    assert client.delete(f"/api/v1/notebook/pages/{gone['id']}").status_code == 204
+
+    # Live list excludes the archived page; trash shows only it.
+    live = client.get("/api/v1/notebook/pages").json()
+    assert {p["id"] for p in live} == {keep["id"]}
+    trash = client.get("/api/v1/notebook/pages/trash").json()
+    assert [p["id"] for p in trash] == [gone["id"]]
+
+    # Restore brings it back to the live list and clears it from trash.
+    r = client.post(f"/api/v1/notebook/pages/{gone['id']}/restore")
+    assert r.status_code == 200 and r.json()["archived_at"] is None
+    assert client.get("/api/v1/notebook/pages/trash").json() == []
+    live = client.get("/api/v1/notebook/pages").json()
+    assert {p["id"] for p in live} == {keep["id"], gone["id"]}
+
+    # Re-delete, then purge for good — gone from both lists.
+    client.delete(f"/api/v1/notebook/pages/{gone['id']}")
+    assert client.delete(f"/api/v1/notebook/pages/{gone['id']}/permanent").status_code == 204
+    assert client.get("/api/v1/notebook/pages/trash").json() == []
+
+
+def test_trash_is_owner_only(sb):
+    page = client.post("/api/v1/notebook/pages", json={"title": "Mine"}).json()
+    client.delete(f"/api/v1/notebook/pages/{page['id']}")
+
+    _as(BOB)
+    # Bob never sees Alice's trash, and can't restore or purge her page.
+    assert client.get("/api/v1/notebook/pages/trash").json() == []
+    assert client.post(f"/api/v1/notebook/pages/{page['id']}/restore").status_code == 403
+    assert client.delete(f"/api/v1/notebook/pages/{page['id']}/permanent").status_code == 403
+
+
+def test_restore_orphans_page_when_project_archived(sb):
+    proj = client.post("/api/v1/notebook/projects", json={"name": "P"}).json()
+    page = client.post("/api/v1/notebook/pages",
+                       json={"project_id": proj["id"], "title": "Child"}).json()
+    client.delete(f"/api/v1/notebook/pages/{page['id']}")
+    client.delete(f"/api/v1/notebook/projects/{proj['id']}")  # archive the project
+
+    restored = client.post(f"/api/v1/notebook/pages/{page['id']}/restore").json()
+    # Project gone → page moved to Unfiled so it stays visible.
+    assert restored["project_id"] is None
+
+
+def test_search_matches_title_and_body(sb):
+    p1 = client.post("/api/v1/notebook/pages", json={
+        "title": "Budget plan",
+        "body": [{"id": "b1", "type": "text", "text": "hire a designer in Q3"}],
+    }).json()
+    client.post("/api/v1/notebook/pages", json={
+        "title": "Random",
+        "body": [{"id": "b1", "type": "text", "text": "nothing relevant here"}],
+    }).json()
+
+    # Body-only match returns the page + a snippet containing the term.
+    r = client.get("/api/v1/notebook/search?q=designer")
+    assert r.status_code == 200
+    pages = r.json()["pages"]
+    assert [p["id"] for p in pages] == [p1["id"]]
+    assert "designer" in pages[0]["snippet"].lower()
+
+    # Multi-token AND over the title.
+    r = client.get("/api/v1/notebook/search?q=budget plan").json()
+    assert [p["id"] for p in r["pages"]] == [p1["id"]]
+
+    # Empty / blank query → no work.
+    assert client.get("/api/v1/notebook/search?q=").json() == {"pages": [], "checklist": []}
+
+
+def test_search_ignores_image_data_and_archived_and_is_scoped(sb):
+    # Image src (a fake data URL) must NOT be searchable; caption is.
+    client.post("/api/v1/notebook/pages", json={
+        "title": "Trip",
+        "body": [{"id": "b1", "type": "image",
+                  "src": "data:image/jpeg;base64,SECRETTOKEN", "caption": "beach sunset"}],
+    }).json()
+    r = client.get("/api/v1/notebook/search?q=SECRETTOKEN").json()
+    assert r["pages"] == []
+    r = client.get("/api/v1/notebook/search?q=sunset").json()
+    assert len(r["pages"]) == 1
+
+    # Checklist items are searched; archived pages are not.
+    client.post("/api/v1/notebook/checklist", json={"content": "call the vendor"})
+    gone = client.post("/api/v1/notebook/pages", json={"title": "vendor secret"}).json()
+    client.delete(f"/api/v1/notebook/pages/{gone['id']}")
+    r = client.get("/api/v1/notebook/search?q=vendor").json()
+    assert any(c["content"] == "call the vendor" for c in r["checklist"])
+    assert gone["id"] not in [p["id"] for p in r["pages"]]
+
+    # Another user sees none of it.
+    _as(BOB)
+    r2 = client.get("/api/v1/notebook/search?q=vendor").json()
+    assert r2 == {"pages": [], "checklist": []}
+
+
 def test_share_grants_read_but_not_write(sb):
     page = client.post("/api/v1/notebook/pages", json={"title": "Meeting"}).json()
     pid = page["id"]
