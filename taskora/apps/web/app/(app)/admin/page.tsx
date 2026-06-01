@@ -113,13 +113,17 @@ export default function AdminPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-2 mb-6">
+      <div className="flex gap-2 mb-6 flex-wrap">
         {([["tenants", "🏢 Tenants"], ["pipeline", "💼 Sales Pipeline"], ["metrics", "📊 Metrics"]] as const).map(([t, label]) => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === t ? "bg-midnight text-white" : "bg-white border border-pebble text-steel hover:text-midnight"}`}>
             {label}
           </button>
         ))}
+        <a href="/admin/lifecycle"
+          className="px-4 py-2 rounded-lg text-sm font-medium bg-white border border-pebble text-steel hover:text-midnight transition-colors">
+          ⚡ Lifecycle &amp; Growth
+        </a>
       </div>
 
       {/* Tenants */}
