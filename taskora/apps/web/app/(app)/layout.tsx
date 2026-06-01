@@ -64,6 +64,35 @@ function SidebarContent({
   const [workspaceName, setWorkspaceName] = useState<string>("");
   const [workspaces, setWorkspaces] = useState<{ id: string; name: string; role: string; is_owner: boolean }[]>([]);
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  // Create-workspace modal. The backend caps owned workspaces at one per
+  // user (anti-abuse), so for someone who already owns one we surface that
+  // up-front instead of letting them type a name and hit a 409.
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newWsName, setNewWsName] = useState("");
+  const [creatingWs, setCreatingWs] = useState(false);
+  const [createWsErr, setCreateWsErr] = useState("");
+
+  async function createWorkspace() {
+    const name = newWsName.trim();
+    if (!name) return;
+    setCreatingWs(true);
+    setCreateWsErr("");
+    try {
+      const biz: { id?: string } = await apiFetch("/api/v1/businesses/", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+      if (typeof window !== "undefined" && biz?.id) {
+        // Switch into the new workspace; the layout re-resolves on reload.
+        localStorage.setItem("business_id", biz.id);
+        window.location.href = "/daily-brief";
+      }
+    } catch (e: any) {
+      // 409 surfaces the friendly cap message ("You already own a workspace…").
+      setCreateWsErr(e?.detail || e?.message || "Couldn't create workspace.");
+      setCreatingWs(false);
+    }
+  }
   const [userName, setUserName] = useState<string>("");
 
   useEffect(() => {
@@ -276,16 +305,13 @@ function SidebarContent({
         <div className="relative">
           <button
             type="button"
-            onClick={() =>
-              workspaces.length > 1 && setSwitcherOpen((v) => !v)
-            }
-            disabled={workspaces.length <= 1}
-            aria-haspopup={workspaces.length > 1 ? "menu" : undefined}
-            aria-expanded={workspaces.length > 1 ? switcherOpen : undefined}
+            onClick={() => setSwitcherOpen((v) => !v)}
+            aria-haspopup="menu"
+            aria-expanded={switcherOpen}
             title={!expanded ? `${workspaceName || "Workspace"} · ${userName || ""}` : undefined}
             className={cn(
               "w-full flex items-center gap-2.5 rounded-md transition-colors duration-fast",
-              "hover:bg-white/[0.05] disabled:cursor-default disabled:hover:bg-transparent",
+              "hover:bg-white/[0.05]",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40",
               expanded ? "px-2 py-2" : "p-1.5 justify-center",
             )}
@@ -308,9 +334,7 @@ function SidebarContent({
                     </span>
                   )}
                 </span>
-                {workspaces.length > 1 && (
-                  <ChevronsUpDown className="h-3.5 w-3.5 text-chrome-fg-muted flex-shrink-0" />
-                )}
+                <ChevronsUpDown className="h-3.5 w-3.5 text-chrome-fg-muted flex-shrink-0" />
               </>
             )}
           </button>
@@ -354,9 +378,104 @@ function SidebarContent({
                   </button>
                 );
               })}
+
+              {/* Create a new workspace. Owned-workspace cap is enforced in
+                  the modal (and re-checked server-side). */}
+              <div className="border-t border-chrome-line my-1" />
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setSwitcherOpen(false);
+                  setNewWsName("");
+                  setCreateWsErr("");
+                  setCreateOpen(true);
+                }}
+                className="w-full text-left px-3 py-2 flex items-center gap-2.5 text-chrome-fg-muted hover:bg-white/[0.04] hover:text-chrome-fg transition-colors duration-fast"
+              >
+                <span className="h-6 w-6 inline-flex items-center justify-center rounded-md border border-white/15 text-sm flex-shrink-0">+</span>
+                <span className="text-[12.5px] font-medium">New workspace</span>
+              </button>
             </div>
           )}
         </div>
+
+        {createOpen && (
+          <div
+            className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4"
+            onClick={() => !creatingWs && setCreateOpen(false)}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Create workspace"
+          >
+            <div
+              className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-5"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {workspaces.some((w) => w.is_owner) ? (
+                // Owned-workspace cap: surface it instead of a doomed form.
+                <>
+                  <h2 className="text-base font-bold text-midnight mb-1">One workspace per owner</h2>
+                  <p className="text-sm text-steel mb-4">
+                    You already own a workspace — you can own one at a time. Edit it
+                    in Workspace settings, or delete it first. You can still join
+                    other people’s workspaces by invite.
+                  </p>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      onClick={() => setCreateOpen(false)}
+                      className="h-9 px-4 border border-pebble text-steel text-sm font-semibold rounded-lg hover:bg-mist"
+                    >
+                      Close
+                    </button>
+                    <button
+                      onClick={() => { setCreateOpen(false); window.location.href = "/workspace/settings/profile"; }}
+                      className="h-9 px-4 bg-midnight text-white text-sm font-semibold rounded-lg hover:opacity-90"
+                    >
+                      Workspace settings
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <h2 className="text-base font-bold text-midnight mb-1">New workspace</h2>
+                  <p className="text-sm text-steel mb-3">
+                    You’ll be the owner and can invite teammates afterward.
+                  </p>
+                  <input
+                    autoFocus
+                    value={newWsName}
+                    onChange={(e) => setNewWsName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void createWorkspace();
+                      else if (e.key === "Escape") setCreateOpen(false);
+                    }}
+                    placeholder="Workspace name"
+                    disabled={creatingWs}
+                    className="w-full border border-pebble rounded px-3 py-1.5 text-sm text-midnight focus:outline-none focus:border-taskora-red"
+                  />
+                  {createWsErr && <p className="text-xs text-red-600 mt-2">{createWsErr}</p>}
+                  <div className="flex justify-end gap-2 mt-4">
+                    <button
+                      onClick={() => setCreateOpen(false)}
+                      disabled={creatingWs}
+                      className="h-9 px-4 border border-pebble text-steel text-sm font-semibold rounded-lg hover:bg-mist disabled:opacity-40"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => void createWorkspace()}
+                      disabled={creatingWs || !newWsName.trim()}
+                      className="h-9 px-4 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40"
+                    >
+                      {creatingWs ? "Creating…" : "Create"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
 
         <div className="mt-1 space-y-0.5">
           <FooterAction
