@@ -122,13 +122,23 @@ function TaskCard({ task }: { task: QueueTask }) {
   const href = wrLinkHref(task.link);
   const body = (
     <div className="bg-white rounded-lg border border-pebble hover:border-steel transition-colors p-3">
-      <p className="text-midnight text-[13px] font-medium leading-snug mb-1.5">
+      <p className="text-midnight text-[13px] font-medium leading-snug mb-1">
         {task.title}
       </p>
+      {task.initiative_name && (
+        <p className="text-[10px] text-steel/60 truncate mb-1.5">
+          {task.initiative_name}
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
         {task.role_of_person && task.role_of_person !== "primary" && (
           <span className="px-1.5 py-0.5 rounded-full bg-mist text-steel capitalize">
             {task.role_of_person}
+          </span>
+        )}
+        {task.status === "blocked" && (
+          <span className="px-1.5 py-0.5 rounded-full bg-red-100 text-red-800 font-semibold">
+            blocked
           </span>
         )}
         {!!task.days_overdue && task.days_overdue > 0 && (
@@ -136,12 +146,47 @@ function TaskCard({ task }: { task: QueueTask }) {
             {task.days_overdue}d overdue
           </span>
         )}
+        {task.approval_state === "pending" && (
+          <span className="px-1.5 py-0.5 rounded-full bg-sky-50 text-ocean font-semibold">
+            await appr.
+          </span>
+        )}
+        {!!task.total_subtasks && (
+          <span className="px-1.5 py-0.5 rounded-full bg-mist text-steel">
+            {task.total_subtasks - (task.open_subtasks ?? 0)}/{task.total_subtasks} subtasks
+          </span>
+        )}
+        {task.due_date && <span className="text-steel">Due {task.due_date}</span>}
         {!!task.pending_approvers?.length && (
           <span className="text-ocean">
             ⛳ {task.pending_approvers.join(", ")}
           </span>
         )}
       </div>
+      {/* Buildings & clients are work-items too — show each with its status
+          so the full work-in-hand is visible (initiative is the lane header). */}
+      {!!task.task_entities?.length && (
+        <div className="flex flex-wrap gap-1 mt-1.5">
+          {task.task_entities.map((e) => {
+            const st = e.per_entity_status;
+            const tone =
+              st === "blocked"
+                ? "bg-red-50 text-red-700"
+                : st === "done"
+                ? "bg-emerald-50 text-emerald-700"
+                : "bg-mist text-steel";
+            return (
+              <span
+                key={e.entity_id}
+                className={`px-1.5 py-0.5 rounded text-[10px] ${tone}`}
+                title={st ? `status: ${st}` : undefined}
+              >
+                🏢 {e.entity_name ?? e.entity_id}
+              </span>
+            );
+          })}
+        </div>
+      )}
       {task.last_comment?.snippet && (
         <p className="mt-1.5 text-[11px] text-steel/80 line-clamp-2">
           “{task.last_comment.snippet}”

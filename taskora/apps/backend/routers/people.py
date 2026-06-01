@@ -606,6 +606,21 @@ def get_person_focus(
         for r in sb.table("clients").select("id, name").in_("id", c_ids).execute().data:
             ent_name[r["id"]] = r["name"]
 
+    # Attach each task's buildings/clients (with names + per-entity status)
+    # so the focus cards can render them as work-items in hand. Same dict
+    # objects as in `programs`, so this surfaces them in the response.
+    ents_by_task: dict = {}
+    for e in ents:
+        ents_by_task.setdefault(e["task_id"], []).append({
+            "entity_id": e["entity_id"],
+            "entity_type": e.get("entity_type"),
+            "entity_name": ent_name.get(e["entity_id"], e["entity_id"]),
+            "per_entity_status": e.get("per_entity_status"),
+            "per_entity_end_date": e.get("per_entity_end_date"),
+        })
+    for t in tasks:
+        t["task_entities"] = ents_by_task.get(t["id"], [])
+
     UNASSIGNED = "__unassigned__"
     push_groups: dict = {}
 
