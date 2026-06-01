@@ -399,16 +399,31 @@ def get_daily_brief(
     completion_rate = round(done_this_week / total_non_done * 100) if total_non_done else 0
 
     # Initiative progress (active initiatives in caller's businesses)
+    def _init_in_scope(im: dict) -> bool:
+        # Scope the Initiative Progress + Dormant sections to the active
+        # filters — when filtering by a person, only the initiatives they
+        # own or are primary stakeholder of (their accountability), not the
+        # whole workspace. Mirrors the task-bucket filtering above.
+        if initiative and im["id"] != initiative:
+            return False
+        if program and im.get("program_id") != program:
+            return False
+        if owner and im.get("owner_id") != owner \
+                and im.get("primary_stakeholder_id") != owner:
+            return False
+        return True
+
     initiative_progress = []
     if biz_ids:
         inits = (
             sb.table("initiatives")
-            .select("id, name, status, program_id")
+            .select("id, name, status, program_id, owner_id, primary_stakeholder_id")
             .in_("business_id", biz_ids)
             .eq("status", "active")
             .execute()
             .data
         )
+        inits = [i for i in inits if _init_in_scope(i)]
         prog_ids = sorted({i["program_id"] for i in inits if i.get("program_id")})
         prog_names: dict = {}
         if prog_ids:
