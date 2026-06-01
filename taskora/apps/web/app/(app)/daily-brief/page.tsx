@@ -24,6 +24,8 @@ type Task = {
   pending_approver_ids?: string[];
   last_comment?: Comment | null; link?: Link;
   task_entities?: { entity_id: string; entity_name?: string }[];
+  is_tat_breach?: boolean; is_stale?: boolean;
+  initiative_target_end_date?: string | null;
 };
 type TopPick = {
   reason: "decision" | "approval" | "overdue" | "blocked";
@@ -216,12 +218,36 @@ function DecisionCard({
             {task.approval_state === "pending" && (
               <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 font-semibold">awaiting approval</span>
             )}
+            {task.status === "blocked" && (
+              <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-800 font-semibold">blocked</span>
+            )}
+            {task.is_tat_breach && (
+              <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-800 font-semibold ring-1 ring-red-300">TAT breach ⚠</span>
+            )}
+            {task.is_stale && (
+              <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 font-semibold">stale</span>
+            )}
             {!!task.total_subtasks && (
               <span className="px-1.5 py-0.5 rounded bg-mist text-steel">
                 {task.done_subtasks}/{task.total_subtasks} subtasks
               </span>
             )}
-            {task.due_date && <span className="text-steel">Due {task.due_date}</span>}
+            {task.due_date && (() => {
+              // #6: amber + ⚠ when the task's due date falls beyond the
+              // initiative's own target end (ISO dates → string compare).
+              const beyond = !!task.initiative_target_end_date
+                && task.due_date > task.initiative_target_end_date!;
+              return (
+                <span
+                  className={beyond ? "text-amber-700 font-semibold" : "text-steel"}
+                  title={beyond
+                    ? `Beyond initiative due date (target end ${task.initiative_target_end_date})`
+                    : undefined}
+                >
+                  Due {task.due_date}{beyond ? " ⚠" : ""}
+                </span>
+              );
+            })()}
             {ents.map((e) => (
               <span key={e.entity_id} className="px-1.5 py-0.5 rounded bg-mist text-steel">{e.entity_name ?? e.entity_id}</span>
             ))}

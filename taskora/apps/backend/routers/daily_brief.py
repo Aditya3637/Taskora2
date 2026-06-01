@@ -331,6 +331,14 @@ def get_daily_brief(
         return False
     tat_breaches = _sort_bucket(bucket(_is_breach))
 
+    # Tag the underlying task dicts so the row UI can show a "TAT breach" /
+    # "stale" chip wherever the task appears (the same object is shared
+    # across buckets, so this marks it everywhere it's rendered).
+    for t in tat_breaches:
+        t["is_tat_breach"] = True
+    for t in stale_tasks:
+        t["is_stale"] = True
+
     # Hero "pick one" — single most-actionable item the user should tackle
     # now, computed after sort so each list's head is the worst case.
     top_pick = _pick_hero(
