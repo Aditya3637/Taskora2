@@ -26,6 +26,24 @@ def _get_business(sb: Client, user_id: str, business_id: Optional[str] = None) -
             raise HTTPException(status_code=403, detail="Not a member of this business")
         return rows[0]
 
+    # Fallback path (no explicit business_id) — safe only when the user has
+    # exactly one workspace. With multi-workspace users this used to silently
+    # pick the "first owned" workspace, so an onboarding step3/done call
+    # without a business_id flipped onboarding_completed on the wrong
+    # workspace and left the actual new workspace looping through onboarding
+    # forever. Refuse the ambiguous case so the caller has to be explicit.
+    all_memberships = (
+        sb.table("business_members")
+        .select("business_id")
+        .eq("user_id", user_id)
+        .execute()
+        .data
+    )
+    if len(all_memberships) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail="business_id is required — user is a member of multiple workspaces.",
+        )
     owned = (
         sb.table("businesses")
         .select("*")

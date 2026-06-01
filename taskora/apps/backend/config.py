@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     # "onboarding@resend.dev" works for testing before a domain is verified
     # in Resend; switch to e.g. "Taskora <noreply@taskora.deftai.in>" after.
     email_from: str = "Taskora <onboarding@resend.dev>"
+    # Sentry — when DSN is unset Sentry init becomes a no-op (tests + local
+    # dev unaffected). vercel_env (auto-set by Vercel) tags events as
+    # production/preview/development for filtering in the dashboard.
+    sentry_dsn: Optional[str] = None
+    vercel_env: Optional[str] = None
 
 
 @lru_cache

@@ -4,12 +4,13 @@ import secrets
 from typing import Optional
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from supabase import Client
 from pydantic import BaseModel, EmailStr
 
 from auth import get_current_user
 from deps import get_supabase, require_member, require_admin_or_owner
+from rate_limit import limiter
 from config import get_settings
 
 router = APIRouter(prefix="/api/v1/invites", tags=["invites"])
@@ -19,6 +20,22 @@ class InviteCreate(BaseModel):
     business_id: str
     invited_email: EmailStr
     role: str = "member"
+
+
+# Tiny disposable-email block-list. Not exhaustive (the truly exhaustive
+# list is ~70k domains and changes daily); the goal is to filter the most
+# common abusers without taking a runtime dependency on an upstream service.
+# When a real abuse vector emerges, swap for a hosted list (e.g. Kickbox).
+_DISPOSABLE_EMAIL_DOMAINS = frozenset({
+    "mailinator.com", "guerrillamail.com", "10minutemail.com",
+    "tempmail.com", "throwaway.email", "yopmail.com",
+    "trashmail.com", "fakeinbox.com", "getnada.com",
+    "maildrop.cc", "dispostable.com", "sharklasers.com",
+})
+
+
+def _email_domain(email: str) -> str:
+    return (email.rsplit("@", 1)[-1] if "@" in email else "").lower()
 
 
 @router.post("/", status_code=201)
@@ -31,6 +48,15 @@ def create_invite(
 ):
     """Create a workspace invite and return the invite URL."""
     require_member(sb, body.business_id, user["id"])
+
+    # Reject disposable-email domains — invites are a spam vector when the
+    # recipient address is throwaway. EmailStr already enforces RFC syntax;
+    # this layer filters the most common abusers.
+    if _email_domain(str(body.invited_email)) in _DISPOSABLE_EMAIL_DOMAINS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Disposable email addresses are not allowed.",
+        )
 
     # Members can invite, but only as 'member'. Promoting requires admin/owner
     # so a member can't escalate by inviting a confederate as admin.
@@ -253,11 +279,15 @@ def pending_invite_for_me(
 
 
 @router.get("/{token}")
+@limiter.limit("30/minute")
 def get_invite(
     token: str,
+    request: Request,
     sb: Client = Depends(get_supabase),
 ):
-    """Get invite details — no auth required (public link preview)."""
+    """Get invite details — no auth required (public link preview).
+    Rate-limited per IP to slow down token-guessing despite the 32-byte
+    keyspace (defense-in-depth)."""
     rows = (
         sb.table("workspace_invites")
         .select("*, businesses(name), inviter:users!invited_by(name)")

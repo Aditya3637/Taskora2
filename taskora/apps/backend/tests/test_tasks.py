@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from main import app
 from auth import get_current_user
 from deps import get_supabase
+from tests._fake_supabase import FakeSupabase
 
 FAKE_USER = {"id": "user-123", "email": "test@example.com", "role": "authenticated"}
 FAKE_TASK = {
@@ -31,20 +32,31 @@ def override_auth():
 
 
 def test_create_task_returns_201():
-    mock_sb = MagicMock()
-    # tasks insert
-    mock_sb.table.return_value.insert.return_value.execute.return_value.data = [FAKE_TASK]
+    # Uses FakeSupabase rather than MagicMock chains because create_task now
+    # does multiple distinct lookups (membership, admin check, alignment) that
+    # are hard to differentiate with a single MagicMock chain. The user here
+    # is seeded as an admin so the new alignment gate is bypassed; alignment-
+    # gate behavior itself is covered by test_visibility_scoping.py.
+    sb = FakeSupabase({
+        "users": [{"id": "user-123", "name": "Tester", "email": "test@example.com"}],
+        "business_members": [{"business_id": "biz-456", "user_id": "user-123", "role": "admin"}],
+        "initiatives": [{"id": "init-789", "business_id": "biz-456", "primary_stakeholder_id": None}],
+        "tasks": [],
+        "task_stakeholders": [],
+        "task_entities": [],
+    })
     app.dependency_overrides[get_current_user] = override_auth
-    app.dependency_overrides[get_supabase] = lambda: mock_sb
+    app.dependency_overrides[get_supabase] = lambda: sb
     try:
         r = client.post("/api/v1/tasks/", json={
             "title": "Fix HVAC",
             "initiative_id": "init-789",
             "primary_stakeholder_id": "user-123",
         })
-        assert r.status_code == 201
-        assert r.json()["id"] == "task-001"
-        assert r.json()["title"] == "Fix HVAC"
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["title"] == "Fix HVAC"
+        assert body["created_by"] == "user-123"
     finally:
         app.dependency_overrides.clear()
 

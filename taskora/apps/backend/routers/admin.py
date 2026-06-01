@@ -13,10 +13,20 @@ PLAN_MRR: dict[str, int] = {"pro": 999, "business": 2999, "enterprise": 0}
 
 
 def require_admin(user: dict = Depends(get_current_user), sb: Client = Depends(get_supabase)) -> dict:
-    """Check is_admin flag in users.settings JSONB."""
-    data = sb.table("users").select("settings").eq("id", user["id"]).execute().data
-    settings = (data[0].get("settings") or {}) if data else {}
-    if not settings.get("is_admin"):
+    """Platform-admin gate. Reads the dedicated platform_admins table —
+    migration 040 moved the flag here from users.settings.is_admin because
+    that JSONB column was writable by any user via RLS, allowing self-
+    elevation. platform_admins has no RLS policies, so only the backend's
+    service-role client can read/write it."""
+    rows = (
+        sb.table("platform_admins")
+        .select("user_id")
+        .eq("user_id", user["id"])
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not rows:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return user
 

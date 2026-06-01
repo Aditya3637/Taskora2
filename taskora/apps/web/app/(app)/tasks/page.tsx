@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from "react";
+import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck, GanttChartSquare, MoreHorizontal, Search, Trash2, Inbox, Filter, ChevronsUpDown } from "lucide-react";
 import { supabase } from "@/lib/supabase";
@@ -107,6 +108,9 @@ type Task = {
   watchers?: Watcher[];
   date_change_count?: number;
   latest_comment?: LatestComment;
+  // Resolved client-side from the task's initiative, so a due date beyond
+  // the initiative's target end can be flagged (#6).
+  initiative_target_end_date?: string;
 };
 
 type Subtask = {
@@ -1534,7 +1538,12 @@ function CommentsPopup({
     }
   }
 
-  return (
+  // Portal to <body>: rendered in place, `fixed` is relative to any
+  // transformed/scrolled ancestor panel (so the modal lands at the top of
+  // that container and you must scroll up to see it). Mounted on <body>
+  // it's truly viewport-centered regardless of where it's opened from.
+  if (typeof document === "undefined") return null;
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
       onClick={onClose}
@@ -1646,7 +1655,8 @@ function CommentsPopup({
           </button>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -2401,7 +2411,21 @@ function TaskCard({
               ) : (
                 task.due_date && (
                   <span className="inline-flex items-center gap-1 text-xs text-steel">
-                    <span>📅 {task.due_date}</span>
+                    {(() => {
+                      const beyond = !!task.initiative_target_end_date
+                        && !!task.due_date
+                        && task.due_date > task.initiative_target_end_date;
+                      return (
+                        <span
+                          className={beyond ? "text-amber-700 font-semibold" : undefined}
+                          title={beyond
+                            ? `Beyond initiative due date (target end ${task.initiative_target_end_date})`
+                            : undefined}
+                        >
+                          📅 {task.due_date}{beyond ? " ⚠" : ""}
+                        </span>
+                      );
+                    })()}
                     {dateChangeCount > 0 && (
                       <button
                         type="button"
@@ -4031,7 +4055,13 @@ function TasksPageInner() {
         if (!(t.title || "").toLowerCase().includes(searchLower)) return false;
       }
       return true;
-    });
+    }).map((t) =>
+      // #6: stamp each task with its initiative's target end so any due-date
+      // render can flag dates that fall beyond it.
+      t.initiative_id && initiativeMap[t.initiative_id]?.target_end_date
+        ? { ...t, initiative_target_end_date: initiativeMap[t.initiative_id]!.target_end_date }
+        : t
+    );
   }, [
     tasks,
     isApprovalPill,

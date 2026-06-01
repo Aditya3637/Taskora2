@@ -2,7 +2,7 @@ from typing import List, Literal, Optional
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
@@ -16,7 +16,21 @@ from deps import (
 )
 from notifications import send_push_to_user
 
-router = APIRouter(prefix="/api/v1/tasks", tags=["tasks"])
+def _bust_brief_cache_on_write(request: Request) -> None:
+    """Any write to a task (create / update / status / due-date / subtask /
+    entity / comment / etc.) invalidates the cached Daily Brief, so overdue
+    and TAT-breach figures recompute from the new state on the next read
+    instead of lingering on the pre-edit value for up to the 60s TTL."""
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        from routers.daily_brief import invalidate_brief_cache
+        invalidate_brief_cache()
+
+
+router = APIRouter(
+    prefix="/api/v1/tasks",
+    tags=["tasks"],
+    dependencies=[Depends(_bust_brief_cache_on_write)],
+)
 
 
 def _parallel(*thunks):
@@ -48,6 +62,7 @@ _TASK_STATUSES = Literal[
     "blocked",
     "done",
     "archived",
+    "reopened",
 ]
 
 # Status values valid on subtasks and entity-scoped rows (no 'archived').
@@ -58,6 +73,7 @@ _SUBTASK_STATUSES = Literal[
     "pending_decision",
     "blocked",
     "done",
+    "reopened",
 ]
 
 
@@ -151,6 +167,34 @@ def _watchers_for_tasks(sb: Client, task_ids: list):
     return by_task, by_entity, by_subtask
 
 
+def _inherited_watchers_for(task_scope_watchers: list[dict]) -> list[dict]:
+    """P4: tag the parent-task's task-scope watchers so they can be rendered
+    on subtask rows as inherited. Read-only — the underlying row still lives
+    at task scope; the subtask row just surfaces the cascade visually."""
+    out: list[dict] = []
+    for w in task_scope_watchers:
+        wi = dict(w)
+        wi["inherited_from"] = "task"
+        out.append(wi)
+    return out
+
+
+def _merge_inherited_watchers(own: list[dict], inherited: list[dict]) -> list[dict]:
+    """Combine the subtask's own watchers with parent-task-scope watchers,
+    de-duplicating by (user_id, role) so the same person isn't shown twice
+    when they exist at both scopes. Own watchers always win — the inherited
+    chip is the *fallback* indicator."""
+    seen = {(w.get("user_id"), w.get("role")) for w in own}
+    merged = list(own)
+    for w in inherited:
+        key = (w.get("user_id"), w.get("role"))
+        if key in seen:
+            continue
+        merged.append(w)
+        seen.add(key)
+    return merged
+
+
 def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
     """Attach task_entities (with resolved building/client names) to each task."""
     if not tasks:
@@ -210,10 +254,17 @@ def _hydrate_tasks_with_entities(sb: Client, tasks: list) -> list:
             "kind": c.get("kind") or "note",
             "author_name": c_name_map.get(c.get("user_id") or "", ""),
             "created_at": c["created_at"],
+            # Where the remark was made, so the task row can show
+            # "on subtask" / "on <building>" context.
+            "source": "entity" if eid else "subtask" if sid else "task",
         }
         if eid:
             latest_entity_comment.setdefault((tid, eid), preview)
-        elif not sid:
+        # Roll EVERY remark — task-, subtask-, or entity-level — up to the
+        # parent task's latest remark. A note on a subtask or building is
+        # still activity on the task and must surface at the task row.
+        # c_rows is newest-first, so the first hit per task wins.
+        if tid:
             latest_task_comment.setdefault(tid, preview)
 
     for task in tasks:
@@ -305,10 +356,10 @@ def _visible_task_ids_for(sb: Client, business_id: str, user_id: str) -> Optiona
         | {r["task_id"] for r in stake_rows if r.get("task_id")}
         | {r["task_id"] for r in watcher_rows if r.get("task_id")}
     )
-    # Multi-workspace fix: the primary/stakeholder/watcher lookups above
-    # are workspace-agnostic. Without this filter a user in two workspaces
-    # would see direct-involvement tasks from BOTH pooled into whichever
-    # workspace they're currently viewing (the Hitesh report).
+    # Multi-workspace fix: the lookups above are workspace-agnostic. Confine
+    # the direct set to tasks whose initiative is in THIS business —
+    # otherwise a user in two workspaces sees tasks from both pooled into
+    # whichever workspace they're currently viewing.
     direct_ids: set[str] = set()
     if direct_candidates:
         biz_init_ids = [
@@ -346,17 +397,16 @@ def _visible_task_ids_for(sb: Client, business_id: str, user_id: str) -> Optiona
 
 @router.get("/my")
 def get_my_tasks(
+    business_id: Optional[str] = Query(default=None, description="Scope to a specific workspace. When omitted, picks the user's first membership row (legacy)."),
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
-    business_id: Optional[str] = Query(default=None, description="Scope to a specific workspace. When omitted, picks the user's first membership row (legacy)."),
 ):
     """Flat list of tasks the caller can see (used by mobile).
     For the paginated web flow, see /my/page.
 
     Visibility follows the initiative cascade: primary/follower anywhere in
     an initiative tree → full read of that initiative's tasks. See
-    `visible_initiative_ids` in deps.py.
-
+    `visible_initiative_ids` in deps.py. For multi-workspace members the
     FE passes business_id so the list reflects the active workspace only.
     """
     uid = user["id"]
@@ -595,20 +645,17 @@ def get_task(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
+    # H1: single shared read gate. The previous bespoke check (primary /
+    # stakeholder / watcher only) was strictly narrower than every other
+    # read path, so a workspace admin or initiative primary got 403 here
+    # while seeing the same task via /initiatives/business/{id}/with-tasks.
+    # _assert_task_access covers all the cascade branches: admin/owner,
+    # primary, stakeholder, watcher, initiative-visible.
+    _assert_task_access(sb, task_id, user["id"])
     rows = sb.table("tasks").select("*, task_entities(*), task_stakeholders(*), subtasks(*), comments(*), attachments(*)").eq("id", task_id).execute().data
     if not rows:
         raise HTTPException(status_code=404, detail="Task not found")
     task = rows[0]
-
-    # Authorization: caller must be primary stakeholder OR in task_stakeholders.
-    is_primary = task.get("primary_stakeholder_id") == user["id"]
-    if not is_primary:
-        stakeholders = task.get("task_stakeholders") or []
-        is_stakeholder = any(s.get("user_id") == user["id"] for s in stakeholders)
-        if not is_stakeholder:
-            w_rows = sb.table("item_watchers").select("id").eq("task_id", task_id).eq("user_id", user["id"]).limit(1).execute().data
-            if not w_rows:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
     # Resolve entity names
     entities = task.get("task_entities") or []
@@ -687,12 +734,21 @@ def update_task(
     prior_due_str = prior[0].get("due_date") if prior else None
     prior_status = prior[0].get("status") if prior else None
 
-    payload = {}
-    if body.title is not None: payload["title"] = body.title
-    if body.status is not None: payload["status"] = body.status
-    if body.priority is not None: payload["priority"] = body.priority
-    if body.due_date is not None: payload["due_date"] = body.due_date.isoformat()
-    if body.description is not None: payload["description"] = body.description
+    # Distinguish "field absent" from "field explicitly null" so the sheet
+    # can clear due_date / description. model_fields_set is the only way to
+    # tell `{title: 'x'}` apart from `{title: 'x', due_date: null}`.
+    set_fields = body.model_fields_set
+    payload: dict = {}
+    if "title" in set_fields and body.title is not None:
+        payload["title"] = body.title
+    if "status" in set_fields and body.status is not None:
+        payload["status"] = body.status
+    if "priority" in set_fields and body.priority is not None:
+        payload["priority"] = body.priority
+    if "due_date" in set_fields:
+        payload["due_date"] = body.due_date.isoformat() if body.due_date else None
+    if "description" in set_fields:
+        payload["description"] = body.description
     if not payload:
         raise HTTPException(status_code=422, detail="No fields to update")
 
@@ -716,16 +772,17 @@ def update_task(
     result = sb.table("tasks").update(payload).eq("id", task_id).execute()
     updated = result.data[0] if result.data else {}
 
-    # Record the due-date change against the pre-update value.
-    if body.due_date is not None:
+    # Record the due-date change against the pre-update value. Triggered on
+    # any explicit due_date write — including clearing the field to null.
+    if "due_date" in set_fields:
         old_date = date.fromisoformat(prior_due_str[:10]) if prior_due_str else None
         if old_date != body.due_date:
             sb.table("task_date_change_log").insert({
                 "task_id": task_id,
                 "changed_by": user["id"],
                 "old_date": old_date.isoformat() if old_date else None,
-                "new_date": body.due_date.isoformat(),
-                "delay_days": (body.due_date - old_date).days if old_date else None,
+                "new_date": body.due_date.isoformat() if body.due_date else None,
+                "delay_days": (body.due_date - old_date).days if old_date and body.due_date else None,
             }).execute()
 
     return updated
@@ -1236,6 +1293,10 @@ class SubtaskCreate(BaseModel):
     scoped_entity_id: Optional[str] = None
     scoped_entity_type: Optional[str] = None
     parent_subtask_id: Optional[str] = None  # B1: enables Task → Subtask → Sub-subtask
+    # P2 field parity with tasks (migration 039). All optional / defaulted.
+    description: Optional[str] = None
+    due_date: Optional[date] = None
+    priority: Literal["low", "medium", "high", "urgent"] = "medium"
 
 
 class SubtaskUpdate(BaseModel):
@@ -1243,6 +1304,9 @@ class SubtaskUpdate(BaseModel):
     status: Optional[str] = None
     assignee_id: Optional[str] = None
     parent_subtask_id: Optional[str] = None
+    description: Optional[str] = None
+    due_date: Optional[date] = None
+    priority: Optional[Literal["low", "medium", "high", "urgent"]] = None
 
 
 def _assert_task_access(sb: Client, task_id: str, user_id: str):
@@ -1314,7 +1378,8 @@ def list_subtasks(
         sb.table("subtasks")
         .select(
             "id, title, status, approval_state, assignee_id, created_at, closed_at, "
-            "scoped_entity_id, scoped_entity_type, parent_subtask_id"
+            "scoped_entity_id, scoped_entity_type, parent_subtask_id, "
+            "description, due_date, priority"
         )
         .eq("task_id", task_id)
         .order("created_at")
@@ -1330,10 +1395,13 @@ def list_subtasks(
     if assignee_ids:
         for r in sb.table("users").select("id, name").in_("id", assignee_ids).execute().data:
             name_map[r["id"]] = r["name"]
-    _, _, w_by_subtask = _watchers_for_tasks(sb, [task_id])
+    w_by_task, _, w_by_subtask = _watchers_for_tasks(sb, [task_id])
+    task_inherited = _inherited_watchers_for(w_by_task.get(task_id, []))
     for s in subtasks:
         s["assignee_name"] = name_map.get(s.get("assignee_id") or "", "")
-        s["watchers"] = w_by_subtask.get(s["id"], [])
+        s["watchers"] = _merge_inherited_watchers(
+            w_by_subtask.get(s["id"], []), task_inherited
+        )
     return subtasks
 
 
@@ -1356,7 +1424,8 @@ def list_subtasks_grouped(
         sb.table("subtasks")
         .select(
             "id, title, status, approval_state, assignee_id, created_at, closed_at, "
-            "scoped_entity_id, scoped_entity_type, parent_subtask_id"
+            "scoped_entity_id, scoped_entity_type, parent_subtask_id, "
+            "description, due_date, priority"
         )
         .eq("task_id", task_id)
         .order("created_at")
@@ -1399,10 +1468,13 @@ def list_subtasks_grouped(
                     "author_name": c_names.get(c.get("user_id") or "", ""),
                     "created_at": c["created_at"],
                 })
-    _, _, w_by_subtask = _watchers_for_tasks(sb, [task_id])
+    w_by_task, _, w_by_subtask = _watchers_for_tasks(sb, [task_id])
+    task_inherited = _inherited_watchers_for(w_by_task.get(task_id, []))
     for s in rows:
         s["latest_comment"] = latest_sub_comment.get(s["id"])
-        s["watchers"] = w_by_subtask.get(s["id"], [])
+        s["watchers"] = _merge_inherited_watchers(
+            w_by_subtask.get(s["id"], []), task_inherited
+        )
 
     by_entity: dict = {}
     task_flat: list = []
@@ -1429,6 +1501,9 @@ def create_subtask(
         "title": body.title,
         "status": "todo",
         "assignee_id": body.assignee_id or user["id"],
+        "description": body.description,
+        "due_date": body.due_date.isoformat() if body.due_date else None,
+        "priority": body.priority,
         "created_at": now,
         "updated_at": now,
     }
@@ -1568,7 +1643,12 @@ def update_subtask(
     sb: Client = Depends(get_supabase),
 ):
     _assert_task_write(sb, task_id, user["id"])
-    payload = {k: v for k, v in body.model_dump().items() if v is not None}
+    # mode='json' converts date objects to ISO strings for PostgREST.
+    # Same model_fields_set treatment as update_task: respect explicit null
+    # so the sheet can clear due_date / description / assignee.
+    set_fields = body.model_fields_set
+    raw = body.model_dump(mode="json")
+    payload: dict = {k: raw[k] for k in set_fields if k in raw}
     if not payload:
         raise HTTPException(status_code=422, detail="No fields to update")
 
@@ -1809,17 +1889,99 @@ def _create_comment_scoped(sb: Client, task_id: str, user_id: str, content: str,
     return row
 
 
+def _list_comments_rollup(sb: Client, task_id: str) -> list:
+    """P5: return every comment under the task tree (task, entity, subtask
+    scope), each tagged with scope_type and the readable label of its source
+    (subtask_title / entity_name) so the UI can render a scope chip.
+    Oldest first — same order as the per-scope list."""
+    rows = (
+        sb.table("comments")
+        .select(
+            "id, content, kind, user_id, created_at, "
+            "entity_id, subtask_id, entity_type"
+        )
+        .eq("task_id", task_id)
+        .order("created_at")
+        .execute()
+        .data
+    )
+    if not rows:
+        return []
+
+    user_ids = list({r["user_id"] for r in rows if r.get("user_id")})
+    subtask_ids = list({r["subtask_id"] for r in rows if r.get("subtask_id")})
+    building_ids = list({
+        r["entity_id"] for r in rows
+        if r.get("entity_id") and r.get("entity_type") == "building"
+    })
+    client_ids = list({
+        r["entity_id"] for r in rows
+        if r.get("entity_id") and r.get("entity_type") == "client"
+    })
+
+    name_map: dict = {}
+    if user_ids:
+        for u in sb.table("users").select("id, name").in_("id", user_ids).execute().data:
+            name_map[u["id"]] = u.get("name") or ""
+
+    subtask_titles: dict = {}
+    if subtask_ids:
+        for s in sb.table("subtasks").select("id, title").in_("id", subtask_ids).execute().data:
+            subtask_titles[s["id"]] = s.get("title") or ""
+
+    entity_names: dict = {}
+    if building_ids:
+        for b in sb.table("buildings").select("id, name").in_("id", building_ids).execute().data:
+            entity_names[b["id"]] = b.get("name") or ""
+    if client_ids:
+        for c in sb.table("clients").select("id, name").in_("id", client_ids).execute().data:
+            entity_names[c["id"]] = c.get("name") or ""
+
+    out = []
+    for r in rows:
+        scope_type = (
+            "subtask" if r.get("subtask_id") else
+            "entity" if r.get("entity_id") else
+            "task"
+        )
+        out.append({
+            "id": r["id"],
+            "content": r["content"],
+            "kind": r.get("kind") or "note",
+            "author_id": r.get("user_id"),
+            "author_name": name_map.get(r.get("user_id") or "", ""),
+            "created_at": r["created_at"],
+            "scope_type": scope_type,
+            "subtask_id": r.get("subtask_id"),
+            "subtask_title": subtask_titles.get(r.get("subtask_id") or "", "") if r.get("subtask_id") else None,
+            "entity_id": r.get("entity_id"),
+            "entity_type": r.get("entity_type"),
+            "entity_name": entity_names.get(r.get("entity_id") or "", "") if r.get("entity_id") else None,
+        })
+    return out
+
+
 # ── Task-level ────────────────────────────────────────────────────────────────
 
 @router.get("/{task_id}/comments")
 @router.get("/{task_id}/comments/", include_in_schema=False)
 def list_task_comments(
     task_id: str,
+    include_descendants: bool = Query(
+        default=False,
+        description="P5: when true, return every comment under the task tree "
+                    "(task-, entity-, and subtask-scope) tagged by source.",
+    ),
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
     _assert_task_access(sb, task_id, user["id"])
-    return _list_comments_scoped(sb, task_id)
+    if not include_descendants:
+        rows = _list_comments_scoped(sb, task_id)
+        for r in rows:
+            r["scope_type"] = "task"
+        return rows
+    return _list_comments_rollup(sb, task_id)
 
 
 @router.post("/{task_id}/comments", status_code=201)

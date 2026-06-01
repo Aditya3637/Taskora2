@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Building2,
   Briefcase,
@@ -725,7 +726,114 @@ export default function WorkspaceProfilePage() {
           </>
         )}
       </section>
+
+      {/* Danger zone — only the owner can delete the workspace. Cascades
+          through every child table via FK ON DELETE CASCADE. Two-step
+          confirm (button → modal with name-echo) so a stray click can't
+          destroy the workspace. */}
+      {myRole === "owner" && profile && (
+        <DangerZone profile={profile} />
+      )}
     </div>
+  );
+}
+
+function DangerZone({ profile }: { profile: Profile }) {
+  const router = useRouter();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const wsName = profile.name ?? "";
+  async function doDelete() {
+    if (typed !== wsName) {
+      setErr("Workspace name doesn't match.");
+      return;
+    }
+    setBusy(true);
+    setErr("");
+    try {
+      await apiFetch(
+        `/api/v1/businesses/${profile.id}?confirm_name=${encodeURIComponent(wsName)}`,
+        { method: "DELETE" },
+      );
+      // Clear cached workspace and route to /login — the user has lost
+      // their context. Layout will auto-resolve a new active workspace
+      // (one of their other memberships) on next sign-in.
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("business_id");
+        // Force the layout to re-pick on the next page load.
+        window.location.href = "/daily-brief";
+      } else {
+        router.push("/daily-brief");
+      }
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to delete workspace.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="bg-white border border-red-200 rounded-2xl shadow-sm">
+      <header className="px-6 py-4 border-b border-red-200">
+        <h2 className="text-base font-bold text-red-700">Danger zone</h2>
+        <p className="text-xs text-steel mt-0.5">
+          Deleting this workspace permanently removes every initiative, task,
+          subtask, comment, attachment, building, client, member, invite, and
+          billing record under it. This cannot be undone.
+        </p>
+      </header>
+      <div className="px-6 py-4">
+        {!confirmOpen ? (
+          <button
+            type="button"
+            onClick={() => {
+              setConfirmOpen(true);
+              setTyped("");
+              setErr("");
+            }}
+            className="h-9 px-4 border border-red-300 text-red-700 text-sm font-semibold rounded-lg hover:bg-red-50"
+          >
+            Delete this workspace
+          </button>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-sm text-midnight">
+              Type <span className="font-bold">{wsName}</span> to confirm.
+            </p>
+            <input
+              type="text"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              disabled={busy}
+              placeholder={wsName}
+              className="w-full max-w-sm border border-pebble rounded px-3 py-1.5 text-sm focus:outline-none focus:border-red-400"
+              autoFocus
+            />
+            {err && <p className="text-xs text-red-600">{err}</p>}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmOpen(false)}
+                disabled={busy}
+                className="h-9 px-4 border border-pebble text-steel text-sm font-semibold rounded-lg hover:bg-mist"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={doDelete}
+                disabled={busy || typed !== wsName}
+                className="h-9 px-4 bg-red-600 text-white text-sm font-semibold rounded-lg hover:bg-red-700 disabled:opacity-40"
+              >
+                {busy ? "Deleting…" : "Permanently delete"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 

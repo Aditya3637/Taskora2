@@ -44,6 +44,7 @@ def _resolve_entity_names_dict(sb: Client, entity_progress: dict) -> list:
 @router.get("/my-performance")
 def my_performance(
     days: int = Query(30, ge=1, le=365),
+    business_id: Optional[str] = Query(default=None, description="Scope metrics to a single workspace. Without it a multi-workspace user gets pooled numbers across every workspace they belong to."),
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
@@ -53,11 +54,27 @@ def my_performance(
     since_iso = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     stale_cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
 
+    # When scoped to a workspace, only count tasks under that workspace's
+    # initiatives. Resolve allowed initiative ids once and filter every
+    # downstream query by it.
+    scoped_init_ids: Optional[set[str]] = None
+    if business_id:
+        # Verify membership; raises 403 otherwise.
+        require_member(sb, business_id, uid)
+        scoped_init_ids = {
+            r["id"]
+            for r in sb.table("initiatives")
+            .select("id")
+            .eq("business_id", business_id)
+            .execute()
+            .data
+        }
+
     # Tasks the user owns: primary stakeholder OR a secondary/follower
     # stakeholder (the old code only counted primary — bug #4).
     primary = (
         sb.table("tasks")
-        .select("id, status, created_at, closed_at, due_date, updated_at")
+        .select("id, status, created_at, closed_at, due_date, updated_at, initiative_id")
         .eq("primary_stakeholder_id", uid)
         .execute()
         .data
@@ -71,22 +88,39 @@ def my_performance(
     if missing:
         for t in (
             sb.table("tasks")
-            .select("id, status, created_at, closed_at, due_date, updated_at")
+            .select("id, status, created_at, closed_at, due_date, updated_at, initiative_id")
             .in_("id", missing)
             .execute()
             .data
         ):
             by_id[t["id"]] = t
     tasks = list(by_id.values())
+    if scoped_init_ids is not None:
+        tasks = [t for t in tasks if t.get("initiative_id") in scoped_init_ids]
 
     # Subtasks assigned to the user (subtasks have closed_at but no due_date).
-    subtasks = (
+    subtask_q = (
         sb.table("subtasks")
-        .select("id, status, created_at, closed_at, updated_at")
+        .select("id, status, created_at, closed_at, updated_at, task_id")
         .eq("assignee_id", uid)
-        .execute()
-        .data
     )
+    subtasks = subtask_q.execute().data
+    if scoped_init_ids is not None and subtasks:
+        # Filter subtasks to those whose parent task lives in scope.
+        parent_task_ids = list({s["task_id"] for s in subtasks if s.get("task_id")})
+        if parent_task_ids:
+            scoped_parent_ids = {
+                r["id"]
+                for r in sb.table("tasks")
+                .select("id")
+                .in_("id", parent_task_ids)
+                .in_("initiative_id", list(scoped_init_ids))
+                .execute()
+                .data
+            }
+            subtasks = [s for s in subtasks if s.get("task_id") in scoped_parent_ids]
+        else:
+            subtasks = []
 
     tasks_completed = 0
     tat_days_total, tat_n = 0.0, 0

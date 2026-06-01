@@ -9,3 +9,5 @@ pydantic-settings==2.2.1
 razorpay==1.4.1
 stripe==9.9.0
 firebase-admin==6.5.0
+slowapi==0.1.9
+sentry-sdk[fastapi]==2.18.0

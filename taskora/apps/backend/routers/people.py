@@ -16,6 +16,7 @@ through the shared ``enrich_task_items`` once — query count is constant in the
 number of tasks (no N+1), mirroring Daily Brief / War Room.
 """
 from datetime import date, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from supabase import Client
@@ -70,12 +71,17 @@ def _member_biz_ids(sb: Client, uid: str) -> list[str]:
     ]
 
 
-def _scope(sb: Client, uid: str):
+def _scope(sb: Client, uid: str, prefer: Optional[str] = None):
     """(mode, biz_ids, init_meta, tasks). Raises 403 if no access.
 
     mode='full' — owner/admin or explicitly granted in ≥1 business: sees the
     whole roster. mode='self' — no full access but the caller owns work
     (a task's primary, or an initiative owner/primary): sees only themselves.
+
+    Multi-workspace: pass `prefer` (FE's active workspace) to narrow the
+    roster to that one workspace. Without it the People board would pool
+    every workspace the user is a member of — which leaked Smartworks data
+    into the Business Excellence view for Hitesh.
     """
     member = _member_biz_ids(sb, uid)
     if not member:
@@ -83,6 +89,9 @@ def _scope(sb: Client, uid: str):
             status_code=status.HTTP_403_FORBIDDEN,
             detail="People board access required",
         )
+    if prefer and prefer in member:
+        # Honour the active workspace; access check still runs below.
+        member = [prefer]
     full = [b for b in member if people_board_access_ok(sb, b, uid)]
     biz_ids = full if full else member
 
@@ -129,9 +138,12 @@ def _empty_counts() -> dict:
             "pending_decision": 0, "stale": 0, "awaiting_their_approval": 0}
 
 
-def _count(tasks: list, approving_task_ids: set) -> dict:
+def _count(tasks: list, approving_task_ids: set, entities: list | None = None) -> dict:
     """Load counters over the given task rows. ``approving_task_ids`` are tasks
-    where this person is a pending approver (drives awaiting_their_approval)."""
+    where this person is a pending approver (drives awaiting_their_approval).
+    ``entities`` (building/client rows under those tasks) are work-items too,
+    so they fold into open / overdue / blocked / due_this_week via their
+    per_entity_status + per_entity_end_date."""
     today = date.today().isoformat()
     week = (date.today() + timedelta(days=7)).isoformat()
     stale_cut = (date.today() - timedelta(days=_STALE_DAYS)).isoformat()
@@ -152,6 +164,18 @@ def _count(tasks: list, approving_task_ids: set) -> dict:
             c["pending_decision"] += 1
         if open_ and (t.get("updated_at") or "") < stale_cut:
             c["stale"] += 1
+    for e in (entities or []):
+        s = e.get("per_entity_status")
+        open_ = s not in _DONE
+        due = e.get("per_entity_end_date") or ""
+        if open_:
+            c["open"] += 1
+        if open_ and due and due < today:
+            c["overdue"] += 1
+        if s == "blocked":
+            c["blocked"] += 1
+        if due and today <= due <= week:
+            c["due_this_week"] += 1
     c["awaiting_their_approval"] = len(approving_task_ids)
     return c
 
@@ -231,12 +255,15 @@ def _needs_push(status: str | None, due: str | None, today: str) -> str | None:
 
 @router.get("/board")
 def get_board(
+    business_id: Optional[str] = Query(default=None, description="Active workspace scope."),
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    """Gallery: people who own work, each with load counters + push-score."""
+    """Gallery: people who own work, each with load counters + push-score.
+    When the user belongs to multiple workspaces, pass business_id so the
+    roster reflects only the active workspace."""
     uid = user["id"]
-    mode, biz_ids, init_meta, tasks = _scope(sb, uid)
+    mode, biz_ids, init_meta, tasks = _scope(sb, uid, prefer=business_id)
 
     task_ids = [t["id"] for t in tasks if t.get("id")]
     stk_rows = (
@@ -248,6 +275,24 @@ def get_board(
         if task_ids else []
     )
     approver_ids = _approver_ids_by_task(sb, task_ids)
+    # task_id -> set of stakeholder user_ids (secondary/tertiary), so a
+    # person's bucket can include work where they're not the primary owner.
+    stk_by_task: dict = {}
+    for r in stk_rows:
+        stk_by_task.setdefault(r["task_id"], set()).add(r["user_id"])
+
+    # Building/client work-items per task, so each person's tallies fold in
+    # their entities (entities attached to work are work to be solved).
+    ent_by_task: dict = {}
+    for e in (
+        sb.table("task_entities")
+        .select("task_id, entity_id, per_entity_status, per_entity_end_date")
+        .in_("task_id", task_ids)
+        .execute()
+        .data
+        if task_ids else []
+    ):
+        ent_by_task.setdefault(e["task_id"], []).append(e)
 
     # Roster = people who own work: a task's primary stakeholder, or an
     # initiative's owner / primary stakeholder.
@@ -314,15 +359,23 @@ def get_board(
 
     people = []
     for pid in sorted(owner_ids):
-        owned = [t for t in tasks if t.get("primary_stakeholder_id") == pid]
+        led = [i for i in init_meta.values()
+               if i.get("owner_id") == pid or i.get("primary_stakeholder_id") == pid]
+        led_ids = {i["id"] for i in led}
+        # Complete view: tasks where the person is primary OR a
+        # secondary/tertiary stakeholder OR which sit under an initiative
+        # they own (the owner is accountable for all work inside it, even
+        # tasks pending with a secondary/tertiary owner).
+        owned = [t for t in tasks
+                 if t.get("primary_stakeholder_id") == pid
+                 or pid in stk_by_task.get(t["id"], ())
+                 or t.get("initiative_id") in led_ids]
         approving = {tid for tid, us in approver_ids.items()
                      if pid in us
                      and next((t for t in tasks if t["id"] == tid), {})
                          .get("approval_state") == "pending"}
-        counts = _count(owned, approving)
-        led = [i for i in init_meta.values()
-               if i.get("owner_id") == pid or i.get("primary_stakeholder_id") == pid]
-        led_ids = {i["id"] for i in led}
+        owned_ents = [e for t in owned for e in ent_by_task.get(t["id"], [])]
+        counts = _count(owned, approving, owned_ents)
         prog_ids = {init_meta[t["initiative_id"]].get("program_id")
                     for t in owned
                     if t.get("initiative_id") in init_meta}
@@ -407,13 +460,14 @@ def get_board(
 @router.get("/board/{target_user_id}")
 def get_person_focus(
     target_user_id: str,
+    business_id: Optional[str] = Query(default=None, description="Active workspace scope."),
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
     """Focus: one person's full picture — tasks grouped Program > Initiative,
     each pre-bucketed into a Kanban column."""
     uid = user["id"]
-    mode, biz_ids, init_meta, all_tasks = _scope(sb, uid)
+    mode, biz_ids, init_meta, all_tasks = _scope(sb, uid, prefer=business_id)
     if mode == "self" and target_user_id != uid:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -438,12 +492,22 @@ def get_person_focus(
         tid for tid, us in approver_ids.items() if target_user_id in us
     }
 
-    # Tasks the person is on: primary, secondary, or pending approver.
+    # Initiatives this person owns — they're accountable for ALL tasks in
+    # them, even ones pending with a secondary/tertiary owner.
+    led_init_ids = {
+        i["id"] for i in init_meta.values()
+        if i.get("owner_id") == target_user_id
+        or i.get("primary_stakeholder_id") == target_user_id
+    }
+
+    # Tasks the person is on: primary, secondary/tertiary, pending approver,
+    # or anything under an initiative they own.
     def _on(t: dict) -> bool:
         return (
             t.get("primary_stakeholder_id") == target_user_id
             or t["id"] in stk_for
             or (t["id"] in approving_for and t.get("approval_state") == "pending")
+            or t.get("initiative_id") in led_init_ids
         )
 
     tasks = [t for t in all_tasks if _on(t)]
@@ -505,17 +569,22 @@ def get_person_focus(
             its = ig["tasks"]
             done = sum(1 for x in its if x.get("status") in _DONE)
             ig["completion_pct"] = round(done / len(its) * 100) if its else 0
+            # Owner of the initiative => `its` already holds every task in
+            # it; contributor => `its` is just the tasks they're on. Either
+            # way this is their full accountable slice for the initiative.
             ig["counts"] = _count(
-                [x for x in its if x.get("primary_stakeholder_id") == target_user_id],
-                {x["id"] for x in its
-                 if x["id"] in pending_appr},
+                its,
+                {x["id"] for x in its if x["id"] in pending_appr},
             )
         inits.sort(key=lambda x: (x["name"] or "").lower())
         pg["initiatives"] = inits
         programs.append(pg)
     programs.sort(key=lambda p: (p["program_name"] or "").lower())
 
-    owned = [t for t in tasks if t.get("primary_stakeholder_id") == target_user_id]
+    # Full accountable bucket (tasks already filtered by _on), so headline
+    # counts + "needs a push" reflect everything they're responsible for —
+    # including initiative work pending with a secondary/tertiary owner.
+    owned = list(tasks)
     counts = _count(owned, pending_appr)
 
     # ── Needs a push ────────────────────────────────────────────────────────
@@ -565,6 +634,21 @@ def get_person_focus(
     if c_ids:
         for r in sb.table("clients").select("id, name").in_("id", c_ids).execute().data:
             ent_name[r["id"]] = r["name"]
+
+    # Attach each task's buildings/clients (with names + per-entity status)
+    # so the focus cards can render them as work-items in hand. Same dict
+    # objects as in `programs`, so this surfaces them in the response.
+    ents_by_task: dict = {}
+    for e in ents:
+        ents_by_task.setdefault(e["task_id"], []).append({
+            "entity_id": e["entity_id"],
+            "entity_type": e.get("entity_type"),
+            "entity_name": ent_name.get(e["entity_id"], e["entity_id"]),
+            "per_entity_status": e.get("per_entity_status"),
+            "per_entity_end_date": e.get("per_entity_end_date"),
+        })
+    for t in tasks:
+        t["task_entities"] = ents_by_task.get(t["id"], [])
 
     UNASSIGNED = "__unassigned__"
     push_groups: dict = {}

@@ -1,9 +1,37 @@
+import logging
 import traceback
+import uuid
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from postgrest.exceptions import APIError
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from rate_limit import limiter
 from config import get_settings
+
+settings = get_settings()
+
+# Sentry — no-op when SENTRY_DSN is unset, so tests + local dev are
+# unaffected. Captures the full traceback for every unhandled exception
+# *before* the global handler swallows it for the response body.
+if settings.sentry_dsn:
+    import sentry_sdk
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        environment=settings.vercel_env or "unknown",
+        # 5% trace sampling — cheap enough at our scale, enough to spot
+        # P95 regressions.
+        traces_sample_rate=0.05,
+        # Don't ship PII (request body, user emails) to Sentry by default.
+        send_default_pii=False,
+    )
+
+# Structured-ish logger. Each request gets a short request_id we prefix
+# onto every log line + return as X-Request-ID so support can correlate
+# user reports with Vercel logs.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("taskora")
 from routers import (
     admin, analytics, billing, businesses, daily_brief, decisions,
     entities, initiatives, tasks, users, war_room,
@@ -11,23 +39,46 @@ from routers import (
     people, join_requests, notebook,
 )
 
-settings = get_settings()
-
 app = FastAPI(
     title="Taskora API",
     version="1.0.0",
     description="60-second decision-making backend",
     redirect_slashes=False,
 )
+# Per-IP rate limiter (defined in rate_limit.py so routers can import it
+# without circular dependency on `app`). In-memory counters per Vercel
+# function instance — fine for basic abuse protection.
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# TODO: tighten allow_origins / allow_methods / allow_headers before production
+# CORS: include localhost:3000 only when the configured frontend_url is
+# itself a localhost — otherwise we're in prod and shouldn't accept dev
+# origins. With allow_credentials=True a permanent localhost entry meant
+# a developer running any tool on :3000 could have hit prod APIs with the
+# user's session if they visited a malicious page.
+_origins = [settings.frontend_url]
+_is_dev = "localhost" in (settings.frontend_url or "") or "127.0.0.1" in (settings.frontend_url or "")
+if _is_dev:
+    _origins.append("http://localhost:3000")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url, "http://localhost:3000"],
+    allow_origins=_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    """Stamp every request with a short id; echo it on the response so
+    support can correlate a user-reported error with Vercel logs. Skipped
+    when the upstream (a proxy / Vercel) already provided one."""
+    rid = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+    request.state.request_id = rid
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = rid
+    return response
 
 
 app.include_router(admin.router)
@@ -87,12 +138,15 @@ async def postgrest_exception_handler(request: Request, exc: APIError):
 async def unhandled_exception_handler(request: Request, exc: Exception):
     # Log the full traceback server-side only. Returning it in the response
     # body (previous behaviour) leaked file paths, vendored-lib layout, DB
-    # constraint names and query internals to any caller.
+    # constraint names and query internals to any caller. Sentry (when
+    # configured) also captures the exception with full context.
+    rid = getattr(request.state, "request_id", "-")
     tb = traceback.format_exc()
-    print(f"UNHANDLED 500: {request.method} {request.url}\n{tb}")
+    logger.error("UNHANDLED 500 rid=%s %s %s\n%s", rid, request.method, request.url, tb)
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error"},
+        content={"detail": "Internal server error", "request_id": rid},
+        headers={"X-Request-ID": rid},
     )
 
 

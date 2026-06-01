@@ -1,14 +1,14 @@
 from typing import List, Literal, Optional
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
 from deps import (
     get_supabase, require_member, require_admin_or_owner, get_member_role,
     is_admin_or_owner, aligned_initiative_ids, follower_initiative_ids,
-    visible_initiative_ids,
+    visible_initiative_ids, program_follower_ids,
 )
 
 router = APIRouter(prefix="/api/v1/initiatives", tags=["initiatives"])
@@ -38,32 +38,34 @@ class InitiativeCreate(BaseModel):
 
 @router.get("/my")
 def get_my_initiatives(
+    business_id: Optional[str] = Query(default=None, description="Scope to a specific workspace. When omitted, defaults to the user's first membership row (legacy single-workspace behaviour)."),
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    """Initiatives the caller can see — follows the visibility cascade so
-    admins/owners see every initiative in the workspace, and members see
-    every initiative they're aligned to (primary on initiative, primary/
-    stakeholder/creator on a task within it, explicit follower, or watcher
-    on any task within it).
-
-    The Tasks page uses this to render initiative group headers even for
-    initiatives with no tasks yet — useful when an admin filters by a
-    primary user who has been assigned initiatives but hasn't created
-    any tasks.
-    """
+    """Initiatives the caller can see in the active workspace — follows the
+    visibility cascade so admins/owners see every initiative in the
+    workspace, and members see every initiative they're aligned to (primary
+    on initiative, primary/stakeholder/creator on a task within it, explicit
+    follower, watcher, subtask assignee). Multi-workspace members pass
+    business_id so the list reflects the workspace they're currently in."""
     uid = user["id"]
-    biz_rows = (
+    # Resolve the active business. Honour the FE's preference when valid
+    # (matches /api/v1/businesses/my?prefer=); fall back to first membership.
+    biz_member_rows = (
         sb.table("business_members")
         .select("business_id")
         .eq("user_id", uid)
-        .limit(1)
         .execute()
         .data
     )
-    if not biz_rows:
+    if not biz_member_rows:
         return []
-    business_id = biz_rows[0]["business_id"]
+    member_biz_ids = {r["business_id"] for r in biz_member_rows}
+    if business_id and business_id in member_biz_ids:
+        active_biz = business_id
+    else:
+        active_biz = biz_member_rows[0]["business_id"]
+    business_id = active_biz
 
     select_cols = (
         "id, name, status, impact, impact_category, primary_stakeholder_id, "
@@ -245,10 +247,12 @@ def list_initiatives_with_tasks(
     if not initiatives:
         return []
 
-    # Visibility scope for non-admins: only initiatives they're aligned to.
-    # Admins/owners get the unfiltered list.
+    # Visibility scope for non-admins: every initiative the user can read,
+    # which now includes the subtask/sub-subtask assignee cascade and the
+    # program-follow cascade (both in visible_initiative_ids). Admins get
+    # the unfiltered list.
     if not is_privileged:
-        scope = aligned_initiative_ids(sb, business_id, user["id"])
+        scope = visible_initiative_ids(sb, business_id, user["id"])
         initiatives = [i for i in initiatives if i["id"] in scope]
         if not initiatives:
             return []
@@ -336,6 +340,7 @@ def list_initiatives_with_tasks(
     # the tasks they have stake in or created.
     uid = user["id"]
     follower_ids = set() if is_privileged else follower_initiative_ids(sb, business_id, uid)
+    prog_follow_ids = set() if is_privileged else program_follower_ids(sb, business_id, uid)
     result = []
     for init in initiatives:
         iid = init["id"]
@@ -344,6 +349,7 @@ def list_initiatives_with_tasks(
             is_privileged
             or init.get("primary_stakeholder_id") == uid
             or iid in follower_ids
+            or (init.get("program_id") in prog_follow_ids)
         )
 
         if not sees_all_in_this_init:

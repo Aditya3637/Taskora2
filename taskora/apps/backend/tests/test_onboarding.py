@@ -51,6 +51,7 @@ def test_create_business_succeeds_without_amount_inr(sb):
 
 
 def test_create_business_conflict_when_one_exists(sb):
+    """Cap: a user owns at most one workspace; second create 409s."""
     client.post("/api/v1/businesses/",
                 json={"name": "Acme", "type": "building"})
     r = client.post("/api/v1/businesses/",

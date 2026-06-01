@@ -24,6 +24,8 @@ type Task = {
   pending_approver_ids?: string[];
   last_comment?: Comment | null; link?: Link;
   task_entities?: { entity_id: string; entity_name?: string }[];
+  is_tat_breach?: boolean; is_stale?: boolean;
+  initiative_target_end_date?: string | null;
 };
 type TopPick = {
   reason: "decision" | "approval" | "overdue" | "blocked";
@@ -216,12 +218,36 @@ function DecisionCard({
             {task.approval_state === "pending" && (
               <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 font-semibold">awaiting approval</span>
             )}
+            {task.status === "blocked" && (
+              <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-800 font-semibold">blocked</span>
+            )}
+            {task.is_tat_breach && (
+              <span className="px-1.5 py-0.5 rounded bg-red-100 text-red-800 font-semibold ring-1 ring-red-300">TAT breach ⚠</span>
+            )}
+            {task.is_stale && (
+              <span className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 font-semibold">stale</span>
+            )}
             {!!task.total_subtasks && (
               <span className="px-1.5 py-0.5 rounded bg-mist text-steel">
                 {task.done_subtasks}/{task.total_subtasks} subtasks
               </span>
             )}
-            {task.due_date && <span className="text-steel">Due {task.due_date}</span>}
+            {task.due_date && (() => {
+              // #6: amber + ⚠ when the task's due date falls beyond the
+              // initiative's own target end (ISO dates → string compare).
+              const beyond = !!task.initiative_target_end_date
+                && task.due_date > task.initiative_target_end_date!;
+              return (
+                <span
+                  className={beyond ? "text-amber-700 font-semibold" : "text-steel"}
+                  title={beyond
+                    ? `Beyond initiative due date (target end ${task.initiative_target_end_date})`
+                    : undefined}
+                >
+                  Due {task.due_date}{beyond ? " ⚠" : ""}
+                </span>
+              );
+            })()}
             {ents.map((e) => (
               <span key={e.entity_id} className="px-1.5 py-0.5 rounded bg-mist text-steel">{e.entity_name ?? e.entity_id}</span>
             ))}
@@ -416,8 +442,16 @@ function DailyBriefInner() {
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
-    const q = new URLSearchParams({ scope });
+    // Filtering by a person shows their portfolio, which only the team
+    // scope resolves (mine scope is just the caller's own tasks).
+    const effScope = userFilter ? "team" : scope;
+    const q = new URLSearchParams({ scope: effScope });
     if (groupBy !== "none") q.set("group_by", groupBy);
+    // Server applies the owner/program filters (complete-view: a person's
+    // primary + secondary/tertiary + initiative-owned work, plus scoped
+    // Initiative Progress + Dormant). The client no longer re-filters.
+    if (userFilter) q.set("owner", userFilter);
+    if (programFilter) q.set("program", programFilter);
     // Scope to the active workspace so multi-workspace members don't see
     // pooled data from every workspace they belong to.
     if (typeof window !== "undefined") {
@@ -448,7 +482,7 @@ function DailyBriefInner() {
     } finally {
       setLoading(false);
     }
-  }, [scope, groupBy]);
+  }, [scope, groupBy, userFilter, programFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -494,16 +528,17 @@ function DailyBriefInner() {
   // Prefer the workspace-wide lists so programs/people without any visible
   // task still appear in the filters. Fall back to bucket-derived sets when
   // the workspace fields aren't present (older API).
-  const programOptions = brief.workspace_programs?.length
-    ? brief.workspace_programs.map((p) => p.name).sort((a, b) => a.localeCompare(b))
-    : uniqSorted(allTasks.map((t) => t.program_name));
-  const userOptions = brief.workspace_members?.length
-    ? brief.workspace_members.map((m) => m.name).filter(Boolean).sort((a, b) => a.localeCompare(b))
-    : uniqSorted(allTasks.map((t) => t.primary_stakeholder_name));
+  const programOptions: { id: string; name: string }[] = brief.workspace_programs?.length
+    ? brief.workspace_programs.map((p) => ({ id: p.id, name: p.name })).sort((a, b) => a.name.localeCompare(b.name))
+    : uniqSorted(allTasks.map((t) => t.program_name)).map((n) => ({ id: n, name: n }));
+  const userOptions: { id: string; name: string }[] = brief.workspace_members?.length
+    ? brief.workspace_members.map((m) => ({ id: m.user_id, name: m.name })).filter((o) => o.name).sort((a, b) => a.name.localeCompare(b.name))
+    : uniqSorted(allTasks.map((t) => t.primary_stakeholder_name)).map((n) => ({ id: n, name: n }));
   const filtersActive = !!programFilter || !!userFilter;
-  const matches = (t: Task) =>
-    (!programFilter || t.program_name === programFilter) &&
-    (!userFilter || t.primary_stakeholder_name === userFilter);
+  // Server already applied the owner + program filters (complete-view), so
+  // the bucket lists arrive pre-filtered — no client-side re-filtering
+  // (the old primary-only name match hid initiative-owned work).
+  const matches = (_t: Task) => true;
 
   const empty = (
     <p className="text-sm text-steel italic bg-white rounded-lg p-3 border border-pebble">
@@ -516,9 +551,9 @@ function DailyBriefInner() {
       <DecisionCard key={t.id} task={t} onActed={load} currentUserId={currentUserId} />
     ));
   };
-  const initProgress = brief.initiative_progress.filter(
-    (p) => !programFilter || p.program_name === programFilter,
-  );
+  // Server scopes Initiative Progress to the active filters now (owner /
+  // program / initiative), so render it as-is.
+  const initProgress = brief.initiative_progress;
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-8 sm:py-10 animate-fade-up">
@@ -559,7 +594,7 @@ function DailyBriefInner() {
           aria-label="Filter by program"
         >
           <option value="">All programs</option>
-          {programOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+          {programOptions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <select
           value={userFilter}
@@ -568,7 +603,7 @@ function DailyBriefInner() {
           aria-label="Filter by primary user"
         >
           <option value="">All users</option>
-          {userOptions.map((u) => <option key={u} value={u}>{u}</option>)}
+          {userOptions.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
         </select>
         {filtersActive && (
           <button
@@ -676,9 +711,8 @@ function DailyBriefInner() {
         const now = new Date();
         const since = new Date(now.getTime() - 7 * 86400 * 1000);
         const fmt = (d: Date) => d.toISOString().slice(0, 10);
-        const filteredDormant = (brief.dormant_initiatives ?? []).filter(
-          (d) => !programFilter || d.program_name === programFilter,
-        );
+        // Server scopes Dormant to the active filters now.
+        const filteredDormant = brief.dormant_initiatives ?? [];
         const stats = [
           {
             key: "open",
@@ -761,9 +795,7 @@ function DailyBriefInner() {
       {/* Dormant initiatives — opens only when the user clicks the stat
           card above. Lives right under the stats grid so context is local. */}
       {dormantOpen && !!brief.dormant_initiatives?.length && (() => {
-        const items = brief.dormant_initiatives.filter(
-          (d) => !programFilter || d.program_name === programFilter,
-        );
+        const items = brief.dormant_initiatives;
         if (!items.length) return (
           <div className="mb-8 text-xs text-steel italic">
             No dormant initiatives in the current filter.

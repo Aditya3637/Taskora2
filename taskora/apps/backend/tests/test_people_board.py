@@ -141,14 +141,18 @@ def test_counts_and_push_score_ordering(sb):
     _CUR["u"] = MGR  # admin can view
     b = client.get("/api/v1/people/board").json()
     alice = next(p for p in b["people"] if p["user_id"] == ALICE)
+    # Alice is primary on 4 INI tasks, a contributor on T5 (INI2, due soon),
+    # and her task T3 carries the blocked building B1 — a work-item that now
+    # folds into her tallies. So vs. the old primary-only counts: open 3→5
+    # (+T5, +B1), due_this_week 2→3 (+T5), blocked 1→2 (+B1).
     assert alice["counts"] == {
-        "open": 3, "overdue": 1, "blocked": 1, "due_this_week": 2,
+        "open": 5, "overdue": 1, "blocked": 2, "due_this_week": 3,
         "pending_decision": 1, "stale": 2, "awaiting_their_approval": 1,
     }
     assert alice["name"] == "Alice Ace" and alice["avatar_url"] == "http://a"
     assert alice["initiatives_led"] == 1 and alice["programs_touched"] == 1
-    # push = 1*3 + 1*2 + 1*2 + 1*2 + 2 = 11
-    assert alice["push_score"] == 11
+    # push = overdue1*3 + blocked2*2 + decision1*2 + await1*2 + stale2 = 13
+    assert alice["push_score"] == 13
     # Worst-first: Alice (11) ahead of Owner.
     assert b["people"][0]["user_id"] == ALICE
     assert b["people"][0]["push_score"] >= b["people"][1]["push_score"]
@@ -161,8 +165,10 @@ def test_gallery_card_detail(sb):
     b = client.get("/api/v1/people/board").json()
     a = next(p for p in b["people"] if p["user_id"] == ALICE)
 
+    # +T5 (Alice is a contributor on this open, non-urgent INI2 task) under
+    # the complete-view fix → one extra open item in her workload.
     assert a["workload"] == {"overdue": 1, "blocked": 1,
-                             "pending_decision": 1, "open": 0, "done": 1}
+                             "pending_decision": 1, "open": 1, "done": 1}
 
     # Spotlight: most-urgent first (overdue T1, then blocked T2, then T3),
     # Done T4 excluded.

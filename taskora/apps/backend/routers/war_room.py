@@ -43,9 +43,15 @@ def _scope_task_ids(sb: Client, uid: str, scope: str, biz_ids: list,
     return list(set(primary + secondary))
 
 
-def _biz_and_inits(sb: Client, uid: str):
+def _biz_and_inits(sb: Client, uid: str, prefer: Optional[str] = None):
+    """Return the businesses + initiatives in scope for this user. If
+    `prefer` (typically the FE's active-workspace id) is supplied and the
+    user is a member there, scope narrows to just that one — otherwise
+    falls back to every workspace they're in (legacy behaviour)."""
     biz_ids = [r["business_id"] for r in
                sb.table("business_members").select("business_id").eq("user_id", uid).execute().data]
+    if prefer and prefer in biz_ids:
+        biz_ids = [prefer]
     init_meta: dict = {}
     if biz_ids:
         for r in (sb.table("initiatives")
@@ -60,9 +66,10 @@ def get_queue(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
     scope: str = Query("mine", pattern="^(mine|team)$"),
+    business_id: Optional[str] = Query(default=None, description="Active workspace scope."),
 ):
     uid = user["id"]
-    biz_ids, init_meta = _biz_and_inits(sb, uid)
+    biz_ids, init_meta = _biz_and_inits(sb, uid, prefer=business_id)
     all_ids = _scope_task_ids(sb, uid, scope, biz_ids, init_meta)
     if not all_ids:
         return {"queue": [], "counts": {"pending": 0, "blocked": 0, "overdue": 0}}
@@ -107,9 +114,13 @@ def get_queue(
 
 
 @router.get("/battlefield")
-def get_battlefield(user: dict = Depends(get_current_user), sb: Client = Depends(get_supabase)):
+def get_battlefield(
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    business_id: Optional[str] = Query(default=None),
+):
     uid = user["id"]
-    biz_ids, init_meta = _biz_and_inits(sb, uid)
+    biz_ids, init_meta = _biz_and_inits(sb, uid, prefer=business_id)
     all_ids = _scope_task_ids(sb, uid, "mine", biz_ids, init_meta)
     if not all_ids:
         return {"pending_decisions": 0, "overdue_decisions": 0, "blocked_tasks": 0,
@@ -168,11 +179,12 @@ def get_battlefield_initiatives(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
     program: Optional[str] = None,
+    business_id: Optional[str] = Query(default=None),
 ):
     """Per-initiative rollout for the caller's businesses — the portfolio
     view. Each row links straight to its initiative."""
     uid = user["id"]
-    biz_ids, init_meta = _biz_and_inits(sb, uid)
+    biz_ids, init_meta = _biz_and_inits(sb, uid, prefer=business_id)
     inits = [i for i in init_meta.values()
              if i.get("status") not in ("cancelled",)
              and (not program or i.get("program_id") == program)]
