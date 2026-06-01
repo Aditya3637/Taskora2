@@ -19,6 +19,8 @@ import CommandPalette from "./_components/CommandPalette";
 import NotebookNav from "./_components/NotebookNav";
 import PageEditor from "./_components/PageEditor";
 import ShareModal from "./_components/ShareModal";
+import ShortcutsHelp from "./_components/ShortcutsHelp";
+import TrashModal from "./_components/TrashModal";
 import type { Page, Person, Project } from "./_lib/types";
 import { Button, EmptyState, Kbd, Tooltip, cn } from "@/components/ui";
 
@@ -53,6 +55,7 @@ export default function NotebookPage() {
   const [people, setPeople] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
   const [shareOpen, setShareOpen] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
 
   // Sidebar open/closed — persisted per user via localStorage.
   const [navOpen, setNavOpen] = useState<boolean>(true);
@@ -75,13 +78,48 @@ export default function NotebookPage() {
     if (typeof window !== "undefined") localStorage.setItem(LEFT_MIN_KEY, String(leftMinimized));
   }, [leftMinimized]);
 
-  // Cmd/Ctrl+K quick switcher.
+  // Cmd/Ctrl+K quick switcher + `?` shortcuts cheat-sheet.
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPaletteOpen((v) => !v);
+        return;
+      }
+      // `?` opens the cheat-sheet — but only when not typing into a field,
+      // so a literal "?" in a note still works.
+      if (e.key === "?" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        const el = document.activeElement as HTMLElement | null;
+        const typing =
+          !!el &&
+          (el.tagName === "INPUT" ||
+            el.tagName === "TEXTAREA" ||
+            el.isContentEditable);
+        if (!typing) {
+          e.preventDefault();
+          setHelpOpen(true);
+        }
+        return;
+      }
+      // Alt+1/2/3 jump between sections; Alt+0 restores the full spread.
+      // Match on e.code because Option+digit yields a symbol in e.key on
+      // macOS (Option+1 = "¡"). Works even while typing — preventDefault
+      // stops the symbol being inserted.
+      if (e.altKey && !e.metaKey && !e.ctrlKey) {
+        const jump: Record<string, FocusMode> = {
+          Digit1: "goals",
+          Digit2: "checklist",
+          Digit3: "notebook",
+          Digit0: null,
+        };
+        if (e.code in jump) {
+          e.preventDefault();
+          const target = jump[e.code];
+          if (target && target !== "notebook") setLeftMinimized(false);
+          setFocus(target);
+        }
       }
     }
     window.addEventListener("keydown", onKey);
@@ -115,6 +153,13 @@ export default function NotebookPage() {
     setSharedPages(data);
   }, []);
   useEffect(() => { void loadShared(); }, [loadShared]);
+
+  // Re-fetch owned pages — used after restoring from trash so the
+  // recovered page reappears in the sidebar tree.
+  const reloadPages = useCallback(async () => {
+    const pagesAll = await apiFetch("/api/v1/notebook/pages") as Page[];
+    setPages(pagesAll);
+  }, []);
 
   // Resolve the active page from either owned or shared lists.
   const activePage =
@@ -312,6 +357,7 @@ export default function NotebookPage() {
                 onCreatePage={createPage}
                 onCreateProject={createProject}
                 onCollapse={() => setNavOpen(false)}
+                onOpenTrash={() => setTrashOpen(true)}
               />
             ) : (
               <Tooltip label="Open notebook sidebar" side="right">
@@ -409,6 +455,18 @@ export default function NotebookPage() {
           onPick={setActivePageId}
           onClose={() => setPaletteOpen(false)}
           onCreateNew={() => createPage(null)}
+        />
+      )}
+
+      {helpOpen && <ShortcutsHelp onClose={() => setHelpOpen(false)} />}
+
+      {trashOpen && (
+        <TrashModal
+          onClose={() => setTrashOpen(false)}
+          onRestored={(restored) => {
+            void reloadPages();
+            setActivePageId(restored.id);
+          }}
         />
       )}
     </div>

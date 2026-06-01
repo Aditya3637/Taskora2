@@ -18,12 +18,17 @@ import {
 import { detectInBody, type Suggestion } from "../_lib/intent";
 import { detectEnterShortcut, detectInlineShortcut } from "../_lib/markdown";
 import {
+  compressImageToDataUrl,
+  imageFileFromDataTransfer,
+} from "../_lib/image";
+import {
   freshBlock,
   isTextLike,
   newBlockId,
   type Assignment,
   type Block,
   type BlockKind,
+  type ImageBlock,
   type Page,
   type Person,
   type TableBlock,
@@ -126,6 +131,23 @@ export default function PageEditor({
       } catch { /* non-critical */ }
     })();
   }, [page.id]);
+
+  // Ordinal for each numbered block = its 1-based position within the
+  // current consecutive run of numbered blocks (any other block kind
+  // breaks the run and resets the count). Lets the list show 1. 2. 3.
+  const numberedOrdinals = useMemo(() => {
+    const m = new Map<string, number>();
+    let run = 0;
+    for (const b of blocks) {
+      if (b.type === "numbered") {
+        run += 1;
+        m.set(b.id, run);
+      } else {
+        run = 0;
+      }
+    }
+    return m;
+  }, [blocks]);
 
   // Title → id index, used by the [[link]] renderer + backlinks panel.
   const pageByTitle = useMemo(() => {
@@ -241,6 +263,8 @@ export default function PageEditor({
             replacement = { id, type: "divider" }; break;
           case "table":
             replacement = freshBlock("table"); break;
+          case "image":
+            replacement = freshBlock("image"); break;
           case "text":
           default:
             replacement = { id, type: "text", text: sharedText }; break;
@@ -289,6 +313,70 @@ export default function PageEditor({
       });
     },
     [scheduleSave, title],
+  );
+
+  // ─── Images ──────────────────────────────────────────────────────
+  // Insert a ready-made image block right after `afterIdx` (or at the
+  // end when afterIdx is null/out of range), then focus it.
+  const insertImageBlock = useCallback(
+    (src: string, afterIdx: number | null) => {
+      const fresh = freshBlock("image") as ImageBlock;
+      fresh.src = src;
+      setBlocks((prev) => {
+        const at =
+          afterIdx == null || afterIdx < 0 || afterIdx >= prev.length
+            ? prev.length
+            : afterIdx + 1;
+        const next = [...prev];
+        next.splice(at, 0, fresh);
+        scheduleSave(title, next);
+        return next;
+      });
+      setFocusedBlockId(fresh.id);
+    },
+    [scheduleSave, title],
+  );
+
+  // Compress + insert. Shared by paste, drop, and the upload button.
+  const addImageFromFile = useCallback(
+    async (file: File, afterIdx: number | null) => {
+      try {
+        const src = await compressImageToDataUrl(file);
+        insertImageBlock(src, afterIdx);
+      } catch (err) {
+        alert((err as Error)?.message ?? "Couldn't add that image");
+      }
+    },
+    [insertImageBlock],
+  );
+
+  // Paste / drop anywhere in the page → image block after the focused
+  // block. Text pastes fall through to the browser's default handling.
+  const focusedIdx = useCallback(
+    () => blocks.findIndex((b) => b.id === focusedBlockId),
+    [blocks, focusedBlockId],
+  );
+
+  const onEditorPaste = useCallback(
+    (e: React.ClipboardEvent) => {
+      if (readOnly) return;
+      const file = imageFileFromDataTransfer(e.clipboardData);
+      if (!file) return;
+      e.preventDefault();
+      void addImageFromFile(file, focusedIdx());
+    },
+    [readOnly, addImageFromFile, focusedIdx],
+  );
+
+  const onEditorDrop = useCallback(
+    (e: React.DragEvent) => {
+      if (readOnly || draggedId) return; // internal block reorder owns this
+      const file = imageFileFromDataTransfer(e.dataTransfer);
+      if (!file) return;
+      e.preventDefault();
+      void addImageFromFile(file, focusedIdx());
+    },
+    [readOnly, draggedId, addImageFromFile, focusedIdx],
   );
 
   const duplicateBlock = useCallback(
@@ -465,7 +553,21 @@ export default function PageEditor({
       )}
 
       {/* Block list */}
-      <div className="flex-1 overflow-y-auto pr-1">
+      <div
+        className="flex-1 overflow-y-auto pr-1"
+        onPaste={onEditorPaste}
+        onDrop={onEditorDrop}
+        onDragOver={(e) => {
+          // Allow external file drops (internal reorder sets draggedId).
+          // During dragover the file payload is hidden, so we can only
+          // check that *a* file is being dragged, not that it's an image.
+          if (readOnly || draggedId) return;
+          const hasFile = e.dataTransfer.items
+            ? Array.from(e.dataTransfer.items).some((it) => it.kind === "file")
+            : e.dataTransfer.types?.includes("Files");
+          if (hasFile) e.preventDefault();
+        }}
+      >
         {blocks.length === 0 && (
           <EmptyComposerHint onAdd={() => appendBlock("text")} />
         )}
@@ -480,6 +582,7 @@ export default function PageEditor({
               total={blocks.length}
               readOnly={readOnly || readingMode}
               focused={focusedBlockId === b.id}
+              ordinal={numberedOrdinals.get(b.id)}
               sentStatus={sentStatuses[b.id]}
               workspacePeople={workspacePeople}
               pageByTitle={pageByTitle}
@@ -557,10 +660,11 @@ export default function PageEditor({
           <button onClick={() => appendBlock("bullet")} className="text-xs px-3 py-1.5 border border-pebble rounded text-steel hover:text-midnight hover:bg-pebble/40">+ List</button>
           <button onClick={() => appendBlock("todo")} className="text-xs px-3 py-1.5 border border-pebble rounded text-steel hover:text-midnight hover:bg-pebble/40">+ Todo</button>
           <button onClick={() => appendBlock("table")} className="text-xs px-3 py-1.5 border border-pebble rounded text-steel hover:text-midnight hover:bg-pebble/40">+ Table</button>
+          <button onClick={() => appendBlock("image")} className="text-xs px-3 py-1.5 border border-pebble rounded text-steel hover:text-midnight hover:bg-pebble/40">+ Image</button>
           <span className="ml-auto text-[11px] text-steel/50 flex items-center gap-2">
             <span>{computeWordCount(blocks)} words</span>
             <span className="text-steel/30">·</span>
-            <span>Type <code className="bg-pebble/60 px-1 rounded">/</code> for blocks · <code className="bg-pebble/60 px-1 rounded">⌘&nbsp;K</code> to switch</span>
+            <span>Type <code className="bg-pebble/60 px-1 rounded">/</code> for blocks · paste an image · <code className="bg-pebble/60 px-1 rounded">⌘&nbsp;K</code> switch · <code className="bg-pebble/60 px-1 rounded">?</code> shortcuts</span>
           </span>
         </div>
       )}
@@ -583,6 +687,8 @@ interface BlockRowProps {
   total: number;
   readOnly: boolean;
   focused: boolean;
+  /** 1-based position within a run of numbered blocks (numbered only). */
+  ordinal?: number;
   sentStatus?: string;
   workspacePeople: Person[];
   pageByTitle: Map<string, Page>;
@@ -735,6 +841,15 @@ function BlockBody(p: BlockRowProps) {
         block={b}
         readOnly={p.readOnly}
         onChange={(patch) => p.onChange(patch as Partial<Block>)}
+        onDeleteTable={p.onDelete}
+      />
+    );
+  if (b.type === "image")
+    return (
+      <ImageBody
+        block={b}
+        readOnly={p.readOnly}
+        onChange={(patch) => p.onChange(patch as Partial<Block>)}
       />
     );
   return <EditableBlockBody {...p} block={b as TextLikeBlock} />;
@@ -742,6 +857,142 @@ function BlockBody(p: BlockRowProps) {
 
 function DividerBody() {
   return <hr className="my-3 border-t border-pebble" />;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Image block — paste / drop / upload, caption, width presets
+// ─────────────────────────────────────────────────────────────────────
+
+function ImageBody({
+  block,
+  readOnly,
+  onChange,
+}: {
+  block: ImageBlock;
+  readOnly: boolean;
+  onChange: (patch: Partial<ImageBlock>) => void;
+}) {
+  const fileInput = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState(false);
+  const widthPct = block.widthPct ?? 100;
+
+  const handleFile = async (file: File | null | undefined) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const src = await compressImageToDataUrl(file);
+      onChange({ src });
+    } catch (err) {
+      alert((err as Error)?.message ?? "Couldn't load that image");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Empty placeholder: click to upload, or paste/drop right onto it.
+  if (!block.src) {
+    return (
+      <div className="my-2">
+        <button
+          type="button"
+          disabled={readOnly}
+          onClick={() => fileInput.current?.click()}
+          onPaste={(e) => {
+            const f = imageFileFromDataTransfer(e.clipboardData);
+            if (f) {
+              // Stop the page-level paste handler from also inserting a
+              // second image block — this placeholder consumes it.
+              e.preventDefault();
+              e.stopPropagation();
+              void handleFile(f);
+            }
+          }}
+          onDragOver={(e) => { if (!readOnly) e.preventDefault(); }}
+          onDrop={(e) => {
+            const f = imageFileFromDataTransfer(e.dataTransfer);
+            if (f) {
+              e.preventDefault();
+              e.stopPropagation();
+              void handleFile(f);
+            }
+          }}
+          className="w-full flex flex-col items-center justify-center gap-1 py-8 px-4 border-2 border-dashed border-pebble rounded-lg text-steel/70 hover:border-taskora-red/50 hover:text-midnight transition-colors disabled:cursor-default disabled:hover:border-pebble"
+        >
+          <span className="text-2xl" aria-hidden>🖼</span>
+          <span className="text-sm font-medium">
+            {busy ? "Adding image…" : "Click to upload an image"}
+          </span>
+          <span className="text-[11px] text-steel/60">
+            …or paste / drag a file right here
+          </span>
+        </button>
+        <input
+          ref={fileInput}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => { void handleFile(e.target.files?.[0]); e.target.value = ""; }}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="my-2 group/img">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={block.src}
+        alt={block.alt || block.caption || "Notebook image"}
+        style={{ width: `${widthPct}%` }}
+        className="rounded-lg border border-pebble max-w-full h-auto"
+      />
+      {!readOnly && (
+        <div className="flex items-center gap-1.5 mt-1 text-[11px] opacity-0 group-hover/img:opacity-100 transition-opacity">
+          <span className="text-steel/60">Width</span>
+          {[50, 75, 100].map((w) => (
+            <button
+              key={w}
+              onClick={() => onChange({ widthPct: w })}
+              className={`px-1.5 py-0.5 rounded border ${
+                widthPct === w
+                  ? "border-taskora-red text-taskora-red"
+                  : "border-pebble text-steel hover:text-midnight"
+              }`}
+            >
+              {w}%
+            </button>
+          ))}
+          <button
+            onClick={() => fileInput.current?.click()}
+            className="ml-2 px-1.5 py-0.5 rounded border border-pebble text-steel hover:text-midnight"
+          >
+            Replace
+          </button>
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => { void handleFile(e.target.files?.[0]); e.target.value = ""; }}
+          />
+        </div>
+      )}
+      {/* Caption — always rendered when present; editable inline. */}
+      {readOnly ? (
+        block.caption ? (
+          <p className="text-xs text-steel/70 mt-1 italic">{block.caption}</p>
+        ) : null
+      ) : (
+        <input
+          type="text"
+          value={block.caption ?? ""}
+          onChange={(e) => onChange({ caption: e.target.value })}
+          placeholder="Add a caption…"
+          className="w-full text-xs text-steel/80 italic bg-transparent focus:outline-none mt-1 placeholder:text-steel/40"
+        />
+      )}
+    </div>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -753,6 +1004,7 @@ function EditableBlockBody({
   block,
   focused,
   readOnly,
+  ordinal,
   sentStatus,
   workspacePeople,
   pageByTitle,
@@ -791,7 +1043,7 @@ function EditableBlockBody({
   return (
     <div className="flex items-start gap-2">
       {/* Per-type left affix */}
-      <LeftAffix block={block} checked={checked} onToggle={() => isCheckable && onChange({ checked: !checked } as Partial<Block>)} />
+      <LeftAffix block={block} checked={checked} ordinal={ordinal} onToggle={() => isCheckable && onChange({ checked: !checked } as Partial<Block>)} />
 
       <div className="flex-1 min-w-0">
         {editing && !readOnly ? (
@@ -831,6 +1083,29 @@ function EditableBlockBody({
               if (e.key === "Escape") {
                 setEditing(false);
                 onCloseSlash();
+                return;
+              }
+              // ⌘/Ctrl+B / +I → wrap the selection in markdown markers.
+              // With no selection, drop the markers and park the caret
+              // between them so you can type the styled text directly.
+              if ((e.metaKey || e.ctrlKey) && !e.altKey &&
+                  (e.key === "b" || e.key === "i")) {
+                e.preventDefault();
+                const el = e.currentTarget;
+                const marker = e.key === "b" ? "**" : "*";
+                const start = el.selectionStart ?? block.text.length;
+                const end = el.selectionEnd ?? start;
+                const sel = block.text.slice(start, end);
+                const next =
+                  block.text.slice(0, start) + marker + sel + marker + block.text.slice(end);
+                onChange({ text: next } as Partial<Block>);
+                const caret = start + marker.length;
+                // Restore selection after React re-renders the controlled value.
+                setTimeout(() => {
+                  el.focus();
+                  el.setSelectionRange(caret, caret + sel.length);
+                  fitHeight();
+                }, 0);
                 return;
               }
               // Backspace at start of an empty non-text block → revert to text.
@@ -918,18 +1193,23 @@ function EditableBlockBody({
 function LeftAffix({
   block,
   checked,
+  ordinal,
   onToggle,
 }: {
   block: TextLikeBlock;
   checked: boolean;
+  ordinal?: number;
   onToggle: () => void;
 }) {
   if (block.type === "bullet")
     return <span className="text-midnight pt-1 select-none w-4 text-center">•</span>;
   if (block.type === "numbered")
-    // Cheap numbering: caller doesn't know its position; just show a glyph.
-    // Could be wired to actual index later via a numbered-group util.
-    return <span className="text-midnight pt-1 select-none w-4 text-center">1.</span>;
+    // Real ordinal computed by the parent over the consecutive numbered run.
+    return (
+      <span className="text-midnight pt-1 select-none min-w-4 text-right tabular-nums">
+        {ordinal ?? 1}.
+      </span>
+    );
   if (block.type === "todo")
     return (
       <input
@@ -998,6 +1278,33 @@ function EmptyComposerHint({ onAdd }: { onAdd: () => void }) {
 // Text rendering — inline math + @mentions
 // ─────────────────────────────────────────────────────────────────────
 
+// Inline **bold** / *italic* / _italic_ within a plain-text run (i.e. the
+// slices left over after math / @mention / [[link]] tokens are consumed).
+// Markers must hug their content (no leading/trailing space) so prose like
+// "a * b" or a stray underscore in file_name doesn't get formatted.
+function renderInline(text: string, keyBase: string): React.ReactNode[] {
+  if (!text) return [text];
+  const re = /(\*\*(\S(?:[^*]*\S)?|\S)\*\*)|(\*(\S(?:[^*]*\S)?|\S)\*)|(_(\S(?:[^_]*\S)?|\S)_)/g;
+  const out: React.ReactNode[] = [];
+  let i = 0;
+  let k = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > i) out.push(text.slice(i, m.index));
+    if (m[1]) {
+      out.push(<strong key={`${keyBase}-b${k}`} className="font-semibold text-midnight">{m[2]}</strong>);
+    } else if (m[3]) {
+      out.push(<em key={`${keyBase}-i${k}`}>{m[4]}</em>);
+    } else if (m[5]) {
+      out.push(<em key={`${keyBase}-u${k}`}>{m[6]}</em>);
+    }
+    i = m.index + m[0].length;
+    k++;
+  }
+  if (i < text.length) out.push(text.slice(i));
+  return out;
+}
+
 function renderTextWithMath(
   text: string,
   workspacePeople: Person[],
@@ -1027,7 +1334,7 @@ function renderTextWithMath(
     const combined = /(=([\d.+\-*/%()\s]+?)(?=[\s,;.!?]|$))|(@[A-Za-z][A-Za-z0-9._-]{0,40})|(\[\[([^\]]{1,200})\]\])/g;
     let m: RegExpExecArray | null;
     while ((m = combined.exec(line)) !== null) {
-      if (m.index > i) nodes.push(line.slice(i, m.index));
+      if (m.index > i) nodes.push(...renderInline(line.slice(i, m.index), `t${li}-${i}`));
       if (m[1]) {
         const r = evaluateExpression(m[2]);
         nodes.push(
@@ -1078,7 +1385,7 @@ function renderTextWithMath(
       }
       i = m.index + m[0].length;
     }
-    if (i < line.length) nodes.push(line.slice(i));
+    if (i < line.length) nodes.push(...renderInline(line.slice(i), `t${li}-end`));
     return <div key={li}>{nodes.length ? nodes : " "}</div>;
   });
 }
@@ -1109,10 +1416,12 @@ function TableBody({
   block,
   readOnly,
   onChange,
+  onDeleteTable,
 }: {
   block: TableBlock;
   readOnly: boolean;
   onChange: (patch: Partial<TableBlock>) => void;
+  onDeleteTable?: () => void;
 }) {
   const cellMap = useMemo<CellMap>(() => {
     const m: CellMap = new Map();
@@ -1200,13 +1509,14 @@ function TableBody({
                 >
                   <div className="flex items-center justify-between">
                     <span>{colLetter(c)}</span>
-                    {!readOnly && (
+                    {!readOnly && block.cols > 1 && (
                       <button
                         onClick={() => removeCol(c)}
-                        className="opacity-0 group-hover/col:opacity-100 text-steel/60 hover:text-red-500 text-[10px]"
-                        title="Remove column"
+                        className="opacity-40 group-hover/col:opacity-100 text-steel/60 hover:text-red-500 text-[11px] leading-none px-0.5"
+                        title={`Delete column ${colLetter(c)}`}
+                        aria-label={`Delete column ${colLetter(c)}`}
                       >
-                        ×
+                        ⊘
                       </button>
                     )}
                   </div>
@@ -1290,14 +1600,17 @@ function TableBody({
                   );
                 })}
                 {!readOnly && (
-                  <td className="border-b border-pebble w-6 align-top">
-                    <button
-                      onClick={() => removeRow(r)}
-                      className="opacity-0 group-hover/row:opacity-100 text-steel/60 hover:text-red-500 text-[10px] px-1 mt-1"
-                      title="Remove row"
-                    >
-                      ×
-                    </button>
+                  <td className="border-b border-pebble w-7 align-top text-center">
+                    {block.rows > 1 && (
+                      <button
+                        onClick={() => removeRow(r)}
+                        className="opacity-40 group-hover/row:opacity-100 text-steel/60 hover:text-red-500 text-[11px] px-1 mt-1"
+                        title={`Delete row ${r + 1}`}
+                        aria-label={`Delete row ${r + 1}`}
+                      >
+                        ⊘
+                      </button>
+                    )}
                   </td>
                 )}
               </tr>
@@ -1307,15 +1620,43 @@ function TableBody({
       </div>
 
       {!readOnly && (
-        <div className="flex items-center gap-2 mt-1.5 text-[11px]">
-          <button onClick={addRow} className="text-steel hover:text-midnight">+ row</button>
-          <button onClick={addCol} className="text-steel hover:text-midnight">+ column</button>
-          <span className="ml-auto text-steel/60">
-            Tab / Shift+Tab to move cells · Enter to next row ·{" "}
+        <div className="mt-1.5 space-y-1">
+          <div className="flex items-center flex-wrap gap-1.5 text-[11px]">
+            <button
+              onClick={addRow}
+              className="px-2 py-1 border border-pebble rounded text-steel hover:text-midnight hover:bg-pebble/40"
+              title="Add a row at the bottom"
+            >
+              ＋ Row
+            </button>
+            <button
+              onClick={addCol}
+              className="px-2 py-1 border border-pebble rounded text-steel hover:text-midnight hover:bg-pebble/40"
+              title="Add a column on the right"
+            >
+              ＋ Column
+            </button>
+            <span className="text-steel/40 mx-1">·</span>
+            <span className="text-steel/60">
+              Hover a row/column header and click <span className="text-steel/80">⊘</span> to delete it
+            </span>
+            {onDeleteTable && (
+              <button
+                onClick={onDeleteTable}
+                className="ml-auto px-2 py-1 border border-pebble rounded text-steel/70 hover:text-red-600 hover:border-red-200 hover:bg-red-50"
+                title="Delete this entire table"
+              >
+                🗑 Delete table
+              </button>
+            )}
+          </div>
+          <p className="text-[11px] text-steel/55">
+            <span className="font-medium text-steel/70">Keys:</span> Tab / Shift+Tab move cells · Enter → next row ·{" "}
+            <span className="font-medium text-steel/70">Formulas:</span>{" "}
             <code className="bg-pebble/60 px-1 rounded">=A1+B1</code>,{" "}
             <code className="bg-pebble/60 px-1 rounded">=SUM(A1:A5)</code>,{" "}
             <code className="bg-pebble/60 px-1 rounded">=AVG(A1:A5)</code>
-          </span>
+          </p>
         </div>
       )}
     </div>

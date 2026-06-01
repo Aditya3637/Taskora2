@@ -298,6 +298,25 @@ def list_pages(
     return q.order("sort_order").order("updated_at", desc=True).execute().data
 
 
+@router.get("/pages/trash")
+def list_trashed_pages(
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Caller's soft-archived pages, most-recently-deleted first. Owner-only
+    — a follower never sees another user's trash. Declared before the
+    /pages/{page_id} route so "trash" isn't captured as a page id."""
+    return (
+        sb.table("notebook_pages")
+        .select("*")
+        .eq("owner_id", user["id"])
+        .not_.is_("archived_at", "null")
+        .order("archived_at", desc=True)
+        .execute()
+        .data
+    )
+
+
 @router.post("/pages", status_code=201)
 def create_page(
     body: PageCreate,
@@ -379,6 +398,164 @@ def archive_page(
         {"archived_at": datetime.now(timezone.utc).isoformat()}
     ).eq("id", page_id).execute()
     return None
+
+
+@router.post("/pages/{page_id}/restore")
+def restore_page(
+    page_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Un-archive a page. If its project was archived in the meantime, the
+    page is moved to Unfiled (project_id -> null) so it reappears in the
+    tree instead of hiding under an invisible project."""
+    page = _page_or_404(sb, page_id)
+    if page["owner_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Only the owner can restore a page")
+    patch: dict = {"archived_at": None}
+    pid = page.get("project_id")
+    if pid:
+        proj = (
+            sb.table("notebook_projects").select("archived_at").eq("id", pid).execute().data
+        )
+        if not proj or proj[0].get("archived_at") is not None:
+            patch["project_id"] = None
+    result = sb.table("notebook_pages").update(patch).eq("id", page_id).execute()
+    return result.data[0] if result.data else page
+
+
+@router.delete("/pages/{page_id}/permanent", status_code=204)
+def purge_page(
+    page_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Hard-delete a page for good (owner only). Safe: notebook_page_followers
+    cascade-delete; checklist + assignment source_page_id back-links are
+    ON DELETE SET NULL, so nothing dangles."""
+    page = _page_or_404(sb, page_id)
+    if page["owner_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Only the owner can delete a page")
+    sb.table("notebook_pages").delete().eq("id", page_id).execute()
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Search
+# ─────────────────────────────────────────────────────────────────────
+
+def _extract_page_text(title: Optional[str], body: Optional[list]) -> str:
+    """Flatten a page into one searchable string: title + every block's
+    human text. Skips structural noise (block ids/types) and — crucially —
+    image `src` data URLs (base64), keeping only captions, so search stays
+    fast and clean. Preserves original case so snippets read naturally."""
+    parts: List[str] = []
+    if title:
+        parts.append(title)
+    for b in body or []:
+        if not isinstance(b, dict):
+            continue
+        kind = b.get("type")
+        if kind == "table":
+            for cell in (b.get("cells") or []):
+                if cell:
+                    parts.append(str(cell))
+        elif kind == "image":
+            if b.get("caption"):
+                parts.append(str(b["caption"]))
+        elif kind == "divider":
+            continue
+        elif b.get("text"):
+            parts.append(str(b["text"]))
+    return "  ".join(p for p in parts if p)
+
+
+def _snippet(text: str, tokens: List[str], width: int = 90) -> str:
+    """A short context window around the first matched token, with ellipses."""
+    low = text.lower()
+    hits = [low.find(t) for t in tokens if low.find(t) >= 0]
+    pos = min(hits) if hits else 0
+    start = max(0, pos - 30)
+    end = min(len(text), start + width)
+    snip = text[start:end].strip()
+    return ("…" if start > 0 else "") + snip + ("…" if end < len(text) else "")
+
+
+@router.get("/search")
+def search_notebook(
+    q: str = Query(default="", description="Free-text query; all tokens must match (AND)."),
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Full-text-ish search across the caller's pages (title + body),
+    followed pages, and personal checklist. Token AND, case-insensitive.
+    Title hits rank above body-only hits. Returns snippets for context.
+
+    Scan-based (no tsvector column) — fine at personal-notebook scale and
+    fully portable; revisit with a derived search column if notebooks grow
+    large or image-heavy."""
+    needle = (q or "").strip()
+    tokens = [t.lower() for t in needle.split() if t]
+    if not tokens:
+        return {"pages": [], "checklist": []}
+
+    uid = user["id"]
+    cols = "id, title, icon, body, owner_id, updated_at"
+    owned = (
+        sb.table("notebook_pages").select(cols)
+        .eq("owner_id", uid).is_("archived_at", "null").execute().data
+    )
+    follow_ids = [
+        f["page_id"]
+        for f in sb.table("notebook_page_followers").select("page_id").eq("user_id", uid).execute().data
+    ]
+    followed = []
+    if follow_ids:
+        followed = (
+            sb.table("notebook_pages").select(cols)
+            .in_("id", follow_ids).is_("archived_at", "null").execute().data
+        )
+
+    seen: set = set()
+    page_hits = []
+    for p in owned + followed:
+        if p["id"] in seen:
+            continue
+        seen.add(p["id"])
+        text = _extract_page_text(p.get("title"), p.get("body"))
+        hay = text.lower()
+        if not all(t in hay for t in tokens):
+            continue
+        title_low = (p.get("title") or "").lower()
+        in_title = all(t in title_low for t in tokens)
+        page_hits.append({
+            "id": p["id"],
+            "title": p.get("title") or "Untitled",
+            "icon": p.get("icon"),
+            "snippet": _snippet(text, tokens),
+            "shared": p.get("owner_id") != uid,
+            "updated_at": p.get("updated_at"),
+            "_title_hit": in_title,
+        })
+    # Stable sort is order-preserving, so apply the weakest key first:
+    # recency (newest first), then title-matches-before-body. Net result:
+    # title hits on top, each group newest-first.
+    page_hits.sort(key=lambda h: (h.get("updated_at") or ""), reverse=True)
+    page_hits.sort(key=lambda h: 0 if h["_title_hit"] else 1)
+    for h in page_hits:
+        h.pop("_title_hit", None)
+
+    checklist = (
+        sb.table("notebook_checklist_items").select("id, content, status")
+        .eq("owner_id", uid).execute().data
+    )
+    cl_hits = [
+        {"id": c["id"], "content": c["content"], "status": c.get("status")}
+        for c in checklist
+        if all(t in (c.get("content") or "").lower() for t in tokens)
+    ]
+
+    return {"pages": page_hits[:30], "checklist": cl_hits[:15]}
 
 
 # ─────────────────────────────────────────────────────────────────────

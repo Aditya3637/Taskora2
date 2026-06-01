@@ -51,18 +51,21 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# CORS: include localhost:3000 only when the configured frontend_url is
-# itself a localhost — otherwise we're in prod and shouldn't accept dev
-# origins. With allow_credentials=True a permanent localhost entry meant
-# a developer running any tool on :3000 could have hit prod APIs with the
-# user's session if they visited a malicious page.
+# CORS: in dev (frontend_url is localhost) accept ANY localhost port via a
+# regex, so `next dev` falling back to :3001/:3002 when :3000 is taken
+# doesn't break every API call. In prod (frontend_url is a real domain)
+# `_is_dev` is False → no regex, no localhost origins, locked to the single
+# configured frontend_url. With allow_credentials=True a permanent dev
+# entry would otherwise let any tool on localhost hit prod with the user's
+# session, so the regex is strictly dev-gated.
 _origins = [settings.frontend_url]
 _is_dev = "localhost" in (settings.frontend_url or "") or "127.0.0.1" in (settings.frontend_url or "")
-if _is_dev:
-    _origins.append("http://localhost:3000")
+# Matches http://localhost:<port> and http://127.0.0.1:<port> (dev only).
+_origin_regex = r"^http://(localhost|127\.0\.0\.1):\d+$" if _is_dev else None
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_origins,
+    allow_origin_regex=_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

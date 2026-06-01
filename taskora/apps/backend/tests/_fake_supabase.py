@@ -139,8 +139,19 @@ class _Query:
         self._filters.append(("in", col, list(vals)))
         return self
 
+    @property
+    def not_(self):
+        # Negates the next filter (only is_ is supported, which is all the
+        # app uses: `.not_.is_("col", "null")` → IS NOT NULL).
+        self._negate_next = True
+        return self
+
     def is_(self, col, _val):
-        self._filters.append(("isnull", col, None))
+        if getattr(self, "_negate_next", False):
+            self._negate_next = False
+            self._filters.append(("notnull", col, None))
+        else:
+            self._filters.append(("isnull", col, None))
         return self
 
     def lt(self, col, val):
@@ -187,6 +198,10 @@ class _Query:
                         break
                 elif kind == "isnull":
                     if r.get(col) is not None:
+                        ok = False
+                        break
+                elif kind == "notnull":
+                    if r.get(col) is None:
                         ok = False
                         break
                 elif kind == "lt":

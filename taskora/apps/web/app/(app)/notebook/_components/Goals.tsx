@@ -7,13 +7,23 @@ import { apiFetch } from "@/lib/api";
  * we store an array of strings so a richer block structure can land
  * later without a migration.
  *
- * Autosave on blur + debounce on edit so we don't hammer the API.
+ * Keyboard-first:
+ *   - Enter           → commit the line and start a new goal below
+ *   - Shift+Enter     → newline within the current goal
+ *   - Backspace (empty, not the only row) → delete this goal, focus prev
+ *   - ArrowUp/Down at the line edge → move between goals
+ *
+ * Autosave: debounced on edit, immediate on structural changes
+ * (add/remove) so a new empty row isn't lost if you navigate away.
  */
 export default function Goals() {
   const [items, setItems] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputRefs = useRef<(HTMLTextAreaElement | null)[]>([]);
+  // Index to focus after the next render (set by add/remove ops).
+  const focusTarget = useRef<number | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -26,6 +36,26 @@ export default function Goals() {
       }
     })();
   }, []);
+
+  const fit = (el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  };
+
+  // Apply a queued focus request once the new row is in the DOM, and keep
+  // every row sized to its content (so Shift+Enter newlines grow the box).
+  useEffect(() => {
+    inputRefs.current.forEach(fit);
+    if (focusTarget.current == null) return;
+    const el = inputRefs.current[focusTarget.current];
+    if (el) {
+      el.focus();
+      const len = el.value.length;
+      el.setSelectionRange(len, len);
+    }
+    focusTarget.current = null;
+  });
 
   const persist = useCallback(async (next: string[]) => {
     setSaving(true);
@@ -49,20 +79,53 @@ export default function Goals() {
     });
   };
 
-  const addRow = () => {
+  /** Insert a fresh empty goal after index `i` (or at end when i = -1). */
+  const insertAfter = (i: number) => {
     setItems((prev) => {
-      const next = [...prev, ""];
+      const at = i < 0 ? prev.length : i + 1;
+      const next = [...prev];
+      next.splice(at, 0, "");
+      focusTarget.current = at;
       persist(next);
       return next;
     });
   };
 
-  const removeAt = (i: number) => {
+  const removeAt = (i: number, focusPrev = false) => {
     setItems((prev) => {
       const next = prev.filter((_, idx) => idx !== i);
+      if (focusPrev) focusTarget.current = Math.max(0, i - 1);
       persist(next);
       return next;
     });
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>, i: number) => {
+    const el = e.currentTarget;
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      insertAfter(i);
+      return;
+    }
+    if (e.key === "Backspace" && el.value === "" && items.length > 1) {
+      e.preventDefault();
+      removeAt(i, true);
+      return;
+    }
+    if (e.key === "ArrowUp" && el.selectionStart === 0 && i > 0) {
+      e.preventDefault();
+      focusTarget.current = i - 1;
+      // Trigger the focus effect without changing data.
+      setItems((prev) => [...prev]);
+    } else if (
+      e.key === "ArrowDown" &&
+      el.selectionStart === el.value.length &&
+      i < items.length - 1
+    ) {
+      e.preventDefault();
+      focusTarget.current = i + 1;
+      setItems((prev) => [...prev]);
+    }
   };
 
   if (loading) {
@@ -85,8 +148,10 @@ export default function Goals() {
           <li key={i} className="flex gap-1.5 items-start group">
             <span className="text-taskora-red mt-1.5 text-xs">◆</span>
             <textarea
+              ref={(el) => { inputRefs.current[i] = el; }}
               value={g}
               onChange={(e) => updateAt(i, e.target.value)}
+              onKeyDown={(e) => onKeyDown(e, i)}
               rows={1}
               className="flex-1 bg-transparent text-sm text-midnight resize-none focus:outline-none placeholder:text-steel/40"
               placeholder="What are you aiming for?"
@@ -103,10 +168,10 @@ export default function Goals() {
         ))}
       </ul>
       <button
-        onClick={addRow}
+        onClick={() => insertAfter(-1)}
         className="text-xs text-steel/70 hover:text-taskora-red transition-colors"
       >
-        + Add a goal
+        + Add a goal <span className="text-steel/40">· or press Enter</span>
       </button>
     </div>
   );
