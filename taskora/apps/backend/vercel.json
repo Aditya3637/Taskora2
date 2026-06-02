@@ -5,6 +5,6 @@
     { "source": "/(.*)", "destination": "/api/index" }
   ],
   "crons": [
-    { "path": "/api/v1/internal/cron/tick", "schedule": "*/15 * * * *" }
+    { "path": "/api/v1/internal/cron/tick", "schedule": "30 3 * * *" }
   ]
 }
