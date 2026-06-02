@@ -452,3 +452,170 @@ def lifecycle_run(
     """Manually fire one automation tick (the same work the cron does)."""
     from automation import runner
     return runner.tick(sb)
+
+
+# ── Action queue — the owner's "what needs me right now" ───────────────────────
+#
+# Synthesizes prioritized actionables server-side from the LIVE tables
+# (subscriptions, businesses, members, initiatives, sales_leads) — so it works
+# today, before the automation migration. Each group carries a count, optional
+# ₹ impact, and the top items (deep-linkable to the account drawer).
+
+def _member_counts(sb: Client, biz_ids: list[str]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    if not biz_ids:
+        return out
+    for m in sb.table("business_members").select("business_id").in_("business_id", biz_ids).execute().data:
+        out[m["business_id"]] = out.get(m["business_id"], 0) + 1
+    return out
+
+
+@router.get("/action-queue")
+def action_queue(
+    user: dict = Depends(require_admin),
+    sb: Client = Depends(get_supabase),
+):
+    now = datetime.now(timezone.utc)
+
+    biz = sb.table("businesses").select("id, name, owner_id, created_at").limit(2000).execute().data
+    biz_by_id = {b["id"]: b for b in biz}
+    biz_ids = [b["id"] for b in biz]
+    seats = _member_counts(sb, biz_ids)
+    subs = (
+        sb.table("subscriptions")
+        .select("business_id, plan, status, trial_end, current_period_end, updated_at")
+        .execute().data
+    )
+    sub_by_biz = {s["business_id"]: s for s in subs if s.get("business_id")}
+    init_biz = {r["business_id"] for r in sb.table("initiatives").select("business_id").execute().data}
+
+    def name(bid):
+        return (biz_by_id.get(bid) or {}).get("name") or "Untitled workspace"
+
+    groups: list[dict] = []
+
+    def add(key, severity, icon, title, items, *, amount_inr=0, cta_label=None, cta_tab=None):
+        if not items:
+            return
+        groups.append({
+            "key": key, "severity": severity, "icon": icon, "title": title,
+            "count": len(items), "amount_inr": amount_inr,
+            "items": items[:8], "cta_label": cta_label, "cta_tab": cta_tab,
+        })
+
+    # 1. Payments failed (critical) — past_due subscriptions.
+    pd_items, pd_amount = [], 0
+    for s in subs:
+        if s.get("status") != "past_due":
+            continue
+        bid = s["business_id"]
+        failed = _parse_iso(s.get("current_period_end")) or _parse_iso(s.get("updated_at"))
+        days = int((now - failed).total_seconds() / 86400) if failed else None
+        mrr = PLAN_MRR.get(s.get("plan", ""), 0)
+        pd_amount += mrr
+        pd_items.append({"id": bid, "label": name(bid),
+                         "sub": f"{s.get('plan')} · {mrr and ('₹%d/mo' % mrr) or ''} · {days}d past due",
+                         "amount_inr": mrr})
+    pd_items.sort(key=lambda i: i.get("amount_inr", 0), reverse=True)
+    add("payments_failed", "critical", "💳", "Payments failed",
+        pd_items, amount_inr=pd_amount, cta_label="Open dunning board", cta_tab="revenue")
+
+    # 2/3. Trials ending ≤7d (high) and trials already past end (high).
+    ending, expired = [], []
+    for s in subs:
+        if s.get("status") != "trialing":
+            continue
+        end = _parse_iso(s.get("trial_end"))
+        if not end:
+            continue
+        bid = s["business_id"]
+        dleft = (end - now).total_seconds() / 86400
+        row = {"id": bid, "label": name(bid),
+               "sub": f"{seats.get(bid, 0)} seats · ends {end.date().isoformat()}"}
+        if dleft <= 0:
+            expired.append(row)
+        elif dleft <= 7:
+            row["sub"] = f"{seats.get(bid, 0)} seats · {int(dleft) }d left"
+            ending.append(row)
+    add("trials_ending", "high", "⏳", "Trials ending soon (≤7d)",
+        ending, cta_label="View accounts", cta_tab="accounts")
+    add("trials_expired", "high", "⌛", "Trials expired — not converted",
+        expired, cta_label="View accounts", cta_tab="accounts")
+
+    # 4. Stuck onboarding (medium) — created ≥3d ago, not cancelled, and either
+    #    no initiative yet OR still a single seat (no team).
+    stuck = []
+    for b in biz:
+        created = _parse_iso(b.get("created_at"))
+        if not created or (now - created).total_seconds() / 86400 < 3:
+            continue
+        st = (sub_by_biz.get(b["id"]) or {}).get("status")
+        if st in ("cancelled", "archived"):
+            continue
+        no_init = b["id"] not in init_biz
+        solo = seats.get(b["id"], 0) <= 1
+        if no_init or solo:
+            reason = "no initiative yet" if no_init else "still a single seat"
+            stuck.append({"id": b["id"], "label": name(b["id"]), "sub": reason})
+    add("stuck_onboarding", "medium", "🧭", "Stuck onboarding",
+        stuck, cta_label="View accounts", cta_tab="accounts")
+
+    # 5. Stale leads (medium) — open pipeline, no movement in 7d.
+    leads = sb.table("sales_leads").select("id, company_name, stage, mrr, updated_at, created_at").execute().data
+    stale = []
+    for l in leads:
+        if l.get("stage") in ("won", "lost"):
+            continue
+        moved = _parse_iso(l.get("updated_at")) or _parse_iso(l.get("created_at"))
+        if moved and (now - moved).total_seconds() / 86400 >= 7:
+            stale.append({"id": l["id"], "label": l.get("company_name") or "Lead",
+                          "sub": f"{l.get('stage')} · no movement {int((now - moved).total_seconds()/86400)}d"})
+    add("stale_leads", "medium", "📇", "Leads going cold",
+        stale, cta_label="Open pipeline", cta_tab="pipeline")
+
+    # 6. Expansion signals (low) — active Pro accounts with 5+ seats (→ Business).
+    expansion = []
+    for s in subs:
+        if s.get("status") == "active" and s.get("plan") == "pro" and seats.get(s["business_id"], 0) >= 5:
+            bid = s["business_id"]
+            expansion.append({"id": bid, "label": name(bid), "sub": f"{seats.get(bid,0)} seats on Pro — upsell to Business"})
+    add("expansion", "low", "📈", "Expansion opportunities", expansion,
+        cta_label="View accounts", cta_tab="accounts")
+
+    sev_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    groups.sort(key=lambda g: (sev_rank.get(g["severity"], 9), -g["count"]))
+    return {
+        "generated_at": now.isoformat(),
+        "groups": groups,
+        "total_actions": sum(g["count"] for g in groups),
+    }
+
+
+class ExtendTrial(BaseModel):
+    days: int = 14
+
+
+@router.post("/accounts/{business_id}/extend-trial")
+def extend_trial(
+    business_id: str,
+    body: ExtendTrial,
+    user: dict = Depends(require_admin),
+    sb: Client = Depends(get_supabase),
+):
+    """Extend (or restart) a workspace's trial by N days — a real owner action
+    from the account drawer. Bumps trial_end from the later of its current end
+    or now, and ensures status is 'trialing'."""
+    days = max(1, min(int(body.days or 14), 180))
+    rows = (
+        sb.table("subscriptions").select("id, trial_end")
+        .eq("business_id", business_id).order("created_at", desc=True).limit(1).execute().data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="No subscription for this workspace")
+    now = datetime.now(timezone.utc)
+    base = _parse_iso(rows[0].get("trial_end")) or now
+    new_end = (base if base > now else now) + timedelta(days=days)
+    sb.table("subscriptions").update(
+        {"trial_end": new_end.isoformat(), "status": "trialing"}
+    ).eq("id", rows[0]["id"]).execute()
+    return {"business_id": business_id, "trial_end": new_end.isoformat(), "days": days}

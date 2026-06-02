@@ -191,3 +191,68 @@ def test_runner_tick_runs_all_scans():
     out = runner.tick(sb, NOW)
     assert out["trial_reminders"] == 1
     assert "dunning" in out and "activation" in out and "jobs" in out
+
+
+# ── admin action queue + extend-trial ──────────────────────────────────────
+def test_action_queue_surfaces_failed_payment_and_trial():
+    sb = _seed(
+        subscriptions=[
+            {"business_id": "biz1", "status": "past_due", "plan": "business",
+             "current_period_end": iso(datetime.now(timezone.utc) - timedelta(days=2))},
+        ],
+        sales_leads=[],
+    )
+    app.dependency_overrides[get_current_user] = lambda: {"id": ADMIN}
+    app.dependency_overrides[get_supabase] = lambda: sb
+    try:
+        r = client.get("/api/v1/admin/action-queue")
+        assert r.status_code == 200
+        d = r.json()
+        keys = {g["key"]: g for g in d["groups"]}
+        assert "payments_failed" in keys
+        assert keys["payments_failed"]["count"] == 1
+        assert keys["payments_failed"]["amount_inr"] == 2999
+        assert keys["payments_failed"]["severity"] == "critical"
+        assert d["total_actions"] >= 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_action_queue_flags_stuck_onboarding():
+    # Old account, no initiative, single seat → stuck.
+    sb = _seed(
+        businesses=[{"id": "biz1", "name": "Stuck", "owner_id": OWNER,
+                     "created_at": iso(datetime.now(timezone.utc) - timedelta(days=10))}],
+        business_members=[{"business_id": "biz1", "user_id": OWNER}],
+        initiatives=[],
+        subscriptions=[{"business_id": "biz1", "status": "trialing", "plan": "pro",
+                        "trial_end": iso(datetime.now(timezone.utc) + timedelta(days=30))}],
+        sales_leads=[],
+    )
+    app.dependency_overrides[get_current_user] = lambda: {"id": ADMIN}
+    app.dependency_overrides[get_supabase] = lambda: sb
+    try:
+        d = client.get("/api/v1/admin/action-queue").json()
+        assert "stuck_onboarding" in {g["key"] for g in d["groups"]}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_extend_trial_action():
+    sb = _seed(subscriptions=[
+        {"id": "sub1", "business_id": "biz1", "status": "trialing", "plan": "pro",
+         "trial_end": iso(datetime.now(timezone.utc) - timedelta(days=1)), "created_at": iso(NOW)},
+    ])
+    app.dependency_overrides[get_current_user] = lambda: {"id": ADMIN}
+    app.dependency_overrides[get_supabase] = lambda: sb
+    try:
+        r = client.post("/api/v1/admin/accounts/biz1/extend-trial", json={"days": 14})
+        assert r.status_code == 200
+        assert r.json()["days"] == 14
+        row = sb.table("subscriptions").select("*").eq("id", "sub1").execute().data[0]
+        assert row["status"] == "trialing"
+        # New end is in the future (extended from now since old end was past).
+        from automation.campaigns import _parse_ts
+        assert _parse_ts(row["trial_end"]) > datetime.now(timezone.utc)
+    finally:
+        app.dependency_overrides.clear()
