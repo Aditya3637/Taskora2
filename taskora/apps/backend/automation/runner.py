@@ -103,6 +103,7 @@ def tick(sb: Client, now: Optional[datetime] = None) -> dict:
         "trial_reminders": campaigns.run_trial_reminders(sb, now),
         "dunning": campaigns.run_dunning(sb, now),
         "activation": campaigns.run_activation(sb, now),
+        "program_snapshots": campaigns.run_program_snapshots(sb, now),
     }
     logger.info("[runner] tick %s", summary)
     return summary
