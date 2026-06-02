@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
-from deps import get_supabase
+from deps import get_supabase, get_member_role
 from notifications import send_push_to_user
 
 router = APIRouter(prefix="/api/v1/tasks/{task_id}/decisions", tags=["decisions"])
@@ -68,6 +68,17 @@ def take_decision(
         if not body.delegate_to:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                                 detail="delegate_to is required for delegate action")
+        # Validate the delegate target is a member of this task's workspace
+        # (audit N7) — otherwise a stakeholder could hand ownership to a
+        # cross-tenant or non-existent user id.
+        init_rows = (
+            sb.table("initiatives").select("business_id")
+            .eq("id", task.get("initiative_id")).execute().data
+        )
+        biz_id = init_rows[0]["business_id"] if init_rows else None
+        if not biz_id or get_member_role(sb, biz_id, body.delegate_to) is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Delegate target is not a member of this workspace")
         sb.table("tasks").update({
             "primary_stakeholder_id": body.delegate_to,
             "updated_at": now,

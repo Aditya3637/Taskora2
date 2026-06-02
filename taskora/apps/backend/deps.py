@@ -1,9 +1,12 @@
 """Shared FastAPI dependencies used across routers."""
+import logging
 from functools import lru_cache
 
 from supabase import create_client, Client
 from fastapi import Depends, HTTPException, status
 from config import get_settings, Settings
+
+logger = logging.getLogger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -221,10 +224,18 @@ def visible_initiative_ids(sb: Client, business_id: str, user_id: str) -> set[st
                 .data
             )
             return {r["initiative_id"] for r in rows if r.get("initiative_id")}
-        except Exception:
+        except Exception as exc:
             # If the view is missing (migration not yet applied) fall
-            # through to the Python union so the page still works.
-            pass
+            # through to the Python union so the page still works — but
+            # warn loudly: the fallback costs 5+ Supabase round-trips per
+            # call, so a silently-missing view is a real perf regression
+            # (audit L8). The warning lets ops catch it instead of eating
+            # the cost forever.
+            logger.warning(
+                "v_user_visible_initiatives query failed (%s) — falling back "
+                "to multi-round-trip Python union for user=%s business=%s",
+                exc, user_id, business_id,
+            )
     base = aligned_initiative_ids(sb, business_id, user_id)
 
     biz_init_ids: list[str] | None = None

@@ -118,6 +118,33 @@ def test_accept_not_yet_expired_invite_succeeds(sb):
     assert r.status_code == 200
 
 
+def test_accept_rejects_email_mismatch(sb):
+    # audit N2: an invite is bound to its recipient. A different authenticated
+    # user holding the token must NOT be able to join (and inherit the role).
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": "attacker-1",
+        "email": "attacker@evil.dev",
+        "user_metadata": {},
+    }
+    r = client.post(f"/api/v1/invites/{TOKEN}/accept")
+    assert r.status_code == 403
+    # no membership created for the attacker
+    assert not any(m["user_id"] == "attacker-1" for m in sb.store["business_members"])
+    # invite stays claimable by the real recipient
+    invite = next(i for i in sb.store["workspace_invites"] if i["token"] == TOKEN)
+    assert invite["status"] == "pending"
+
+
+def test_accept_email_match_is_case_insensitive(sb):
+    app.dependency_overrides[get_current_user] = lambda: {
+        "id": INVITEE,
+        "email": "NewBie@X.Dev",  # same address, different case
+        "user_metadata": {"name": "Newbie Person"},
+    }
+    r = client.post(f"/api/v1/invites/{TOKEN}/accept")
+    assert r.status_code == 200, r.text
+
+
 def test_accept_falls_back_to_email_local_part_when_no_metadata(sb):
     # Caller has no user_metadata.name — should derive name from the
     # email's local-part so public.users.name (NOT NULL) is satisfied.

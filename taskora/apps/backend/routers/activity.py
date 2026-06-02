@@ -6,9 +6,30 @@ from supabase import Client
 from pydantic import BaseModel
 
 from auth import get_current_user
-from deps import get_supabase
+from deps import get_supabase, require_member
 
 router = APIRouter(prefix="/api/v1/activity", tags=["activity"])
+
+
+def _resolve_business_id(
+    sb: Client, initiative_id: Optional[str], task_id: Optional[str]
+) -> str:
+    """Resolve the owning business_id for an activity query so the caller's
+    workspace membership can be enforced. Tasks carry no direct business_id
+    (tasks.initiative_id is NOT NULL), so resolve task → initiative →
+    business."""
+    init_id = initiative_id
+    if not init_id and task_id:
+        trows = sb.table("tasks").select("initiative_id").eq("id", task_id).execute().data
+        if not trows:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
+        init_id = trows[0].get("initiative_id")
+    if not init_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    irows = sb.table("initiatives").select("business_id").eq("id", init_id).execute().data
+    if not irows:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Initiative not found")
+    return irows[0]["business_id"]
 
 
 class ActivityCreate(BaseModel):
@@ -41,9 +62,16 @@ def list_activity(
             detail="At least one of initiative_id or task_id is required",
         )
 
+    # Tenant gate (audit N1): without this, any authenticated user could read
+    # another workspace's full audit trail by passing an arbitrary
+    # initiative/task id. Resolve the owning business and require membership.
+    business_id = _resolve_business_id(sb, initiative_id, task_id)
+    require_member(sb, business_id, user["id"])
+
     query = (
         sb.table("activity_log")
         .select("*, users(email)")
+        .eq("business_id", business_id)  # defense-in-depth scope
         .order("created_at", desc=True)
         .limit(limit)
     )
@@ -76,6 +104,9 @@ def log_activity(
     sb: Client = Depends(get_supabase),
 ):
     """Internal helper: insert an activity log entry."""
+    # Tenant gate (audit N11): only members of the target workspace may write
+    # to its activity feed — otherwise the audit log can be forged.
+    require_member(sb, body.business_id, user["id"])
     now = datetime.now(timezone.utc).isoformat()
     row = {
         "business_id": body.business_id,
