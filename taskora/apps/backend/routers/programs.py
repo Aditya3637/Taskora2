@@ -119,12 +119,108 @@ class InitiativeCreate(BaseModel):
         return v or "other"
 
 
+class KeyResultIn(BaseModel):
+    title: str
+    unit: Optional[str] = None
+    baseline: Optional[float] = None
+    target: Optional[float] = None
+    current: Optional[float] = None
+    direction: str = "increase"
+    sort_order: int = 0
+
+    @field_validator("title")
+    @classmethod
+    def title_not_empty(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("title cannot be empty")
+        return v[:200]
+
+    @field_validator("direction")
+    @classmethod
+    def valid_direction(cls, v: str) -> str:
+        return v if v in ("increase", "decrease") else "increase"
+
+
+class KeyResultPatch(BaseModel):
+    title: Optional[str] = None
+    unit: Optional[str] = None
+    baseline: Optional[float] = None
+    target: Optional[float] = None
+    current: Optional[float] = None
+    direction: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
+class ProgramStatusUpdateIn(BaseModel):
+    status: str
+    summary: str
+
+    @field_validator("status")
+    @classmethod
+    def valid_status(cls, v: str) -> str:
+        if v not in ("green", "amber", "red"):
+            raise ValueError("status must be green, amber or red")
+        return v
+
+    @field_validator("summary")
+    @classmethod
+    def summary_not_empty(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("summary cannot be empty")
+        return v[:2000]
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _PROGRAM_COLS = (
     "id, business_id, name, description, status, color, lead_user_id, "
     "objective, start_date, target_end_date, manual_health, created_at"
 )
+
+
+def kr_progress(kr: dict) -> Optional[float]:
+    """Outcome progress for one key result, 0..1 (None if not measurable).
+
+    'increase'  → (current-baseline)/(target-baseline)
+    'decrease'  → (baseline-current)/(baseline-target)
+    Baseline defaults to 0 when unset. If target==baseline we can't measure a
+    ratio, so it's 1.0 once current reaches target, else 0.0.
+    """
+    target = kr.get("target")
+    current = kr.get("current")
+    if target is None or current is None:
+        return None
+    base = kr.get("baseline") or 0.0
+    try:
+        target, current, base = float(target), float(current), float(base)
+    except (TypeError, ValueError):
+        return None
+    increase = (kr.get("direction") or "increase") == "increase"
+    denom = (target - base) if increase else (base - target)
+    if denom == 0:
+        reached = current >= target if increase else current <= target
+        return 1.0 if reached else 0.0
+    num = (current - base) if increase else (base - current)
+    return max(0.0, min(1.0, num / denom))
+
+
+def program_outcome_pct(sb: Client, program_id: str) -> Optional[int]:
+    """Average measurable-KR progress for a program as a 0..100 int, or None
+    when the program has no measurable key results. Best-effort: if the
+    program_key_results table doesn't exist yet (migration 046 not applied),
+    return None rather than break the rollup that existing dashboards call."""
+    try:
+        krs = sb.table("program_key_results").select(
+            "baseline, target, current, direction"
+        ).eq("program_id", program_id).execute().data
+    except Exception:
+        return None
+    vals = [p for p in (kr_progress(k) for k in krs) if p is not None]
+    if not vals:
+        return None
+    return round(sum(vals) / len(vals) * 100)
 
 
 def _get_program_or_404(sb: Client, program_id: str) -> dict:
@@ -492,6 +588,9 @@ def get_program_rollup(
     return {
         "health": health,
         "progress_pct": progress_pct,
+        # Outcome progress (avg measurable key-result attainment) — distinct
+        # from task/initiative completion. None when no measurable KRs exist.
+        "outcome_pct": program_outcome_pct(sb, program_id),
         "initiative_count": {
             "total": total,
             "done": done,
@@ -656,3 +755,161 @@ def remove_program_follower(
     sb.table("program_followers").delete().eq(
         "program_id", program_id
     ).eq("user_id", user_id).execute()
+
+
+# ── P1: Key results (measurable outcomes) ──────────────────────────────────────
+
+@router.get("/{program_id}/key-results")
+def list_key_results(
+    program_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Key results for a program, each with computed progress (0..100)."""
+    program = _get_program_or_404(sb, program_id)
+    require_member(sb, program["business_id"], user["id"])
+    rows = (
+        sb.table("program_key_results").select("*")
+        .eq("program_id", program_id).order("sort_order").order("created_at").execute().data
+    )
+    for r in rows:
+        p = kr_progress(r)
+        r["progress_pct"] = round(p * 100) if p is not None else None
+    return rows
+
+
+@router.post("/{program_id}/key-results", status_code=201)
+def create_key_result(
+    program_id: str,
+    body: KeyResultIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    program = _get_program_or_404(sb, program_id)
+    require_member(sb, program["business_id"], user["id"])
+    row = sb.table("program_key_results").insert({
+        "program_id": program_id,
+        "business_id": program["business_id"],
+        "title": body.title, "unit": body.unit,
+        "baseline": body.baseline, "target": body.target, "current": body.current,
+        "direction": body.direction, "sort_order": body.sort_order,
+    }).execute().data
+    if not row:
+        raise HTTPException(status_code=500, detail="Failed to create key result")
+    out = row[0]
+    p = kr_progress(out)
+    out["progress_pct"] = round(p * 100) if p is not None else None
+    return out
+
+
+@router.patch("/{program_id}/key-results/{kr_id}")
+def update_key_result(
+    program_id: str,
+    kr_id: str,
+    body: KeyResultPatch,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    program = _get_program_or_404(sb, program_id)
+    require_member(sb, program["business_id"], user["id"])
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not patch:
+        raise HTTPException(status_code=422, detail="No fields to update")
+    patch["updated_at"] = datetime.now(timezone.utc).isoformat()
+    row = (
+        sb.table("program_key_results").update(patch)
+        .eq("id", kr_id).eq("program_id", program_id).execute().data
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Key result not found")
+    out = row[0]
+    p = kr_progress(out)
+    out["progress_pct"] = round(p * 100) if p is not None else None
+    return out
+
+
+@router.delete("/{program_id}/key-results/{kr_id}", status_code=204)
+def delete_key_result(
+    program_id: str,
+    kr_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    program = _get_program_or_404(sb, program_id)
+    require_member(sb, program["business_id"], user["id"])
+    sb.table("program_key_results").delete().eq("id", kr_id).eq("program_id", program_id).execute()
+
+
+# ── P2: Status updates + health-over-time trend ────────────────────────────────
+
+@router.get("/{program_id}/updates")
+def list_program_updates(
+    program_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Status-update log (RAG + narrative), newest first, with author names."""
+    program = _get_program_or_404(sb, program_id)
+    require_member(sb, program["business_id"], user["id"])
+    rows = (
+        sb.table("program_updates").select("*")
+        .eq("program_id", program_id).order("created_at", desc=True).limit(50).execute().data
+    )
+    author_ids = sorted({r["author_id"] for r in rows if r.get("author_id")})
+    names: dict = {}
+    if author_ids:
+        for u in sb.table("users").select("id, name").in_("id", author_ids).execute().data:
+            names[u["id"]] = u.get("name") or ""
+    for r in rows:
+        r["author_name"] = names.get(r.get("author_id"), "")
+    return rows
+
+
+@router.post("/{program_id}/updates", status_code=201)
+def create_program_update(
+    program_id: str,
+    body: ProgramStatusUpdateIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Post a status update. Also sets the program's manual_health so the RAG
+    the lead reports is reflected on the dashboard immediately."""
+    program = _get_program_or_404(sb, program_id)
+    require_member(sb, program["business_id"], user["id"])
+    row = sb.table("program_updates").insert({
+        "program_id": program_id,
+        "business_id": program["business_id"],
+        "author_id": user["id"],
+        "status": body.status, "summary": body.summary,
+    }).execute().data
+    if not row:
+        raise HTTPException(status_code=500, detail="Failed to post update")
+    # The lead's stated RAG becomes the program's health until the next update.
+    sb.table("programs").update(
+        {"manual_health": body.status, "updated_at": datetime.now(timezone.utc).isoformat()}
+    ).eq("id", program_id).execute()
+    out = row[0]
+    out["author_name"] = ""
+    return out
+
+
+@router.get("/{program_id}/trend")
+def get_program_trend(
+    program_id: str,
+    days: int = 90,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Daily health/progress/outcome snapshots for the trend chart (written by
+    the automation cron). Oldest→newest, limited to the last `days`."""
+    program = _get_program_or_404(sb, program_id)
+    require_member(sb, program["business_id"], user["id"])
+    since = (date.today() - timedelta(days=max(1, min(days, 365)))).isoformat()
+    rows = (
+        sb.table("program_snapshots").select(
+            "snapshot_date, health, progress_pct, outcome_pct, overdue_tasks, initiatives_total, initiatives_done"
+        )
+        .eq("program_id", program_id).gte("snapshot_date", since)
+        .order("snapshot_date").execute().data
+    )
+    return rows

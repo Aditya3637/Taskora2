@@ -193,6 +193,88 @@ def run_dunning(sb: Client, now: Optional[datetime] = None) -> int:
     return sent
 
 
+# ── Program health snapshots (P2 trend) ──────────────────────────────────
+def run_program_snapshots(sb: Client, now: Optional[datetime] = None) -> int:
+    """Write one health/progress/outcome snapshot per active program per day.
+    Idempotent (skips a program already snapshotted today). This is what gives
+    the program trend its history."""
+    if not campaign_enabled(sb, "program_snapshots"):
+        return 0
+    now = now or _now()
+    today = now.date()
+    today_iso = today.isoformat()
+    # Lazy import keeps the automation package independent of the routers at
+    # import time (no cycle — routers.programs doesn't import automation).
+    from routers.programs import _derive_initiative_health, program_outcome_pct
+
+    try:
+        programs = sb.table("programs").select(
+            "id, manual_health, status"
+        ).neq("status", "archived").execute().data
+    except Exception as e:
+        logger.warning("[snapshots] fetch failed: %s", e)
+        return 0
+
+    done_states = {"done", "completed"}
+    written = 0
+    for p in programs:
+        pid = p["id"]
+        try:
+            existing = sb.table("program_snapshots").select("id").eq(
+                "program_id", pid).eq("snapshot_date", today_iso).limit(1).execute().data
+        except Exception:
+            existing = None
+        if existing:
+            continue
+
+        inits = sb.table("initiatives").select(
+            "id, status, target_end_date"
+        ).eq("program_id", pid).neq("status", "cancelled").execute().data
+        total = len(inits)
+        done = sum(1 for i in inits if i.get("status") in done_states)
+        at_risk = overdue = no_dates = 0
+        for i in inits:
+            if i.get("status") in done_states:
+                continue
+            h = _derive_initiative_health(i, today)
+            if h == "amber":
+                at_risk += 1
+            elif h == "red":
+                overdue += 1
+            elif h == "not_started":
+                no_dates += 1
+        if p.get("manual_health"):
+            health = p["manual_health"]
+        elif total == 0 or no_dates == total:
+            health = "not_started"
+        elif overdue >= 2:
+            health = "red"
+        elif overdue >= 1 or at_risk >= 1:
+            health = "amber"
+        else:
+            health = "green"
+        progress = round(done / total * 100) if total else 0
+        outcome = program_outcome_pct(sb, pid)
+
+        overdue_tasks = 0
+        if inits:
+            init_ids = [i["id"] for i in inits]
+            tasks = sb.table("tasks").select("due_date, status").in_(
+                "initiative_id", init_ids).neq("status", "done").neq("status", "cancelled").execute().data
+            overdue_tasks = sum(1 for t in tasks if t.get("due_date") and t["due_date"] < today_iso)
+
+        try:
+            sb.table("program_snapshots").insert({
+                "program_id": pid, "snapshot_date": today_iso, "health": health,
+                "progress_pct": progress, "outcome_pct": outcome, "overdue_tasks": overdue_tasks,
+                "initiatives_total": total, "initiatives_done": done,
+            }).execute()
+            written += 1
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("[snapshots] insert failed for %s: %s", pid, e)
+    return written
+
+
 # ── Activation nudges (new accounts) ─────────────────────────────────────
 def run_activation(sb: Client, now: Optional[datetime] = None) -> int:
     if not campaign_enabled(sb, "activation"):

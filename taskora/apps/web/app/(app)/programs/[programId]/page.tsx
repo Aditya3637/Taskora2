@@ -447,6 +447,210 @@ function InitiativeCard({ init, canEdit, onEdit }: { init: Initiative; canEdit: 
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
+// ── P1 + P2: Outcomes (key results), status updates, and the trend ────────────
+
+type Rollup = {
+  health: string; progress_pct: number; outcome_pct: number | null;
+  initiative_count: { total: number; done: number; active: number; at_risk: number; overdue: number };
+  overdue_task_count: number;
+};
+type KR = { id: string; title: string; unit?: string | null; baseline?: number | null; target?: number | null; current?: number | null; direction: string; progress_pct: number | null };
+type Upd = { id: string; status: "green" | "amber" | "red"; summary: string; author_name?: string; created_at: string };
+type Snap = { snapshot_date: string; progress_pct: number | null; outcome_pct: number | null; health: string };
+
+const RAG_DOT: Record<string, string> = { green: "bg-green-500", amber: "bg-amber-400", red: "bg-red-500", not_started: "bg-gray-300" };
+const RAG_TEXT: Record<string, string> = { green: "On track", amber: "At risk", red: "Off track", not_started: "Not started" };
+
+function Trend({ snaps }: { snaps: Snap[] }) {
+  if (snaps.length < 2) {
+    return <p className="text-xs text-steel/60 italic">Trend builds daily — check back as snapshots accumulate.</p>;
+  }
+  const W = 260, H = 56, n = snaps.length;
+  const pts = (key: "progress_pct" | "outcome_pct") =>
+    snaps.map((s, i) => {
+      const v = s[key] ?? 0;
+      return `${(i / (n - 1)) * W},${H - (v / 100) * H}`;
+    }).join(" ");
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-14" preserveAspectRatio="none">
+        <polyline points={pts("progress_pct")} fill="none" stroke="#0E7AB8" strokeWidth="2" />
+        <polyline points={pts("outcome_pct")} fill="none" stroke="#E5484D" strokeWidth="2" strokeDasharray="3 2" />
+      </svg>
+      <div className="flex gap-3 text-[11px] text-steel mt-1">
+        <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-ocean inline-block" /> Tasks done</span>
+        <span className="flex items-center gap-1"><span className="w-3 h-0.5 bg-taskora-red inline-block" /> Outcome</span>
+        <span className="ml-auto text-steel/50">last {snaps.length}d</span>
+      </div>
+    </div>
+  );
+}
+
+function ProgramOutcomes({ programId, canEdit }: { programId: string; canEdit: boolean }) {
+  const [rollup, setRollup] = useState<Rollup | null>(null);
+  const [krs, setKrs] = useState<KR[]>([]);
+  const [updates, setUpdates] = useState<Upd[]>([]);
+  const [trend, setTrend] = useState<Snap[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [nk, setNk] = useState({ title: "", unit: "", baseline: "", target: "", current: "", direction: "increase" });
+  const [rag, setRag] = useState<"green" | "amber" | "red">("green");
+  const [summary, setSummary] = useState("");
+
+  const load = useCallback(async () => {
+    const get = async <T,>(p: string, set: (v: T) => void) => { try { set(await apiFetch(p)); } catch { /* table may not exist pre-migration */ } };
+    await Promise.allSettled([
+      get<Rollup>(`/api/v1/programs/${programId}/rollup`, setRollup),
+      get<KR[]>(`/api/v1/programs/${programId}/key-results`, setKrs),
+      get<Upd[]>(`/api/v1/programs/${programId}/updates`, setUpdates),
+      get<Snap[]>(`/api/v1/programs/${programId}/trend?days=60`, setTrend),
+    ]);
+  }, [programId]);
+  useEffect(() => { load(); }, [load]);
+
+  const addKr = async () => {
+    if (!nk.title.trim()) return;
+    await apiFetch(`/api/v1/programs/${programId}/key-results`, {
+      method: "POST",
+      body: JSON.stringify({
+        title: nk.title.trim(), unit: nk.unit || null, direction: nk.direction,
+        baseline: nk.baseline === "" ? null : Number(nk.baseline),
+        target: nk.target === "" ? null : Number(nk.target),
+        current: nk.current === "" ? null : Number(nk.current),
+      }),
+    });
+    setAdding(false); setNk({ title: "", unit: "", baseline: "", target: "", current: "", direction: "increase" });
+    await load();
+  };
+  const saveCurrent = async (kr: KR, raw: string) => {
+    const v = raw === "" ? null : Number(raw);
+    if (v === (kr.current ?? null)) return;
+    await apiFetch(`/api/v1/programs/${programId}/key-results/${kr.id}`, { method: "PATCH", body: JSON.stringify({ current: v }) });
+    await load();
+  };
+  const delKr = async (id: string) => {
+    if (!confirm("Delete this key result?")) return;
+    await apiFetch(`/api/v1/programs/${programId}/key-results/${id}`, { method: "DELETE" });
+    await load();
+  };
+  const postUpdate = async () => {
+    if (!summary.trim()) return;
+    await apiFetch(`/api/v1/programs/${programId}/updates`, { method: "POST", body: JSON.stringify({ status: rag, summary: summary.trim() }) });
+    setSummary(""); await load();
+  };
+
+  return (
+    <div className="space-y-4 mb-8">
+      {/* Summary band */}
+      {rollup && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="rounded-xl border border-pebble bg-white p-3">
+            <p className="text-[10px] uppercase tracking-wider font-semibold text-steel">Health</p>
+            <p className="flex items-center gap-1.5 mt-1 font-bold text-midnight">
+              <span className={`w-2.5 h-2.5 rounded-full ${RAG_DOT[rollup.health] ?? "bg-gray-300"}`} />{RAG_TEXT[rollup.health] ?? rollup.health}
+            </p>
+          </div>
+          <div className="rounded-xl border border-pebble bg-white p-3">
+            <p className="text-[10px] uppercase tracking-wider font-semibold text-steel">Outcome</p>
+            <p className="text-2xl font-extrabold text-taskora-red mt-0.5">{rollup.outcome_pct == null ? "—" : `${rollup.outcome_pct}%`}</p>
+          </div>
+          <div className="rounded-xl border border-pebble bg-white p-3">
+            <p className="text-[10px] uppercase tracking-wider font-semibold text-steel">Tasks done</p>
+            <p className="text-2xl font-extrabold text-midnight mt-0.5">{rollup.progress_pct}%</p>
+          </div>
+          <div className="rounded-xl border border-pebble bg-white p-3">
+            <p className="text-[10px] uppercase tracking-wider font-semibold text-steel">Overdue tasks</p>
+            <p className={`text-2xl font-extrabold mt-0.5 ${rollup.overdue_task_count > 0 ? "text-amber-600" : "text-midnight"}`}>{rollup.overdue_task_count}</p>
+          </div>
+        </div>
+      )}
+
+      <div className="grid md:grid-cols-2 gap-4">
+        {/* Key results */}
+        <section className="rounded-xl border border-pebble bg-white p-4">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-sm font-bold text-midnight">Key results</h2>
+            {canEdit && !adding && <button onClick={() => setAdding(true)} className="text-xs text-ocean font-semibold hover:underline">+ Add</button>}
+          </div>
+          {krs.length === 0 && !adding && <p className="text-xs text-steel/60 italic">No measurable outcomes yet. Add one to track real progress, not just task counts.</p>}
+          <div className="space-y-3">
+            {krs.map((kr) => (
+              <div key={kr.id} className="group">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-sm text-midnight font-medium truncate">{kr.title}</span>
+                  <span className="text-xs font-bold text-midnight flex-shrink-0">{kr.progress_pct == null ? "—" : `${kr.progress_pct}%`}</span>
+                </div>
+                <div className="h-2 bg-pebble rounded-full overflow-hidden my-1">
+                  <div className="h-full bg-taskora-red rounded-full" style={{ width: `${kr.progress_pct ?? 0}%` }} />
+                </div>
+                <div className="flex items-center gap-2 text-[11px] text-steel">
+                  <span>{kr.baseline ?? 0}{kr.unit ? ` ${kr.unit}` : ""}</span>
+                  <span className="text-steel/40">→</span>
+                  {canEdit ? (
+                    <input type="number" defaultValue={kr.current ?? ""} onBlur={(e) => saveCurrent(kr, e.target.value)}
+                      className="w-16 px-1 py-0.5 border border-pebble rounded text-[11px] focus:outline-none focus:border-taskora-red" title="Current value — edit to update" />
+                  ) : <span className="font-semibold text-midnight">{kr.current ?? "—"}</span>}
+                  <span className="text-steel/40">/ {kr.target ?? "—"} target</span>
+                  {canEdit && <button onClick={() => delKr(kr.id)} className="ml-auto opacity-0 group-hover:opacity-100 text-steel/50 hover:text-red-500">✕</button>}
+                </div>
+              </div>
+            ))}
+          </div>
+          {adding && (
+            <div className="mt-3 space-y-2 border-t border-pebble pt-3">
+              <input placeholder="Outcome (e.g. Bacnet live across top 5 sites)" value={nk.title} onChange={(e) => setNk({ ...nk, title: e.target.value })} className="w-full text-sm px-2 py-1.5 border border-pebble rounded focus:outline-none focus:border-taskora-red" />
+              <div className="grid grid-cols-4 gap-2">
+                <input placeholder="Baseline" value={nk.baseline} onChange={(e) => setNk({ ...nk, baseline: e.target.value })} className="text-xs px-2 py-1.5 border border-pebble rounded" />
+                <input placeholder="Current" value={nk.current} onChange={(e) => setNk({ ...nk, current: e.target.value })} className="text-xs px-2 py-1.5 border border-pebble rounded" />
+                <input placeholder="Target" value={nk.target} onChange={(e) => setNk({ ...nk, target: e.target.value })} className="text-xs px-2 py-1.5 border border-pebble rounded" />
+                <input placeholder="Unit" value={nk.unit} onChange={(e) => setNk({ ...nk, unit: e.target.value })} className="text-xs px-2 py-1.5 border border-pebble rounded" />
+              </div>
+              <div className="flex items-center gap-2">
+                <select value={nk.direction} onChange={(e) => setNk({ ...nk, direction: e.target.value })} className="text-xs px-2 py-1.5 border border-pebble rounded bg-white">
+                  <option value="increase">Increase to target</option>
+                  <option value="decrease">Decrease to target</option>
+                </select>
+                <button onClick={addKr} className="ml-auto text-xs px-3 py-1.5 bg-midnight text-white rounded font-semibold">Add</button>
+                <button onClick={() => setAdding(false)} className="text-xs px-3 py-1.5 border border-pebble rounded text-steel">Cancel</button>
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* Status updates + trend */}
+        <section className="rounded-xl border border-pebble bg-white p-4">
+          <h2 className="text-sm font-bold text-midnight mb-2">Status &amp; trend</h2>
+          <Trend snaps={trend} />
+          {canEdit && (
+            <div className="mt-3 space-y-2">
+              <div className="flex gap-1.5">
+                {(["green", "amber", "red"] as const).map((c) => (
+                  <button key={c} onClick={() => setRag(c)} className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs border ${rag === c ? "border-midnight" : "border-pebble"}`}>
+                    <span className={`w-2 h-2 rounded-full ${RAG_DOT[c]}`} />{RAG_TEXT[c]}
+                  </button>
+                ))}
+              </div>
+              <textarea value={summary} onChange={(e) => setSummary(e.target.value)} rows={2} placeholder="What changed? Risks, blockers, next step…" className="w-full text-sm px-2 py-1.5 border border-pebble rounded focus:outline-none focus:border-taskora-red resize-none" />
+              <button onClick={postUpdate} disabled={!summary.trim()} className="text-xs px-3 py-1.5 bg-taskora-red text-white rounded font-semibold disabled:opacity-40">Post update</button>
+            </div>
+          )}
+          <div className="mt-3 space-y-2 max-h-48 overflow-y-auto">
+            {updates.length === 0 && <p className="text-xs text-steel/60 italic">No status updates yet.</p>}
+            {updates.map((u) => (
+              <div key={u.id} className="flex gap-2 text-sm">
+                <span className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${RAG_DOT[u.status]}`} />
+                <div className="min-w-0">
+                  <p className="text-midnight">{u.summary}</p>
+                  <p className="text-[11px] text-steel/60">{u.author_name || "Someone"} · {u.created_at?.slice(0, 10)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
 export default function ProgramDetailPage() {
   const { programId } = useParams<{ programId: string }>();
   const router = useRouter();
@@ -561,6 +765,9 @@ export default function ProgramDetailPage() {
           </button>
         )}
       </div>
+
+      {/* P1 + P2: measurable outcomes, status updates, trend */}
+      <ProgramOutcomes programId={programId} canEdit={canEdit} />
 
       {initiatives.length === 0 ? (
         <div className="text-center py-20 bg-white rounded-xl border border-pebble">
