@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     # production/preview/development for filtering in the dashboard.
     sentry_dsn: Optional[str] = None
     vercel_env: Optional[str] = None
+    # Lifecycle automation. cron_secret guards the /internal/cron/tick
+    # endpoint that Vercel Cron calls (Vercel injects this as a Bearer token
+    # automatically when an env var named CRON_SECRET is set). When unset,
+    # the tick endpoint is disabled (503) so it can't be triggered anonymously.
+    cron_secret: Optional[str] = None
 
 
 @lru_cache

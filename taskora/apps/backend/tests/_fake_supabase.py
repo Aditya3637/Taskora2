@@ -86,8 +86,9 @@ def _check_row(table: str, row: dict, store: dict) -> None:
 
 
 class _Result:
-    def __init__(self, data):
+    def __init__(self, data, count=None):
         self.data = data
+        self.count = count
 
 
 class _Query:
@@ -101,10 +102,12 @@ class _Query:
         self._order = None          # (col, desc)
         self._limit = None
         self._embeds = []           # nested relation names
+        self._count = None          # set when select(count="exact")
 
     # ---- builders ---------------------------------------------------------
-    def select(self, cols="*", **_):
+    def select(self, cols="*", count=None, **_):
         self._op = "select"
+        self._count = count
         if "(" in cols:
             # "*, task_entities(*), comments(*)" → grab relation names
             import re
@@ -158,6 +161,10 @@ class _Query:
         self._filters.append(("lt", col, val))
         return self
 
+    def lte(self, col, val):
+        self._filters.append(("lte", col, val))
+        return self
+
     def gte(self, col, val):
         self._filters.append(("gte", col, val))
         return self
@@ -208,6 +215,10 @@ class _Query:
                     if not (r.get(col) is not None and r.get(col) < val):
                         ok = False
                         break
+                elif kind == "lte":
+                    if not (r.get(col) is not None and r.get(col) <= val):
+                        ok = False
+                        break
                 elif kind == "gte":
                     if not (r.get(col) is not None and r.get(col) >= val):
                         ok = False
@@ -239,6 +250,8 @@ class _Query:
 
         if self._op == "select":
             res = self._match(rows)
+            # count="exact" → total matched rows, independent of any limit.
+            total = len(res) if self._count else None
             if self._order:
                 col, desc = self._order
                 res = sorted(res, key=lambda r: (r.get(col) is None, r.get(col)),
@@ -252,7 +265,7 @@ class _Query:
                     fk = "task_id" if rel != "tasks" else "id"
                     r[rel] = [copy.deepcopy(x) for x in rel_rows
                               if x.get(fk) == r.get("id")]
-            return _Result(res)
+            return _Result(res, count=total)
 
         if self._op in ("insert", "upsert"):
             if self._t in self._c.fail_inserts:

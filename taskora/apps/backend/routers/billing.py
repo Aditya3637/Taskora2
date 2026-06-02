@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from auth import get_current_user
 from deps import get_supabase, require_member
 from config import get_settings, Settings
+from automation import events as ev
 
 router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
 
@@ -100,8 +101,33 @@ async def razorpay_webhook(
     sub_entity = event.get("payload", {}).get("subscription", {}).get("entity", {})
     sub_id = sub_entity.get("id")
 
+    def _biz_for_sub() -> str | None:
+        rows = sb.table("subscriptions").select("business_id").eq("razorpay_subscription_id", sub_id).limit(1).execute().data
+        return rows[0]["business_id"] if rows else None
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
     if event_name == "subscription.activated":
         sb.table("subscriptions").update({"status": "active"}).eq("razorpay_subscription_id", sub_id).execute()
+        ev.emit(sb, ev.SUBSCRIBED, business_id=_biz_for_sub(), props={"rz_event": event_name})
+    elif event_name == "subscription.charged":
+        # Successful (renewal) charge → active, advance period, clear dunning.
+        patch = {"status": "active"}
+        period_end = sub_entity.get("current_end") or sub_entity.get("charge_at")
+        if period_end:
+            try:
+                patch["current_period_end"] = datetime.fromtimestamp(int(period_end), tz=timezone.utc).isoformat()
+            except Exception:
+                pass
+        sb.table("subscriptions").update(patch).eq("razorpay_subscription_id", sub_id).execute()
+        ev.emit(sb, ev.PAYMENT_SUCCEEDED, business_id=_biz_for_sub(), props={"rz_event": event_name})
+    elif event_name in ("subscription.pending", "subscription.halted"):
+        # Razorpay couldn't collect → past_due drives the dunning scan.
+        # current_period_end marks when collection failed (the dunning clock).
+        sb.table("subscriptions").update(
+            {"status": "past_due", "current_period_end": now_iso}
+        ).eq("razorpay_subscription_id", sub_id).execute()
+        ev.emit(sb, ev.PAYMENT_FAILED, business_id=_biz_for_sub(), props={"rz_event": event_name})
     elif event_name == "subscription.cancelled":
         sb.table("subscriptions").update({"status": "cancelled"}).eq("razorpay_subscription_id", sub_id).execute()
 
