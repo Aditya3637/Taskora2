@@ -849,6 +849,7 @@ def add_stakeholder(
     sb: Client = Depends(get_supabase),
 ):
     _assert_can_manage_stakeholders(sb, task_id, user["id"])
+    _assert_target_is_member(sb, task_id, body.user_id)
     result = sb.table("task_stakeholders").upsert(
         {"task_id": task_id, "user_id": body.user_id, "role": body.role},
         on_conflict="task_id,user_id",
@@ -971,6 +972,35 @@ def _assert_can_manage_stakeholders(sb: Client, task_id: str, user_id: str):
     )
 
 
+def _task_business_id(sb: Client, task_id: str) -> Optional[str]:
+    """Resolve a task's owning business_id (task → initiative → business)."""
+    rows = sb.table("tasks").select("initiative_id").eq("id", task_id).execute().data
+    if not rows or not rows[0].get("initiative_id"):
+        return None
+    init = (
+        sb.table("initiatives")
+        .select("business_id")
+        .eq("id", rows[0]["initiative_id"])
+        .execute()
+        .data
+    )
+    return init[0]["business_id"] if init else None
+
+
+def _assert_target_is_member(sb: Client, task_id: str, target_user_id: str):
+    """Reject adding a non-member (or cross-tenant) user to a task's roster
+    (audit N4). The follower endpoints already guard this way; the
+    stakeholder/approver paths did not, so a stakeholder could add an
+    arbitrary user id — including an approver who could then act on
+    approvals."""
+    business_id = _task_business_id(sb, task_id)
+    if business_id is None or get_member_role(sb, business_id, target_user_id) is None:
+        raise HTTPException(
+            status_code=400,
+            detail="User is not a member of this workspace",
+        )
+
+
 def _scope_has_approver(sb: Client, task_id: str, scope_type: str,
                         *, subtask_id=None, entity_id=None) -> bool:
     """True if at least one approver is assigned at the given scope.
@@ -1039,6 +1069,7 @@ def add_watcher(
     sb: Client = Depends(get_supabase),
 ):
     _assert_stakeholder(sb, task_id, user["id"])
+    _assert_target_is_member(sb, task_id, body.user_id)
 
     row: dict = {
         "task_id": task_id,
@@ -2158,6 +2189,31 @@ def update_task_dependencies(
     )
     if not is_member:
         raise HTTPException(status_code=403, detail="Not a stakeholder")
+
+    # Validate every dependency is a real task in the SAME workspace
+    # (audit N6) — otherwise depends_on could point at another tenant's
+    # tasks, leaking their existence and polluting the dependency graph.
+    if body.depends_on:
+        if task_id in body.depends_on:
+            raise HTTPException(status_code=400, detail="A task cannot depend on itself")
+        biz_id = _task_business_id(sb, task_id)
+        dep_tasks = (
+            sb.table("tasks").select("id, initiative_id")
+            .in_("id", body.depends_on).execute().data
+        )
+        if len(dep_tasks) != len(set(body.depends_on)):
+            raise HTTPException(status_code=400, detail="Unknown dependency task id(s)")
+        dep_init_ids = list({t["initiative_id"] for t in dep_tasks if t.get("initiative_id")})
+        dep_inits = (
+            sb.table("initiatives").select("id, business_id")
+            .in_("id", dep_init_ids).execute().data
+            if dep_init_ids else []
+        )
+        if biz_id is None or any(i["business_id"] != biz_id for i in dep_inits):
+            raise HTTPException(
+                status_code=400,
+                detail="Dependencies must be tasks in the same workspace",
+            )
 
     result = sb.table("tasks").update({
         "depends_on": body.depends_on,

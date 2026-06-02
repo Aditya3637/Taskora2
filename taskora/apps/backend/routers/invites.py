@@ -335,6 +335,20 @@ def accept_invite(
             detail=f"Invite is already {invite['status']}",
         )
 
+    # Bind the invite to its recipient (audit N2). Without this, any
+    # authenticated user holding a valid token could join the workspace —
+    # and because the invite's role maps straight through, land as
+    # admin/owner. get_invite is a public preview, so tokens are not secret
+    # enough to be the only gate. Require the caller's email to match.
+    invited_email = (invite.get("invited_email") or "").strip().lower()
+    caller_email = (user.get("email") or "").strip().lower()
+    if not invited_email or invited_email != caller_email:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This invite was sent to a different email address. "
+                   "Sign in with that address to accept it.",
+        )
+
     # Reject expired invites — the FE only checks `status` so without this
     # an invite created long ago could still be claimed.
     expires_at = invite.get("expires_at")

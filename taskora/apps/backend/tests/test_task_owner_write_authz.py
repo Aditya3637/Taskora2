@@ -114,6 +114,10 @@ def test_non_workspace_member_cannot_edit(sb):
 # ── POST/DELETE /tasks/{id}/stakeholders ──────────────────────────────────
 
 def test_owner_can_add_stakeholder(sb):
+    # Target must be a workspace member (audit N4). The actor authz is the
+    # point of this test, so make STRANGER a member.
+    sb.store["business_members"].append(
+        {"business_id": BIZ, "user_id": STRANGER, "role": "member"})
     app.dependency_overrides[get_current_user] = _as(OWNER)
     r = client.post(
         f"/api/v1/tasks/{TASK}/stakeholders",
@@ -124,6 +128,18 @@ def test_owner_can_add_stakeholder(sb):
         s["task_id"] == TASK and s["user_id"] == STRANGER
         for s in sb.store["task_stakeholders"]
     )
+
+
+def test_cannot_add_nonmember_as_stakeholder(sb):
+    # audit N4: STRANGER is not a member → adding them must be rejected,
+    # even by the owner.
+    app.dependency_overrides[get_current_user] = _as(OWNER)
+    r = client.post(
+        f"/api/v1/tasks/{TASK}/stakeholders",
+        json={"user_id": STRANGER, "role": "secondary"},
+    )
+    assert r.status_code == 400
+    assert not any(s["user_id"] == STRANGER for s in sb.store["task_stakeholders"])
 
 
 def test_owner_can_remove_stakeholder(sb):
@@ -146,6 +162,8 @@ def test_secondary_cannot_add_stakeholder(sb):
 
 
 def test_primary_can_still_manage_stakeholders(sb):
+    sb.store["business_members"].append(
+        {"business_id": BIZ, "user_id": STRANGER, "role": "member"})
     app.dependency_overrides[get_current_user] = _as(PRIMARY)
     r = client.post(
         f"/api/v1/tasks/{TASK}/stakeholders",
