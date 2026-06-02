@@ -55,11 +55,12 @@ import SlashMenu from "./SlashMenu";
  *     mentions render grey (text-only, no inbox flow).
  *   - Intent T0 suggestions in a non-modal corner pill.
  *
- * Conventions:
- *   - Plain Enter inside a text-like block: newline within the same
- *     block.
- *   - Shift+Enter or Cmd/Ctrl+Enter: commit the current block and open
- *     a fresh empty text block immediately below.
+ * Conventions (Notion/Granola-style Enter):
+ *   - Plain Enter in a bullet/numbered/todo: open a new item of the SAME
+ *     type; on an already-empty item it exits the list (→ text block).
+ *   - Plain Enter in any other text-like block: open a new text block below.
+ *   - Shift+Enter: soft line break within the current block. Code blocks
+ *     keep plain Enter as a literal newline.
  *   - Backspace at the start of an empty non-text block converts it
  *     back to a text block (Notion convention).
  *   - Esc anywhere closes the slash menu / blurs the active block.
@@ -598,7 +599,14 @@ export default function PageEditor({
               }}
               onChange={(patch) => updateBlock(idx, patch)}
               onTransform={(kind, level) => transformBlock(idx, kind, level)}
-              onSplit={() => insertAfter(idx, "text")}
+              onSplit={() =>
+                insertAfter(
+                  idx,
+                  b.type === "bullet" || b.type === "numbered" || b.type === "todo"
+                    ? b.type
+                    : "text",
+                )
+              }
               onDelete={() => deleteBlock(idx)}
               onDuplicate={() => duplicateBlock(idx)}
               onConvertToText={() => transformBlock(idx, "text")}
@@ -1114,21 +1122,40 @@ function EditableBlockBody({
                 onConvertToText();
                 return;
               }
-              // Enter + modifier → split into new text block.
-              if (e.key === "Enter" && (e.shiftKey || e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                setEditing(false);
-                onSplit();
-                return;
-              }
-              // Enter on `---` or ``` → enter-shortcut to divider/code.
-              if (e.key === "Enter" && block.type === "text") {
-                const hit = detectEnterShortcut(block.text);
-                if (hit) {
-                  e.preventDefault();
-                  onTransform(hit.kind, hit.level);
-                  return;
+              // Enter handling (Notion/Granola-style). Shift+Enter is a soft
+              // line break (falls through to the textarea's default newline);
+              // code blocks also keep plain Enter as a literal newline.
+              // isComposing guards against splitting mid-IME composition.
+              if (
+                e.key === "Enter" &&
+                !e.shiftKey &&
+                block.type !== "code" &&
+                !(e.nativeEvent as any).isComposing
+              ) {
+                // `---` / ``` still transform a text block on Enter.
+                if (block.type === "text") {
+                  const hit = detectEnterShortcut(block.text);
+                  if (hit) {
+                    e.preventDefault();
+                    onTransform(hit.kind, hit.level);
+                    return;
+                  }
                 }
+                e.preventDefault();
+                const isListItem =
+                  block.type === "bullet" ||
+                  block.type === "numbered" ||
+                  block.type === "todo";
+                if (isListItem && block.text.trim() === "") {
+                  // Enter on an empty list/to-do item → exit the list.
+                  onConvertToText();
+                } else {
+                  // Continue the flow: onSplit inserts a same-type block for
+                  // lists/to-dos, a fresh text block otherwise, and focuses it.
+                  setEditing(false);
+                  onSplit();
+                }
+                return;
               }
               // ArrowUp at line 0 → focus previous block.
               // ArrowDown at last line → focus next block.
@@ -1140,8 +1167,9 @@ function EditableBlockBody({
                 e.preventDefault();
                 onFocusNext();
               }
-              // Plain Enter falls through → newline within the same block
-              // (the textarea auto-resizes on the next onChange).
+              // Shift+Enter (and plain Enter inside a code block) fall through
+              // → soft newline within the same block (the textarea auto-resizes
+              // on the next onChange).
             }}
             rows={1}
             className={`w-full bg-transparent resize-none focus:outline-none overflow-hidden placeholder:text-steel/40 ${textareaClass(block)}`}
