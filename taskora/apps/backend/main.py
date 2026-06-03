@@ -36,7 +36,7 @@ from routers import (
     admin, analytics, billing, businesses, daily_brief, decisions,
     entities, initiatives, tasks, users, war_room,
     programs, activity, invites, whatsapp, themes, onboarding,
-    people, join_requests, notebook, internal,
+    people, join_requests, notebook, internal, portfolio,
 )
 
 app = FastAPI(
@@ -105,6 +105,7 @@ app.include_router(people.router)
 app.include_router(join_requests.router)
 app.include_router(notebook.router)
 app.include_router(internal.router)
+app.include_router(portfolio.router)
 
 
 # PostgREST/Supabase errors. Without this, every DB constraint, RLS, or
