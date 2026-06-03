@@ -3,6 +3,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
+  Gauge,
   Sunrise,
   Users,
   FolderKanban,
@@ -33,6 +34,7 @@ type NavItem = {
 };
 
 const coreNavItems: NavItem[] = [
+  { href: "/portfolio",   label: "Portfolio",   Icon: Gauge },
   { href: "/daily-brief", label: "Daily Brief", Icon: Sunrise },
   { href: "/people",      label: "People",      Icon: Users },
   { href: "/programs",    label: "Programs",    Icon: FolderKanban },
