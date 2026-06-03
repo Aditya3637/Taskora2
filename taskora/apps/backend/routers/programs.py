@@ -22,6 +22,27 @@ _VALID_HEALTH = {"green", "amber", "red", "not_started"}
 # Initiatives whose target end is within this window count as "at risk" in the rollup.
 _AT_RISK_WINDOW_DAYS = 14
 
+# ── P3: composite-health tuning ────────────────────────────────────────────────
+# Risk components are each normalised 0..1 (higher = worse), then averaged over
+# whatever signals are present. The blended score maps to a RAG band:
+_RISK_RED = 0.5      # score >= this → red
+_RISK_AMBER = 0.25   # score >= this (and < red) → amber; below → green
+# Staleness ramps from "fine" to "fully stale" between these day counts (the
+# most-recent task update across the program).
+_STALE_MIN_DAYS = 3
+_STALE_MAX_DAYS = 21
+# A task is no longer "live work" once it reaches one of these resting states.
+_OPEN_TASK_EXCLUDE = {"done", "cancelled", "archived"}
+
+# Fields that may legitimately be cleared to NULL via PATCH (N12). Anything not
+# listed here is ignored when sent as null, so a required field (name/color/
+# status/title/direction) can never be blanked by an explicit null.
+_PROGRAM_NULLABLE = {
+    "description", "objective", "start_date", "target_end_date",
+    "lead_user_id", "manual_health",
+}
+_KR_NULLABLE = {"unit", "baseline", "target", "current"}
+
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
 
@@ -221,6 +242,176 @@ def program_outcome_pct(sb: Client, program_id: str) -> Optional[int]:
     if not vals:
         return None
     return round(sum(vals) / len(vals) * 100)
+
+
+# ── P3: composite health + ranked risk ─────────────────────────────────────────
+
+def _schedule_risk(initiative: dict, today: date) -> Optional[float]:
+    """Date risk for one initiative: 0.0 green, 0.5 amber, 1.0 red.
+    None when it has no target date (not_started — excluded from the blend so a
+    program isn't penalised for an initiative nobody has dated yet)."""
+    if initiative.get("status") in ("done", "completed"):
+        return 0.0
+    end = initiative.get("target_end_date")
+    if not end:
+        return None
+    end_d = end if isinstance(end, date) else date.fromisoformat(end[:10])
+    if end_d < today:
+        return 1.0
+    if end_d <= today + timedelta(days=_AT_RISK_WINDOW_DAYS):
+        return 0.5
+    return 0.0
+
+
+def _task_signals(tasks: list, today: date) -> tuple[int, int, int, Optional[int]]:
+    """(open_count, overdue_count, blocked_count, days_since_latest_update)."""
+    today_iso = today.isoformat()
+    open_tasks = [t for t in tasks if t.get("status") not in _OPEN_TASK_EXCLUDE]
+    overdue = sum(1 for t in open_tasks if t.get("due_date") and t["due_date"] < today_iso)
+    blocked = sum(1 for t in open_tasks if t.get("status") == "blocked")
+    upds = [t.get("updated_at") for t in tasks if t.get("updated_at")]
+    days_stale = (today - date.fromisoformat(max(upds)[:10])).days if upds else None
+    return len(open_tasks), overdue, blocked, days_stale
+
+
+def _staleness_risk(days_stale: Optional[int]) -> Optional[float]:
+    if days_stale is None:
+        return None
+    if days_stale <= _STALE_MIN_DAYS:
+        return 0.0
+    if days_stale >= _STALE_MAX_DAYS:
+        return 1.0
+    return (days_stale - _STALE_MIN_DAYS) / (_STALE_MAX_DAYS - _STALE_MIN_DAYS)
+
+
+def _blend(components: dict) -> Optional[float]:
+    """Equal-weighted mean over the components that have a signal (non-None).
+    Equal weights are deliberate: explainable now, tunable later."""
+    vals = [v for v in components.values() if v is not None]
+    return sum(vals) / len(vals) if vals else None
+
+
+def _score_to_health(score: Optional[float], manual_health: Optional[str] = None) -> str:
+    """Map a 0..1 risk score to a RAG band. A manual override always wins
+    (consistent with the legacy date-only `health` field)."""
+    if manual_health:
+        return manual_health
+    if score is None:
+        return "not_started"
+    if score >= _RISK_RED:
+        return "red"
+    if score >= _RISK_AMBER:
+        return "amber"
+    return "green"
+
+
+def _rnd(v: Optional[float]) -> Optional[float]:
+    return round(v, 3) if v is not None else None
+
+
+def program_risk(sb: Client, program: dict, today: date) -> dict:
+    """Composite health for a program, blending five signals — schedule,
+    outcome (KR attainment), throughput (overdue load), blockers, staleness —
+    plus a per-initiative ranked-risk list with human-readable reasons.
+
+    Each signal is only counted when it has data, so a thinly-populated program
+    is scored on what's known rather than punished for missing inputs."""
+    program_id = program["id"]
+    initiatives = (
+        sb.table("initiatives")
+        .select("id, name, status, start_date, target_end_date")
+        .eq("program_id", program_id)
+        .neq("status", "cancelled")
+        .execute()
+        .data
+    )
+    active = [i for i in initiatives if i.get("status") not in ("done", "completed")]
+    init_ids = [i["id"] for i in initiatives]
+    tasks: list = []
+    if init_ids:
+        tasks = (
+            sb.table("tasks")
+            .select("id, title, status, due_date, updated_at, initiative_id")
+            .in_("initiative_id", init_ids)
+            .execute()
+            .data
+        )
+    tasks_by_init: dict = {}
+    for t in tasks:
+        tasks_by_init.setdefault(t.get("initiative_id"), []).append(t)
+
+    # Program-level components.
+    sched_vals = [r for r in (_schedule_risk(i, today) for i in active) if r is not None]
+    schedule = (sum(sched_vals) / len(sched_vals)) if sched_vals else None
+    out_pct = program_outcome_pct(sb, program_id)
+    outcome = (1 - out_pct / 100) if out_pct is not None else None
+    open_count, overdue, blocked, days_stale = _task_signals(tasks, today)
+    throughput = (overdue / open_count) if open_count else None
+    blockers = (blocked / open_count) if open_count else None
+    staleness = _staleness_risk(days_stale)
+
+    components = {
+        "schedule": schedule, "outcome": outcome, "throughput": throughput,
+        "blockers": blockers, "staleness": staleness,
+    }
+    score = _blend(components)
+    health = _score_to_health(score, program.get("manual_health"))
+
+    # Per-initiative ranking (outcome is program-scoped, so excluded here).
+    ranked: list = []
+    for i in active:
+        itasks = tasks_by_init.get(i["id"], [])
+        iopen, iover, iblk, istale = _task_signals(itasks, today)
+        isched = _schedule_risk(i, today)
+        icomp = {
+            "schedule": isched,
+            "throughput": (iover / iopen) if iopen else None,
+            "blockers": (iblk / iopen) if iopen else None,
+            "staleness": _staleness_risk(istale),
+        }
+        iscore = _blend(icomp)
+        reasons: list = []
+        if isched == 1.0:
+            reasons.append("past target date")
+        elif isched == 0.5:
+            reasons.append("target date within 2 weeks")
+        if iover:
+            reasons.append(f"{iover} overdue task{'s' if iover > 1 else ''}")
+        if iblk:
+            reasons.append(f"{iblk} blocked task{'s' if iblk > 1 else ''}")
+        if istale is not None and istale >= _STALE_MAX_DAYS:
+            reasons.append(f"no activity in {istale} days")
+        ranked.append({
+            "id": i["id"], "name": i.get("name"),
+            "risk_score": _rnd(iscore),
+            "health": _score_to_health(iscore),
+            "schedule_health": _score_to_health(isched) if isched is not None else "not_started",
+            "open_tasks": iopen, "overdue_tasks": iover, "blocked_tasks": iblk,
+            "days_stale": istale, "reasons": reasons,
+        })
+    # Highest risk first; initiatives with no signal at all sort last.
+    ranked.sort(key=lambda r: (r["risk_score"] is None, -(r["risk_score"] or 0.0)))
+
+    return {
+        "composite_health": health,
+        "composite_score": _rnd(score),
+        "components": {k: _rnd(v) for k, v in components.items()},
+        "ranked_initiatives": ranked,
+    }
+
+
+def _require_program_admin_or_lead(sb: Client, program: dict, user_id: str) -> None:
+    """N3: program edits/deletes are limited to a workspace owner/admin or the
+    program's own lead. A plain member can no longer mutate a program."""
+    role = get_member_role(sb, program["business_id"], user_id)
+    if role is None:
+        raise HTTPException(status_code=403, detail="Not a member of this business")
+    if role in ("owner", "admin") or program.get("lead_user_id") == user_id:
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Only owner, admin, or program lead may edit this program",
+    )
 
 
 def _get_program_or_404(sb: Client, program_id: str) -> dict:
@@ -446,11 +637,18 @@ def update_program(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    """Update a program's fields."""
+    """Update a program's fields. N3: owner/admin/lead only."""
     program = _get_program_or_404(sb, program_id)
-    require_member(sb, program["business_id"], user["id"])
+    _require_program_admin_or_lead(sb, program, user["id"])
 
-    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    # N12: keep only fields the client actually sent (exclude_unset), and allow
+    # an explicit null to CLEAR a genuinely-nullable field. A null on a required
+    # field (name/color/status) is ignored rather than blanking it.
+    sent = body.model_dump(exclude_unset=True)
+    updates = {
+        k: v for k, v in sent.items()
+        if v is not None or k in _PROGRAM_NULLABLE
+    }
     if not updates:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -475,27 +673,7 @@ def delete_program(
 ):
     """Delete a program. Only the owner, admin, or program lead may delete."""
     program = _get_program_or_404(sb, program_id)
-
-    member = (
-        sb.table("business_members")
-        .select("role")
-        .eq("business_id", program["business_id"])
-        .eq("user_id", user["id"])
-        .execute()
-        .data
-    )
-    if not member:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not a member of this business")
-
-    is_admin = member[0]["role"] in ("owner", "admin")
-    is_lead = program.get("lead_user_id") == user["id"]
-
-    if not is_admin and not is_lead:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only owner, admin, or program lead may delete",
-        )
-
+    _require_program_admin_or_lead(sb, program, user["id"])
     sb.table("programs").delete().eq("id", program_id).execute()
     return None
 
@@ -585,6 +763,11 @@ def get_program_rollup(
             age = (today - date.fromisoformat(oldest["created_at"][:10])).days
             oldest_open = {"title": oldest.get("title") or "", "age_days": age}
 
+    # P3 composite health (additive — the legacy date-only `health` above is
+    # kept for back-compat; `composite_health` blends schedule + outcome +
+    # throughput + blockers + staleness, which `health` ignored).
+    risk = program_risk(sb, program, today)
+
     return {
         "health": health,
         "progress_pct": progress_pct,
@@ -600,7 +783,31 @@ def get_program_rollup(
         },
         "overdue_task_count": overdue_task_count,
         "oldest_open_task": oldest_open,
+        # P3: composite signals. `composite_health` is the recommended health
+        # for new UI; `risk_components` exposes the per-signal breakdown.
+        "composite_health": risk["composite_health"],
+        "composite_score": risk["composite_score"],
+        "risk_components": risk["components"],
     }
+
+
+@router.get("/{program_id}/risks")
+def get_program_risks(
+    program_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Composite health + ranked initiative risk for the program.
+
+    Blends schedule + outcome% + throughput + blockers + staleness into one
+    score, and returns the program's initiatives ordered worst-first with the
+    specific reasons each is at risk — so a lead/founder sees *what to escalate*
+    without reading every task. Visible to any member of the program's business.
+    """
+    program = _get_program_or_404(sb, program_id)
+    require_member(sb, program["business_id"], user["id"])
+    today = date.today()
+    return {"program_id": program_id, **program_risk(sb, program, today)}
 
 
 @router.get("/{program_id}/gantt")
@@ -812,7 +1019,11 @@ def update_key_result(
 ):
     program = _get_program_or_404(sb, program_id)
     require_member(sb, program["business_id"], user["id"])
-    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    # N12: allow clearing a measurable field (unit/baseline/target/current) by
+    # sending it as null — e.g. un-setting a target. Required fields
+    # (title/direction/sort_order) are never blanked by a null.
+    sent = body.model_dump(exclude_unset=True)
+    patch = {k: v for k, v in sent.items() if v is not None or k in _KR_NULLABLE}
     if not patch:
         raise HTTPException(status_code=422, detail="No fields to update")
     patch["updated_at"] = datetime.now(timezone.utc).isoformat()

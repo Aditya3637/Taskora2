@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from auth import get_current_user
 from deps import get_supabase
 from main import app
+from routers.daily_brief import invalidate_brief_cache
 from tests._fake_supabase import FakeSupabase
 
 client = TestClient(app)
@@ -21,6 +22,10 @@ UID = "user-123"
 
 @pytest.fixture
 def sb():
+    # The endpoint caches responses keyed partly on id(sb); since Python reuses
+    # object ids across GC'd FakeSupabase instances, a stale entry from an
+    # earlier test can leak in under random test ordering. Clear it per test.
+    invalidate_brief_cache()
     s = FakeSupabase({
         "business_members": [],
         "businesses": [],
