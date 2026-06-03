@@ -36,12 +36,12 @@ type NavItem = {
 const coreNavItems: NavItem[] = [
   { href: "/portfolio",   label: "Portfolio",   Icon: Gauge },
   { href: "/daily-brief", label: "Daily Brief", Icon: Sunrise },
-  { href: "/people",      label: "People",      Icon: Users },
+  { href: "/notebook",    label: "Notebook",    Icon: Notebook },
   { href: "/programs",    label: "Programs",    Icon: FolderKanban },
   { href: "/tasks",       label: "Tasks",       Icon: CheckSquare },
-  { href: "/gantt",       label: "Gantt",       Icon: BarChart3 },
+  { href: "/people",      label: "People",      Icon: Users },
   { href: "/analytics",   label: "Analytics",   Icon: LineChart },
-  { href: "/notebook",    label: "Notebook",    Icon: Notebook },
+  { href: "/gantt",       label: "Gantt",       Icon: BarChart3 },
 ];
 
 const SIDEBAR_KEY = "taskora_sidebar_expanded";
