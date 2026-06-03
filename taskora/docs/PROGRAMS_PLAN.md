@@ -62,6 +62,11 @@ Hierarchy **Programs → Initiatives → Tasks → Subtasks**. Rollup at
 
 ## 5. Editor technology decision (DECIDED)
 
+> **Deep-dive:** the full Workspace Doc technology + how-it-works plan now lives in its own
+> document — `docs/WORKSPACE_DOCS_PLAN.md`. This section is the summary; that doc is canonical
+> for the doc surface (data model, editing UX, pull-in notes, async AI, API surface, build phases).
+
+
 Current notebook editor is **fully homegrown**: flat `Block[]` union → one JSONB `body` blob →
 one `<textarea>` per block, formatting as literal markdown markers, whole-page last-write-wins save.
 
@@ -187,13 +192,25 @@ Returns four lists for the CALLING user:
 **Acceptance:** full pytest suite green (currently 263); new tests cover all rows above; no schema
 change; FE `My day` page wired but flagged for in-browser confirm.
 
-## 10. Open decisions (resolve before the relevant slice)
-1. Editor framework — **TipTap** (recommended) vs Lexical. (Affects D0.)
-2. Collaboration ambition — real-time multiplayer now, or single-editor + presence for v1?
-3. "Linked to notes" — **pull-in** (recommended) vs live-sync vs backlinks-only. (Affects D2.)
-4. `my-day` scope — single active workspace (recommended) vs cross-workspace aggregation.
+## 10. Open decisions
+**Resolved 2026-06-03** (see `WORKSPACE_DOCS_PLAN.md`):
+1. ✅ Editor framework — **TipTap (ProseMirror)** for the new shared surface.
+2. ✅ Collaboration — **single-editor + presence** for v1; defer Yjs/CRDT.
+3. ✅ "Linked to notes" — **pull-in** model.
+4. ✅ `my-day` scope — **single active workspace** (`business_id` required).
+
+**Still open** — doc-surface specifics now tracked in `WORKSPACE_DOCS_PLAN.md` §16
+(presence transport, autosave granularity, multiple-docs-per-initiative, doc-edit scope,
+attachment cap/MIME list).
 
 ## 11. Progress log
 - 2026-06-02 — Plan written. P1/P2 confirmed shipped. Decisions locked: model (§3), architecture
   (§4), editor tech (§5), roles (§6), layout (Option A + side panel). Slice 1 ("My day") spec'd.
   Next: build Slice 1 on a branch with the §9 test matrix; in parallel P3 is the backend keystone.
+- 2026-06-03 — Wrote the dedicated **`docs/WORKSPACE_DOCS_PLAN.md`** — the technology + how-it-works
+  plan for the initiative-level Workspace Document (TipTap/ProseMirror, `workspace_docs` +
+  `entity_links` schema, pull-in notes, async AI on the lifecycle engine). §5 above is now a
+  summary pointing at that doc.
+  - Parked (uncommitted, exploratory, NOT this session's focus): a working "My day" Slice-1
+    prototype — `routers/my_day.py` + `tests/test_my_day.py` (18, green; full suite 281) +
+    `app/(app)/my-day/page.tsx` + nav entry. Kept on disk for later; not committed.
