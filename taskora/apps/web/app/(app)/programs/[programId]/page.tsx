@@ -1,11 +1,12 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Plus, User, X, ChevronDown, ChevronRight, GanttChartSquare, Pencil } from "lucide-react";
+import { ArrowLeft, Plus, User, X, ChevronDown, ChevronRight, GanttChartSquare, Pencil, FileText } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useWorkspaceFormat } from "@/lib/use-workspace-format";
 import { GanttModal } from "../../gantt/GanttChart";
 import { EditInitiativeModal } from "../EditInitiativeModal";
+import { WorkDocPanel } from "../_components/WorkDocPanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -324,7 +325,7 @@ function AddInitiativeModal({
 
 // ── Initiative Card ───────────────────────────────────────────────────────────
 
-function InitiativeCard({ init, canEdit, onEdit }: { init: Initiative; canEdit: boolean; onEdit: () => void }) {
+function InitiativeCard({ init, canEdit, onEdit, onOpenDoc }: { init: Initiative; canEdit: boolean; onEdit: () => void; onOpenDoc: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const [showGantt, setShowGantt] = useState(false);
   const cat = getCategoryMeta(init.impact_category);
@@ -361,6 +362,13 @@ function InitiativeCard({ init, canEdit, onEdit }: { init: Initiative; canEdit: 
             }`}
           >
             <GanttChartSquare className="w-3.5 h-3.5" /> Gantt
+          </button>
+          <button
+            onClick={onOpenDoc}
+            title="Open work document"
+            className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-medium border border-pebble text-steel hover:border-ocean hover:text-ocean transition-colors whitespace-nowrap"
+          >
+            <FileText className="w-3.5 h-3.5" /> Work doc
           </button>
           {canEdit && (
             <button
@@ -662,6 +670,7 @@ export default function ProgramDetailPage() {
   const [error, setError] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [editInit, setEditInit] = useState<Initiative | null>(null);
+  const [docInit, setDocInit] = useState<Initiative | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -791,7 +800,7 @@ export default function ProgramDetailPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {initiatives.map((init) => (
-            <InitiativeCard key={init.id} init={init} canEdit={canEdit} onEdit={() => setEditInit(init)} />
+            <InitiativeCard key={init.id} init={init} canEdit={canEdit} onEdit={() => setEditInit(init)} onOpenDoc={() => setDocInit(init)} />
           ))}
         </div>
       )}
@@ -811,6 +820,14 @@ export default function ProgramDetailPage() {
           businessId={businessId}
           onClose={() => setEditInit(null)}
           onSaved={load}
+        />
+      )}
+
+      {docInit && (
+        <WorkDocPanel
+          initiativeId={docInit.id}
+          initiativeName={docInit.name}
+          onClose={() => setDocInit(null)}
         />
       )}
     </div>
