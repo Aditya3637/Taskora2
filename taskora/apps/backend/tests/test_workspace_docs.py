@@ -190,6 +190,15 @@ def test_cannot_read_cross_tenant_doc(sb):
     assert client.get("/api/v1/docs/d2").status_code == 403
 
 
+def test_can_write_flag_reflects_role(sb):
+    """get_doc tells the editor whether to be editable: writer=true, follower=false."""
+    _seed_doc(sb)
+    _as(CONTRIB)
+    assert client.get("/api/v1/docs/d1").json()["can_write"] is True
+    _as(FOLLOWER)
+    assert client.get("/api/v1/docs/d1").json()["can_write"] is False
+
+
 def test_missing_doc_404(sb):
     assert client.get("/api/v1/docs/nope").status_code == 404
 

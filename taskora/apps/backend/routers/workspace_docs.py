@@ -91,6 +91,18 @@ def _is_program_lead(sb: Client, program_id: Optional[str], user_id: str) -> boo
     return bool(rows and rows[0].get("lead_user_id") == user_id)
 
 
+def _writable(sb: Client, init: dict, user_id: str) -> bool:
+    """True if the user may edit docs on this initiative (admin/owner, program
+    lead, or initiative writer). Used to tell the editor whether to be editable
+    — followers get read-only."""
+    business_id = init["business_id"]
+    if is_admin_or_owner(sb, business_id, user_id):
+        return True
+    if _is_program_lead(sb, init.get("program_id"), user_id):
+        return True
+    return init["id"] in writable_initiative_ids(sb, business_id, user_id)
+
+
 def _gate(sb: Client, init: dict, user_id: str, *, write: bool) -> None:
     """Enforce read/write access to an initiative's docs. Non-members 403 via
     require_member; members who can't see the initiative get 404 on read (don't
@@ -187,7 +199,7 @@ def create_doc(
     rows = sb.table("workspace_docs").insert(payload).execute().data
     if not rows:
         raise HTTPException(status_code=500, detail="Failed to create document")
-    return _shape(rows[0])
+    return {**_shape(rows[0]), "can_write": True}  # the creator just passed the write gate
 
 
 @router.get("/docs/{doc_id}")
@@ -200,7 +212,7 @@ def get_doc(
     doc = _doc_or_404(sb, doc_id)
     init = _initiative_or_404(sb, doc["parent_id"])
     _gate(sb, init, user["id"], write=False)
-    return _shape(doc)
+    return {**_shape(doc), "can_write": _writable(sb, init, user["id"])}
 
 
 @router.patch("/docs/{doc_id}")
