@@ -7,6 +7,7 @@ import { useWorkspaceFormat } from "@/lib/use-workspace-format";
 import { GanttModal } from "../../gantt/GanttChart";
 import { EditInitiativeModal } from "../EditInitiativeModal";
 import { WorkDocPanel } from "../_components/WorkDocPanel";
+import { ProgramAiSummary } from "../_components/ProgramAiSummary";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -777,6 +778,9 @@ export default function ProgramDetailPage() {
 
       {/* P1 + P2: measurable outcomes, status updates, trend */}
       <ProgramOutcomes programId={programId} canEdit={canEdit} />
+
+      {/* D4: AI-drafted program summary (rolls up initiatives + live signals) */}
+      <ProgramAiSummary programId={programId} canEdit={canEdit} />
 
       {initiatives.length === 0 ? (
         <div className="text-center py-20 bg-white rounded-xl border border-pebble">
