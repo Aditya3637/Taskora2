@@ -214,3 +214,15 @@ attachment cap/MIME list).
   - Parked (uncommitted, exploratory, NOT this session's focus): a working "My day" Slice-1
     prototype — `routers/my_day.py` + `tests/test_my_day.py` (18, green; full suite 281) +
     `app/(app)/my-day/page.tsx` + nav entry. Kept on disk for later; not committed.
+- 2026-06-04/05 — Shipped a big run of the order. **P3** (composite health + ranked risk,
+  `/programs/{id}/risks`, N3/N12) ✅ PR #27. **M2** (Founder glance: `/portfolio` + nudge) ✅ PR #28.
+  **D0** (Workspace Docs engine: `workspace_docs`/`entity_links`/`doc_attachments`, migration 047,
+  TipTap) + **D2** (initiative Work Doc slide-over) ✅ PR #30. **D3** (@-mentions + backlinks via
+  `entity_links`, `/mentions/search`, `/initiatives/{id}/backlinks`) ✅ PR #31. **D4** (AI program
+  summary: `/programs/{id}/ai-summary`, migration 048; **per-workspace BYO Anthropic/OpenAI key** in
+  Workspace settings, migration 049) ✅ PR #32+#33. **M1** ("My day" cockpit — the parked prototype,
+  resurrected/rebased onto current main, business_id hardened to reconcile via /businesses/my) ✅
+  PR #34. All two-project-deployed to prod; full suite 362 green. **Remaining order:** D1 (inline
+  initiative detail) → P5 (accountability + per-site) → P4 (milestones on timeline) → D5
+  (promote-block→initiative/task) → P6 (portfolio + dependencies). D4 weekly auto-gen still waits on
+  the automation engine (migration 045, deferred).
