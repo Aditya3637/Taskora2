@@ -23,10 +23,50 @@ from supabase import Client
 from config import get_settings
 
 
-def is_configured() -> bool:
-    """True when an Anthropic API key is present. When False the endpoints report
-    a 'not configured' state instead of failing (mirrors resend_api_key)."""
-    return bool(get_settings().anthropic_api_key)
+# Default model per provider when the workspace hasn't overridden it.
+DEFAULT_MODELS = {"anthropic": "claude-opus-4-8", "openai": "gpt-4o"}
+
+
+def resolve_config(sb: Client, business_id: str) -> Optional[dict]:
+    """The AI config that should be used for this workspace, or None if unset.
+
+    The workspace's own key (business_ai_settings, set in Workspace settings)
+    wins. If it has none, fall back to a platform-wide Anthropic key from the
+    environment (so an operator can still configure one default). Returns
+    {provider, api_key, model} — model may be None (→ provider default)."""
+    provider, key, model = "anthropic", None, None
+    try:
+        rows = (
+            sb.table("business_ai_settings")
+            .select("provider, api_key, model")
+            .eq("business_id", business_id).execute().data
+        )
+        if rows:
+            r = rows[0]
+            provider = r.get("provider") or "anthropic"
+            key = (r.get("api_key") or "").strip() or None
+            model = (r.get("model") or "").strip() or None
+    except Exception:
+        pass
+
+    if not key:
+        env = get_settings()
+        if env.anthropic_api_key:
+            return {"provider": "anthropic", "api_key": env.anthropic_api_key,
+                    "model": env.anthropic_model}
+        return None
+    return {"provider": provider, "api_key": key, "model": model}
+
+
+def effective_model(config: dict) -> str:
+    """The model string actually used for a resolved config (for storage)."""
+    return config.get("model") or DEFAULT_MODELS.get(config.get("provider") or "anthropic", "")
+
+
+def is_configured(sb: Client, business_id: str) -> bool:
+    """True when this workspace can generate (own key or env fallback). When
+    False the endpoints report a 'not configured' state instead of failing."""
+    return resolve_config(sb, business_id) is not None
 
 
 def doc_text(body) -> str:
@@ -161,25 +201,41 @@ Progress against the key results. If none are defined, state that measurable out
 Rules: under ~250 words total. Plain, direct, specific — no corporate filler, no preamble, no sign-off. Markdown limited to `##` headings, `-` bullets, and `**bold**` for emphasis."""
 
 
-def generate_summary(context: dict) -> Optional[str]:
-    """Draft the narrative with Claude. Returns markdown, or None when the AI
-    integration isn't configured (ANTHROPIC_API_KEY unset) — callers surface a
-    'not configured' state rather than 500-ing."""
-    s = get_settings()
-    if not s.anthropic_api_key:
+def generate_summary(context: dict, config: Optional[dict]) -> Optional[str]:
+    """Draft the narrative from a resolved workspace config (provider + key +
+    model). Returns markdown, or None when no key is available — callers surface
+    a 'not configured' state rather than 500-ing. Provider-agnostic: Anthropic
+    or OpenAI, whichever the workspace brought."""
+    if not config or not config.get("api_key"):
         return None
 
-    # Lazy import keeps the anthropic package optional at module-import time
-    # (tests monkeypatch this function; CI doesn't need the dependency).
-    from anthropic import Anthropic
-
-    client = Anthropic(api_key=s.anthropic_api_key)
+    provider = config.get("provider") or "anthropic"
     user_payload = (
         "Summarize this program for its leadership. Here is the data as JSON:\n\n"
         + json.dumps(context, default=str, ensure_ascii=False)
     )
+
+    if provider == "openai":
+        # Lazy import keeps the dependency optional at module-import time.
+        from openai import OpenAI
+
+        client = OpenAI(api_key=config["api_key"])
+        resp = client.chat.completions.create(
+            model=config.get("model") or DEFAULT_MODELS["openai"],
+            max_tokens=1500,
+            messages=[
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user", "content": user_payload},
+            ],
+        )
+        return (resp.choices[0].message.content or "").strip() or None
+
+    # Anthropic (default).
+    from anthropic import Anthropic
+
+    client = Anthropic(api_key=config["api_key"])
     resp = client.messages.create(
-        model=s.anthropic_model,
+        model=config.get("model") or DEFAULT_MODELS["anthropic"],
         max_tokens=1500,
         system=[{
             "type": "text", "text": _SYSTEM,

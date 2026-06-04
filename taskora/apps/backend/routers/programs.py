@@ -6,7 +6,6 @@ from supabase import Client
 from pydantic import BaseModel, field_validator
 
 from auth import get_current_user
-from config import get_settings
 from deps import (
     get_supabase, require_member, require_admin_or_owner, get_member_role,
     is_admin_or_owner, aligned_initiative_ids, program_follower_ids,
@@ -1163,7 +1162,10 @@ def get_program_ai_summary(
     except Exception:
         rows = []
     summary = _shape_ai_summary(sb, rows[0]) if rows else None
-    return {"summary": summary, "configured": program_summary.is_configured()}
+    return {
+        "summary": summary,
+        "configured": program_summary.is_configured(sb, program["business_id"]),
+    }
 
 
 @router.post("/{program_id}/ai-summary", status_code=201)
@@ -1177,12 +1179,13 @@ def regenerate_program_ai_summary(
     model returns nothing."""
     program = _get_program_or_404(sb, program_id)
     _require_program_admin_or_lead(sb, program, user["id"])
-    if not program_summary.is_configured():
+    config = program_summary.resolve_config(sb, program["business_id"])
+    if not config:
         raise HTTPException(status_code=503, detail="AI summaries are not configured")
 
     today = date.today()
     context = program_summary.gather_program_context(sb, program, today)
-    body = program_summary.generate_summary(context)
+    body = program_summary.generate_summary(context, config)
     if not body:
         raise HTTPException(status_code=502, detail="Could not generate a summary")
 
@@ -1190,7 +1193,7 @@ def regenerate_program_ai_summary(
         "program_id": program_id,
         "business_id": program["business_id"],
         "body": body,
-        "model": get_settings().anthropic_model,
+        "model": program_summary.effective_model(config),
         "health": context["health"]["composite"],
         "inputs": context,
         "generated_by": user["id"],

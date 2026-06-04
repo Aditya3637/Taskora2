@@ -146,7 +146,7 @@ export function ProgramAiSummary({ programId, canEdit }: { programId: string; ca
         </>
       ) : !configured ? (
         <p className="text-xs text-steel/60 italic">
-          AI summaries aren&apos;t configured yet{canEdit ? " (set ANTHROPIC_API_KEY on the backend)." : "."}
+          AI summaries aren&apos;t connected yet{canEdit ? " — add an Anthropic or OpenAI key in Workspace settings → Profile." : "."}
         </p>
       ) : (
         <p className="text-xs text-steel/60 italic">
