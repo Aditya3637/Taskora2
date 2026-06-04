@@ -18,7 +18,7 @@ matching the best-effort pattern used elsewhere (program_outcome_pct).
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
 from supabase import Client
 
@@ -148,6 +148,84 @@ def _shape(d: dict) -> dict:
     }
 
 
+# ── D3: mentions → entity_links (backlinks) ─────────────────────────────────
+# Mention nodes in the TipTap body carry attrs.id = "<type>:<uuid>" (e.g.
+# "initiative:abc"). We reconcile the doc's entity_links from the body on every
+# save, so backlinks are always exactly what the document currently mentions —
+# no fragile per-keystroke insert/delete tracking on the client.
+
+_MENTION_TYPES = {"initiative", "task", "user"}
+
+
+def _extract_mention_targets(body) -> set:
+    """Walk the ProseMirror JSON and collect (target_type, target_id) from every
+    mention node. Tolerant of any nesting / shape."""
+    found: set = set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("type") == "mention":
+                raw = (node.get("attrs") or {}).get("id") or ""
+                if isinstance(raw, str) and ":" in raw:
+                    t, _, i = raw.partition(":")
+                    if t in _MENTION_TYPES and i:
+                        found.add((t, i))
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(body)
+    return found
+
+
+def _valid_targets(sb: Client, business_id: str, targets: set) -> set:
+    """Keep only mention targets that actually belong to this workspace — a
+    forged body can't create cross-tenant or bogus link rows."""
+    inits = [i for (t, i) in targets if t == "initiative"]
+    tasks = [i for (t, i) in targets if t == "task"]
+    users = [i for (t, i) in targets if t == "user"]
+    valid: set = set()
+    if inits:
+        rows = sb.table("initiatives").select("id").eq("business_id", business_id).in_("id", inits).execute().data
+        valid |= {("initiative", r["id"]) for r in rows}
+    if tasks:
+        trows = sb.table("tasks").select("id, initiative_id").in_("id", tasks).execute().data
+        init_ids = list({r["initiative_id"] for r in trows if r.get("initiative_id")})
+        biz_inits = set()
+        if init_ids:
+            irows = sb.table("initiatives").select("id").eq("business_id", business_id).in_("id", init_ids).execute().data
+            biz_inits = {r["id"] for r in irows}
+        valid |= {("task", r["id"]) for r in trows if r.get("initiative_id") in biz_inits}
+    if users:
+        rows = sb.table("business_members").select("user_id").eq("business_id", business_id).in_("user_id", users).execute().data
+        valid |= {("user", r["user_id"]) for r in rows}
+    return valid
+
+
+def _reconcile_doc_links(sb: Client, doc: dict, user_id: str) -> None:
+    """Sync entity_links for a doc to the targets its body currently mentions.
+    Best-effort: never breaks the save (entity_links may be absent pre-047)."""
+    try:
+        want = _valid_targets(sb, doc["business_id"], _extract_mention_targets(doc.get("body")))
+        existing = (
+            sb.table("entity_links").select("id, target_type, target_id")
+            .eq("source_type", "doc").eq("source_id", doc["id"]).execute().data
+        )
+        have = {(l["target_type"], l["target_id"]): l["id"] for l in existing}
+        for tt, ti in want - set(have):
+            sb.table("entity_links").insert({
+                "business_id": doc["business_id"], "source_type": "doc",
+                "source_id": doc["id"], "target_type": tt, "target_id": ti,
+                "created_by": user_id,
+            }).execute()
+        for key in set(have) - want:
+            sb.table("entity_links").delete().eq("id", have[key]).execute()
+    except Exception:
+        pass
+
+
 # ── routes ─────────────────────────────────────────────────────────────────
 
 @router.get("/initiatives/{initiative_id}/docs")
@@ -199,6 +277,8 @@ def create_doc(
     rows = sb.table("workspace_docs").insert(payload).execute().data
     if not rows:
         raise HTTPException(status_code=500, detail="Failed to create document")
+    if payload["body"]:
+        _reconcile_doc_links(sb, rows[0], user["id"])
     return {**_shape(rows[0]), "can_write": True}  # the creator just passed the write gate
 
 
@@ -238,6 +318,8 @@ def update_doc(
     )
     if not rows:
         raise HTTPException(status_code=404, detail="Document not found")
+    if "body" in updates:
+        _reconcile_doc_links(sb, rows[0], user["id"])
     return _shape(rows[0])
 
 
@@ -260,3 +342,89 @@ def archive_doc(
     if not rows:
         raise HTTPException(status_code=404, detail="Document not found")
     return _shape(rows[0])
+
+
+@router.get("/initiatives/{initiative_id}/backlinks")
+def initiative_backlinks(
+    initiative_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Docs (anywhere in the workspace) that @-mention this initiative. Read-
+    gated by the initiative's visibility."""
+    init = _initiative_or_404(sb, initiative_id)
+    _gate(sb, init, user["id"], write=False)
+    try:
+        links = (
+            sb.table("entity_links").select("source_id")
+            .eq("target_type", "initiative").eq("target_id", initiative_id)
+            .eq("source_type", "doc").execute().data
+        )
+    except Exception:
+        links = []
+    doc_ids = list({l["source_id"] for l in links})
+    out: list = []
+    if doc_ids:
+        docs = sb.table("workspace_docs").select("id, title, parent_id, archived_at").in_("id", doc_ids).execute().data
+        parent_ids = list({d["parent_id"] for d in docs if d.get("parent_id")})
+        names: dict = {}
+        if parent_ids:
+            for r in sb.table("initiatives").select("id, name").in_("id", parent_ids).execute().data:
+                names[r["id"]] = r["name"]
+        for d in docs:
+            if d.get("archived_at"):
+                continue
+            out.append({
+                "doc_id": d["id"], "doc_title": d.get("title"),
+                "initiative_id": d.get("parent_id"),
+                "initiative_name": names.get(d.get("parent_id") or "", ""),
+            })
+    return {"backlinks": out}
+
+
+@router.get("/mentions/search")
+def mentions_search(
+    business_id: str = Query(...),
+    q: str = Query(default=""),
+    limit: int = Query(default=8, ge=1, le=25),
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Picker for the @ menu: initiatives + tasks + people the caller can see,
+    matching `q`. Admins see all; members see only visible initiatives/tasks.
+    Returns items as {type, id, label, sub} where id is the mention payload
+    'type:uuid'."""
+    uid = user["id"]
+    require_member(sb, business_id, uid)
+    ql = (q or "").strip().lower()
+
+    init_rows = sb.table("initiatives").select("id, name").eq("business_id", business_id).execute().data
+    if not is_admin_or_owner(sb, business_id, uid):
+        vis = visible_initiative_ids(sb, business_id, uid)
+        init_rows = [r for r in init_rows if r["id"] in vis]
+    if ql:
+        init_rows = [r for r in init_rows if ql in (r.get("name") or "").lower()]
+
+    init_ids = [r["id"] for r in init_rows]
+    task_rows: list = []
+    if init_ids:
+        task_rows = sb.table("tasks").select("id, title").in_("initiative_id", init_ids).execute().data
+        if ql:
+            task_rows = [t for t in task_rows if ql in (t.get("title") or "").lower()]
+
+    member_ids = [m["user_id"] for m in
+                  sb.table("business_members").select("user_id").eq("business_id", business_id).execute().data]
+    people: list = []
+    if member_ids:
+        people = sb.table("users").select("id, name").in_("id", member_ids).execute().data
+        if ql:
+            people = [u for u in people if ql in (u.get("name") or "").lower()]
+
+    results: list = []
+    for r in init_rows[:limit]:
+        results.append({"type": "initiative", "id": f"initiative:{r['id']}", "label": r.get("name") or "", "sub": "Initiative"})
+    for t in task_rows[:limit]:
+        results.append({"type": "task", "id": f"task:{t['id']}", "label": t.get("title") or "", "sub": "Task"})
+    for u in people[:limit]:
+        results.append({"type": "user", "id": f"user:{u['id']}", "label": u.get("name") or "", "sub": "Person"})
+    return {"results": results}

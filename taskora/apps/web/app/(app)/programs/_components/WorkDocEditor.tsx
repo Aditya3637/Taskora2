@@ -2,8 +2,10 @@
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
+import Mention from "@tiptap/extension-mention";
 import { useEffect } from "react";
 import { Bold, Italic, Heading1, Heading2, List, ListOrdered, Quote, Code } from "lucide-react";
+import { mentionSuggestion } from "./mentionSuggestion";
 
 /**
  * TipTap rich-text editor for a Workspace Document (D2). StarterKit gives
@@ -24,7 +26,14 @@ export function WorkDocEditor({
     extensions: [
       StarterKit,
       Placeholder.configure({
-        placeholder: "Write the plan… type “# ” for a heading, “- ” for a list.",
+        placeholder: "Write the plan… type “# ” for a heading, “- ” for a list, “@” to link.",
+      }),
+      Mention.configure({
+        HTMLAttributes: { class: "wd-mention" },
+        // id is the "type:uuid" payload the backend reconciles into entity_links.
+        renderText: ({ node }) => `@${node.attrs.label ?? node.attrs.id}`,
+        renderHTML: ({ node }) => ["span", { class: "wd-mention" }, `@${node.attrs.label ?? node.attrs.id}`],
+        suggestion: mentionSuggestion(),
       }),
     ],
     content: value && typeof value === "object" && Object.keys(value as object).length ? (value as object) : "",

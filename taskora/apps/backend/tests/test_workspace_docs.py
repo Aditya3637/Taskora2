@@ -205,3 +205,65 @@ def test_missing_doc_404(sb):
 
 def test_create_on_missing_initiative_404(sb):
     assert client.post("/api/v1/initiatives/ghost/docs", json={"title": "x"}).status_code == 404
+
+
+# ── D3: mentions → entity_links → backlinks ──────────────────────────────────
+
+def _body_mentioning(payload_id):
+    return {"type": "doc", "content": [
+        {"type": "paragraph", "content": [
+            {"type": "mention", "attrs": {"id": payload_id, "label": "X"}}]}]}
+
+
+def _add_biz_initiative(sb, iid, name):
+    sb.store["initiatives"].append({
+        "id": iid, "business_id": BIZ, "program_id": PROG, "name": name,
+        "status": "active", "primary_stakeholder_id": OWNER})
+
+
+def test_mention_reconciles_into_backlink(sb):
+    _add_biz_initiative(sb, "init-b", "Init B")
+    r = client.post(f"/api/v1/initiatives/{INIT}/docs",
+                    json={"title": "Plan", "body": _body_mentioning("initiative:init-b")})
+    assert r.status_code == 201, r.text
+    bl = client.get("/api/v1/initiatives/init-b/backlinks").json()["backlinks"]
+    assert len(bl) == 1 and bl[0]["initiative_id"] == INIT
+
+
+def test_mention_removed_clears_backlink(sb):
+    _add_biz_initiative(sb, "init-b", "Init B")
+    did = client.post(f"/api/v1/initiatives/{INIT}/docs",
+                      json={"body": _body_mentioning("initiative:init-b")}).json()["id"]
+    assert len(client.get("/api/v1/initiatives/init-b/backlinks").json()["backlinks"]) == 1
+    client.patch(f"/api/v1/docs/{did}", json={"body": {"type": "doc", "content": []}})
+    assert client.get("/api/v1/initiatives/init-b/backlinks").json()["backlinks"] == []
+
+
+def test_forged_cross_tenant_mention_dropped(sb):
+    """LOOPHOLE: a body that mentions a BIZ2 initiative must not create a link."""
+    client.post(f"/api/v1/initiatives/{INIT}/docs",
+                json={"body": _body_mentioning(f"initiative:{INIT2}")})
+    assert [l for l in sb.store.get("entity_links", []) if l["target_id"] == INIT2] == []
+
+
+def test_backlinks_non_member_forbidden(sb):
+    _as(OUTSIDER)
+    assert client.get(f"/api/v1/initiatives/{INIT}/backlinks").status_code == 403
+
+
+def test_mentions_search_payload_and_visibility(sb):
+    _add_biz_initiative(sb, "init-secret", "Secret Init")
+    # owner sees everything; payload id is the 'type:uuid' the editor inserts
+    _as(OWNER)
+    res = client.get(f"/api/v1/mentions/search?business_id={BIZ}&q=secret").json()["results"]
+    hit = next((r for r in res if r["label"] == "Secret Init"), None)
+    assert hit and hit["id"] == "initiative:init-secret" and hit["type"] == "initiative"
+    # a stranger not aligned to it doesn't see it
+    _as(STRANGER)
+    res2 = client.get(f"/api/v1/mentions/search?business_id={BIZ}&q=secret").json()["results"]
+    assert not any(r["label"] == "Secret Init" for r in res2)
+
+
+def test_mentions_search_non_member_403(sb):
+    _as(OUTSIDER)
+    assert client.get(f"/api/v1/mentions/search?business_id={BIZ}").status_code == 403
