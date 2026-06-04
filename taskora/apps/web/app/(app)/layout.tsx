@@ -3,6 +3,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
+  Sun,
   Gauge,
   Sunrise,
   Users,
@@ -34,6 +35,7 @@ type NavItem = {
 };
 
 const coreNavItems: NavItem[] = [
+  { href: "/my-day",      label: "My Day",      Icon: Sun },
   { href: "/portfolio",   label: "Portfolio",   Icon: Gauge },
   { href: "/daily-brief", label: "Daily Brief", Icon: Sunrise },
   { href: "/notebook",    label: "Notebook",    Icon: Notebook },
