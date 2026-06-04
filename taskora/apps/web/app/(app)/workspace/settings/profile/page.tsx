@@ -14,6 +14,7 @@ import {
   Lock,
   FolderKanban,
   Shield,
+  Sparkles,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import SettingsTabs from "@/components/SettingsTabs";
@@ -727,6 +728,9 @@ export default function WorkspaceProfilePage() {
         )}
       </section>
 
+      {/* ── AI summaries (BYO key) ───────────────────────────────────────── */}
+      {isAdmin && <AiSettingsCard businessId={profile.id} />}
+
       {/* Danger zone — only the owner can delete the workspace. Cascades
           through every child table via FK ON DELETE CASCADE. Two-step
           confirm (button → modal with name-echo) so a stray click can't
@@ -833,6 +837,197 @@ function DangerZone({ profile }: { profile: Profile }) {
           </div>
         )}
       </div>
+    </section>
+  );
+}
+
+type AiSettings = {
+  provider: "anthropic" | "openai";
+  model: string | null;
+  key_set: boolean;
+  key_last4: string | null;
+  configured: boolean;
+  updated_at?: string | null;
+};
+
+const PROVIDER_META = {
+  anthropic: { label: "Anthropic (Claude)", placeholder: "sk-ant-…", model: "claude-opus-4-8" },
+  openai: { label: "OpenAI (GPT)", placeholder: "sk-…", model: "gpt-4o" },
+} as const;
+
+// Per-workspace BYO key for the AI program summary (D4). Owner/admin sets an
+// Anthropic OR OpenAI key here; the backend uses it and never returns it (the
+// read is masked to the last 4 chars). Mounted on the admin Profile page.
+function AiSettingsCard({ businessId }: { businessId: string }) {
+  const [data, setData] = useState<AiSettings | null>(null);
+  const [edit, setEdit] = useState(false);
+  const [provider, setProvider] = useState<"anthropic" | "openai">("anthropic");
+  const [apiKey, setApiKey] = useState("");
+  const [model, setModel] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const d: AiSettings = await apiFetch(`/api/v1/businesses/${businessId}/ai-settings`);
+      setData(d);
+      setProvider(d.provider);
+      setModel(d.model ?? "");
+    } catch {
+      /* table may not exist pre-migration — leave the card in its empty state */
+    }
+  }, [businessId]);
+  useEffect(() => { load(); }, [load]);
+
+  const flash = (m: string) => { setMsg(m); setTimeout(() => setMsg(""), 2500); };
+
+  async function save(clear = false) {
+    setSaving(true);
+    try {
+      const body: Record<string, unknown> = { provider, model: model.trim() || null };
+      if (clear) body.api_key = "";
+      else if (apiKey.trim()) body.api_key = apiKey.trim();
+      // else: omit api_key → keep the existing one
+      const d: AiSettings = await apiFetch(`/api/v1/businesses/${businessId}/ai-settings`, {
+        method: "PUT",
+        body: JSON.stringify(body),
+      });
+      setData(d);
+      setApiKey("");
+      setEdit(false);
+      flash(clear ? "Key removed." : "Saved.");
+    } catch (e: unknown) {
+      flash(e instanceof Error ? e.message : "Save failed.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="bg-white rounded-2xl border border-pebble shadow-sm overflow-hidden">
+      <div className="px-6 py-4 border-b border-pebble flex items-center justify-between gap-3">
+        <div>
+          <h3 className="font-semibold text-midnight flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-taskora-red" /> AI summaries
+            {data && (
+              <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${
+                data.configured
+                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                  : "bg-mist text-steel border-pebble"
+              }`}>
+                {data.configured ? "Connected" : "Not connected"}
+              </span>
+            )}
+          </h3>
+          <p className="text-xs text-steel mt-0.5">
+            Bring your own Anthropic or OpenAI key to generate program summaries. Your key is stored securely and never shown again.
+          </p>
+        </div>
+        {!edit && (
+          <button
+            onClick={() => { setEdit(true); setApiKey(""); }}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-pebble text-steel hover:bg-mist hover:text-midnight transition-colors flex-shrink-0"
+          >
+            <Pencil className="w-3 h-3" /> {data?.key_set ? "Edit" : "Connect"}
+          </button>
+        )}
+      </div>
+
+      {!edit ? (
+        <div className="px-6 py-5">
+          {data?.key_set ? (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <LocaleDisplay icon={Sparkles} label="Provider" value={PROVIDER_META[data.provider].label} />
+              <LocaleDisplay icon={Check} label="API key" value={data.key_last4 ? `•••• ${data.key_last4}` : "set"} />
+              <LocaleDisplay icon={Briefcase} label="Model" value={data.model || `${PROVIDER_META[data.provider].model} (default)`} />
+            </div>
+          ) : (
+            <p className="text-sm text-steel/70 italic">
+              No key connected. Add one to enable the AI summary on each program.
+            </p>
+          )}
+          {msg && <p className="text-xs text-emerald-700 mt-3">{msg}</p>}
+        </div>
+      ) : (
+        <>
+          <div className="px-6 py-5 space-y-4">
+            <div>
+              <label className="block text-xs font-medium text-steel mb-2">Provider</label>
+              <div className="grid grid-cols-2 gap-2 max-w-md">
+                {(["anthropic", "openai"] as const).map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setProvider(p)}
+                    className={`text-left p-3 border rounded-xl transition-all ${
+                      provider === p
+                        ? "border-taskora-red bg-red-50 ring-1 ring-taskora-red/20"
+                        : "border-pebble hover:border-taskora-red/50"
+                    }`}
+                  >
+                    <div className="font-semibold text-midnight text-sm">{PROVIDER_META[p].label}</div>
+                    <div className="text-xs text-steel mt-0.5">Default: {PROVIDER_META[p].model}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-steel mb-1">API key</label>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={data?.key_set ? `•••• ${data.key_last4 ?? ""} — leave blank to keep` : PROVIDER_META[provider].placeholder}
+                autoComplete="off"
+                className="w-full h-10 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red font-mono"
+              />
+              <p className="text-[11px] text-steel/60 mt-1">
+                Stored encrypted-at-rest and used only to generate your summaries. We never display it again.
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-steel mb-1">
+                Model <span className="text-steel/60">(optional)</span>
+              </label>
+              <input
+                type="text"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder={`${PROVIDER_META[provider].model} (default)`}
+                className="w-full h-10 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-taskora-red font-mono"
+              />
+            </div>
+          </div>
+          <div className="px-6 py-3 border-t border-pebble bg-mist/40 flex items-center justify-between gap-2">
+            <div>
+              {data?.key_set && (
+                <button
+                  onClick={() => save(true)}
+                  disabled={saving}
+                  className="h-9 px-3 text-sm text-red-600 hover:text-red-700 font-medium disabled:opacity-40"
+                >
+                  Remove key
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => { setEdit(false); setApiKey(""); if (data) { setProvider(data.provider); setModel(data.model ?? ""); } }}
+                className="h-9 px-4 border border-pebble text-sm text-steel rounded-lg hover:bg-white"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => save(false)}
+                disabled={saving || (!data?.key_set && !apiKey.trim())}
+                className="h-9 px-4 bg-taskora-red text-white text-sm font-semibold rounded-lg hover:opacity-90 disabled:opacity-40"
+              >
+                {saving ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </section>
   );
 }

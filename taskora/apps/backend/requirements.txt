@@ -12,3 +12,4 @@ firebase-admin==6.5.0
 slowapi==0.1.9
 sentry-sdk[fastapi]==2.18.0
 anthropic==0.105.2
+openai==2.41.0

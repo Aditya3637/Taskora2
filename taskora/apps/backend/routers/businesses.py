@@ -7,6 +7,8 @@ from auth import get_current_user
 from deps import get_supabase, require_member, require_admin_or_owner
 from pydantic import BaseModel
 
+from ai import program_summary
+
 router = APIRouter(prefix="/api/v1/businesses", tags=["businesses"])
 
 
@@ -627,3 +629,84 @@ def get_my_role(
     if not rows:
         raise HTTPException(status_code=404, detail="Not a member of this business")
     return {"role": rows[0]["role"]}
+
+
+# ── Per-workspace AI settings (BYO key for the D4 program summary) ────────────
+# The workspace brings its own Anthropic OR OpenAI key, set here by an
+# owner/admin. The raw key is write-only — reads return only a last-4 mask.
+
+class AiSettingsIn(BaseModel):
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    # None = keep the existing key, "" = clear it, a value = set it.
+    api_key: Optional[str] = None
+
+
+def _ai_settings_view(sb: Client, business_id: str) -> dict:
+    rows = (
+        sb.table("business_ai_settings").select("*")
+        .eq("business_id", business_id).execute().data
+    )
+    r = rows[0] if rows else {}
+    key = r.get("api_key") or ""
+    return {
+        "provider": r.get("provider") or "anthropic",
+        "model": r.get("model"),
+        "key_set": bool(key),
+        "key_last4": key[-4:] if len(key) >= 4 else None,
+        "updated_at": r.get("updated_at"),
+        # Reflects the effective state (own key, or the platform env fallback).
+        "configured": program_summary.is_configured(sb, business_id),
+    }
+
+
+@router.get("/{business_id}/ai-settings")
+def get_ai_settings(
+    business_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Masked AI config for the workspace (owner/admin only). Never returns the
+    raw key — only whether one is set and its last 4 chars."""
+    require_admin_or_owner(sb, business_id, user["id"])
+    return _ai_settings_view(sb, business_id)
+
+
+@router.put("/{business_id}/ai-settings")
+def put_ai_settings(
+    business_id: str,
+    body: AiSettingsIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Set the workspace's AI provider/key/model (owner/admin only). Omitting
+    api_key keeps the existing one; sending "" clears it."""
+    require_admin_or_owner(sb, business_id, user["id"])
+    provider = (body.provider or "anthropic").lower()
+    if provider not in ("anthropic", "openai"):
+        raise HTTPException(status_code=400, detail="provider must be 'anthropic' or 'openai'")
+
+    rows = (
+        sb.table("business_ai_settings").select("*")
+        .eq("business_id", business_id).execute().data
+    )
+    existing = rows[0] if rows else None
+
+    if body.api_key is None:
+        new_key = existing.get("api_key") if existing else None
+    else:
+        new_key = body.api_key.strip() or None
+
+    payload = {
+        "business_id": business_id,
+        "provider": provider,
+        "model": (body.model or "").strip() or None,
+        "api_key": new_key,
+        "updated_by": user["id"],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if existing:
+        sb.table("business_ai_settings").update(payload).eq("business_id", business_id).execute()
+    else:
+        sb.table("business_ai_settings").insert(payload).execute()
+    return _ai_settings_view(sb, business_id)

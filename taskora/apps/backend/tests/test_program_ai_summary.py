@@ -83,11 +83,14 @@ def _as(u):
 
 def _enable(monkeypatch, gen=None, captured=None):
     """Make the AI integration look configured and stub the model call."""
-    monkeypatch.setattr(program_summary, "is_configured", lambda: True)
+    cfg = {"provider": "anthropic", "api_key": "sk-test", "model": None}
+    monkeypatch.setattr(program_summary, "resolve_config", lambda *a, **k: cfg)
+    monkeypatch.setattr(program_summary, "is_configured", lambda *a, **k: True)
 
-    def default_gen(context):
+    def default_gen(context, config=None):
         if captured is not None:
             captured["ctx"] = context
+            captured["cfg"] = config
         return "## Where things stand\nHealth is **red** — Slipping is past its target date."
 
     monkeypatch.setattr(program_summary, "generate_summary", gen or default_gen)
@@ -118,7 +121,7 @@ def test_regenerate_unconfigured_503(sb):
 
 
 def test_regenerate_returns_none_502(sb, monkeypatch):
-    _enable(monkeypatch, gen=lambda ctx: None)
+    _enable(monkeypatch, gen=lambda ctx, cfg=None: None)
     r = client.post(f"/api/v1/programs/{PROG}/ai-summary")
     assert r.status_code == 502
 
