@@ -12,6 +12,7 @@ type Doc = {
   updated_at?: string;
   can_write?: boolean;
 };
+type Backlink = { doc_id: string; doc_title: string; initiative_id: string; initiative_name: string };
 
 /**
  * Slide-over Work Document for an initiative (D2). Opens from the right; the
@@ -30,6 +31,7 @@ export function WorkDocPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [doc, setDoc] = useState<Doc | null>(null);
+  const [backlinks, setBacklinks] = useState<Backlink[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "readonly">("idle");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -50,6 +52,10 @@ export function WorkDocPanel({
     } finally {
       setLoading(false);
     }
+    // Inbound mentions of this initiative (best-effort; don't block the doc).
+    apiFetch(`/api/v1/initiatives/${initiativeId}/backlinks`)
+      .then((r) => setBacklinks(r?.backlinks ?? []))
+      .catch(() => setBacklinks([]));
   }, [initiativeId]);
 
   useEffect(() => { load(); }, [load]);
@@ -164,6 +170,23 @@ export function WorkDocPanel({
                 onChange={(json) => queueSave({ body: json })}
               />
             </>
+          )}
+
+          {backlinks.length > 0 && (
+            <div className="mt-6 pt-4 border-t border-pebble">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle mb-2">
+                Mentioned in
+              </div>
+              <ul className="space-y-1">
+                {backlinks.map((b) => (
+                  <li key={b.doc_id} className="text-sm text-fg-muted truncate">
+                    <FileText className="inline w-3.5 h-3.5 text-fg-subtle mr-1 -mt-0.5" />
+                    {b.doc_title}
+                    <span className="text-fg-subtle"> · {b.initiative_name}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
       </aside>
