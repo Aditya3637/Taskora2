@@ -6,11 +6,13 @@ from supabase import Client
 from pydantic import BaseModel, field_validator
 
 from auth import get_current_user
+from config import get_settings
 from deps import (
     get_supabase, require_member, require_admin_or_owner, get_member_role,
     is_admin_or_owner, aligned_initiative_ids, program_follower_ids,
     visible_program_ids, visible_initiative_ids,
 )
+from ai import program_summary
 
 router = APIRouter(prefix="/api/v1/programs", tags=["programs"])
 
@@ -1124,3 +1126,76 @@ def get_program_trend(
         .order("snapshot_date").execute().data
     )
     return rows
+
+
+# ── D4: AI program summary ──────────────────────────────────────────────────
+# The program level has no manual work doc — this generated narrative is its
+# synthesis, rolled up from the initiative work docs + the live rollup/risk
+# numbers (see ai/program_summary.py). Read is member-wide; regenerate is gated
+# to owner/admin/lead (N3), and 503s when the AI integration isn't configured.
+
+def _shape_ai_summary(sb: Client, row: dict) -> dict:
+    name = ""
+    if row.get("generated_by"):
+        u = sb.table("users").select("name").eq("id", row["generated_by"]).execute().data
+        if u:
+            name = u[0].get("name") or ""
+    return {**row, "generated_by_name": name}
+
+
+@router.get("/{program_id}/ai-summary")
+def get_program_ai_summary(
+    program_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Latest AI summary for the program (or null if never generated). Visible to
+    any member; also reports whether the AI integration is configured so the UI
+    can show the right empty state. Degrades to null if 048 is absent."""
+    program = _get_program_or_404(sb, program_id)
+    require_member(sb, program["business_id"], user["id"])
+    try:
+        rows = (
+            sb.table("program_ai_summaries").select("*")
+            .eq("program_id", program_id)
+            .order("generated_at", desc=True).limit(1).execute().data
+        )
+    except Exception:
+        rows = []
+    summary = _shape_ai_summary(sb, rows[0]) if rows else None
+    return {"summary": summary, "configured": program_summary.is_configured()}
+
+
+@router.post("/{program_id}/ai-summary", status_code=201)
+def regenerate_program_ai_summary(
+    program_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Generate a fresh AI summary from the program's current signals and store
+    it. Gated to owner/admin/lead (N3). 503 when AI is unconfigured; 502 if the
+    model returns nothing."""
+    program = _get_program_or_404(sb, program_id)
+    _require_program_admin_or_lead(sb, program, user["id"])
+    if not program_summary.is_configured():
+        raise HTTPException(status_code=503, detail="AI summaries are not configured")
+
+    today = date.today()
+    context = program_summary.gather_program_context(sb, program, today)
+    body = program_summary.generate_summary(context)
+    if not body:
+        raise HTTPException(status_code=502, detail="Could not generate a summary")
+
+    rows = sb.table("program_ai_summaries").insert({
+        "program_id": program_id,
+        "business_id": program["business_id"],
+        "body": body,
+        "model": get_settings().anthropic_model,
+        "health": context["health"]["composite"],
+        "inputs": context,
+        "generated_by": user["id"],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }).execute().data
+    if not rows:
+        raise HTTPException(status_code=500, detail="Failed to save summary")
+    return {"summary": _shape_ai_summary(sb, rows[0]), "configured": True}

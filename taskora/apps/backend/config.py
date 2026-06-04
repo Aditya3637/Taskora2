@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # automatically when an env var named CRON_SECRET is set). When unset,
     # the tick endpoint is disabled (503) so it can't be triggered anonymously.
     cron_secret: Optional[str] = None
+    # AI features (D4 program summary). When anthropic_api_key is unset, the
+    # AI-summary endpoints report "not configured" and the regenerate button
+    # returns 503 — nothing else breaks (mirrors the resend_api_key pattern).
+    anthropic_api_key: Optional[str] = None
+    anthropic_model: str = "claude-opus-4-8"
 
 
 @lru_cache
