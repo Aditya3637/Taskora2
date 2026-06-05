@@ -243,3 +243,8 @@ attachment cap/MIME list).
   create/patch/delete owner/admin/lead per N3; cross-program 404). FE `ProgramMilestones` = timeline
   track + editable list (mark-done/delete/add). `test_program_milestones.py` (8); suite 380 green;
   deployed. **Remaining order: D5 → P6.**
+- 2026-06-05 — **D5** (doc-driven creation) ✅ PR #38. `POST /initiatives/{id}/promote-task`
+  (creates a task from a doc line; gated by the doc WRITE set; mirrors create_task + stakeholder row;
+  promoter = owner, status todo; no schema change). FE `WorkDocEditor` "Task" toolbar button promotes
+  the selection or current line (no tippy/BubbleMenu dep); `WorkDocPanel` wires it + result chip.
+  `test_promote_task.py` (10); suite 390 green; deployed. **Remaining order: P6 (capstone).**
