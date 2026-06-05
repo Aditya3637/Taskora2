@@ -226,3 +226,8 @@ attachment cap/MIME list).
   initiative detail) → P5 (accountability + per-site) → P4 (milestones on timeline) → D5
   (promote-block→initiative/task) → P6 (portfolio + dependencies). D4 weekly auto-gen still waits on
   the automation engine (migration 045, deferred).
+- 2026-06-05 — **D1** (inline initiative detail) ✅ PR #35. `GET /programs/{id}/initiative-stats`
+  (per-initiative total/done/open/overdue/blocked + completion% + health dot + staleness; reuses
+  `_task_signals`/`_derive_initiative_health`; no schema change). FE `InitiativeCard` gained a health
+  dot + segmented completion mini-bar + count chips. `test_initiative_stats.py` (6); suite 368 green;
+  deployed. **Remaining order: P5 → P4 → D5 → P6.**
