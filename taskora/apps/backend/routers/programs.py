@@ -1100,6 +1100,143 @@ def delete_program_milestone(
     sb.table("milestones").delete().eq("id", milestone_id).execute()
 
 
+# ── P6: initiative dependencies (critical path / blocked) ───────────────────
+
+_DONE_INIT_STATES = {"done", "completed"}
+
+
+class DependencyUpdate(BaseModel):
+    initiative_id: str
+    depends_on: list[str] = []
+
+
+def _dependency_view(initiatives: list) -> list:
+    """Resolve each initiative's depends_on within the program, flag blocked
+    (any prerequisite not done) and compute a critical-path `stage` = the longest
+    prerequisite chain ending at it. Self/stale/cross-program refs are dropped."""
+    by_id = {i["id"]: i for i in initiatives}
+    valid = set(by_id)
+
+    def deps(i: dict) -> list:
+        return [d for d in (i.get("depends_on") or []) if d in valid and d != i["id"]]
+
+    # Longest-path depth, memoised, with a cycle guard (defensive — writes
+    # already reject cycles).
+    stage_memo: dict = {}
+
+    def stage(iid: str, seen: frozenset) -> int:
+        if iid in stage_memo:
+            return stage_memo[iid]
+        if iid in seen:
+            return 0  # cycle — stop
+        ds = deps(by_id[iid])
+        s = 0 if not ds else 1 + max(stage(d, seen | {iid}) for d in ds)
+        stage_memo[iid] = s
+        return s
+
+    # Who depends on each initiative (for "blocks").
+    blocking: dict = {}
+    for i in initiatives:
+        for d in deps(i):
+            blocking.setdefault(d, []).append(i["id"])
+
+    out = []
+    for i in initiatives:
+        d_rows = [{
+            "id": by_id[d]["id"], "name": by_id[d].get("name"),
+            "status": by_id[d].get("status"),
+            "done": by_id[d].get("status") in _DONE_INIT_STATES,
+        } for d in deps(i)]
+        blocked_by = [d for d in d_rows if not d["done"]]
+        out.append({
+            "id": i["id"], "name": i.get("name"), "status": i.get("status"),
+            "stage": stage(i["id"], frozenset()),
+            "depends_on": d_rows,
+            "blocked": len(blocked_by) > 0,
+            "blocked_by": blocked_by,
+            "blocks": blocking.get(i["id"], []),
+        })
+    out.sort(key=lambda r: (r["stage"], r["name"] or ""))
+    return out
+
+
+@router.get("/{program_id}/dependencies")
+def get_program_dependencies(
+    program_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Dependency graph for the program's initiatives — per-initiative
+    prerequisites, blocked flag, and critical-path stage. Member-read."""
+    program = _get_program_or_404(sb, program_id)
+    require_member(sb, program["business_id"], user["id"])
+    initiatives = (
+        sb.table("initiatives").select("id, name, status, depends_on")
+        .eq("program_id", program_id).neq("status", "cancelled").execute().data
+    )
+    return {"initiatives": _dependency_view(initiatives)}
+
+
+@router.put("/{program_id}/dependencies")
+def set_initiative_dependencies(
+    program_id: str,
+    body: DependencyUpdate,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Set one initiative's prerequisites (owner/admin/lead, N3). Targets must be
+    other initiatives in the same program; cycles are rejected."""
+    program = _get_program_or_404(sb, program_id)
+    _require_program_admin_or_lead(sb, program, user["id"])
+
+    initiatives = (
+        sb.table("initiatives").select("id, depends_on")
+        .eq("program_id", program_id).neq("status", "cancelled").execute().data
+    )
+    ids = {i["id"] for i in initiatives}
+    if body.initiative_id not in ids:
+        raise HTTPException(status_code=404, detail="Initiative not in this program")
+
+    # Clean the proposed prerequisite set: dedup, drop self, all must be in-program.
+    proposed = []
+    for d in body.depends_on:
+        if d == body.initiative_id:
+            raise HTTPException(status_code=400, detail="An initiative can't depend on itself")
+        if d not in ids:
+            raise HTTPException(status_code=400, detail="Dependency must be an initiative in this program")
+        if d not in proposed:
+            proposed.append(d)
+
+    # Cycle check: with the proposed edges applied, can initiative_id reach itself?
+    graph = {i["id"]: list(i.get("depends_on") or []) for i in initiatives}
+    graph[body.initiative_id] = proposed
+
+    def reaches(start: str, target: str) -> bool:
+        stack, seen = list(graph.get(start, [])), set()
+        while stack:
+            n = stack.pop()
+            if n == target:
+                return True
+            if n in seen or n not in graph:
+                continue
+            seen.add(n)
+            stack.extend(graph.get(n, []))
+        return False
+
+    if reaches(body.initiative_id, body.initiative_id):
+        raise HTTPException(status_code=400, detail="That would create a dependency cycle")
+
+    sb.table("initiatives").update(
+        {"depends_on": proposed, "updated_at": datetime.now(timezone.utc).isoformat()}
+    ).eq("id", body.initiative_id).execute()
+
+    refreshed = (
+        sb.table("initiatives").select("id, name, status, depends_on")
+        .eq("program_id", program_id).neq("status", "cancelled").execute().data
+    )
+    return {"initiatives": _dependency_view(refreshed)}
+
+
 @router.get("/{program_id}/gantt")
 def get_program_gantt(
     program_id: str,
