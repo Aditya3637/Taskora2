@@ -970,6 +970,136 @@ def get_program_accountability(
     return {"owners": owners, "sites": sites}
 
 
+# ── P4: program milestones (timeline key dates) ─────────────────────────────
+
+class MilestoneIn(BaseModel):
+    name: str
+    date: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("name is required")
+        return v[:120]
+
+
+class MilestonePatch(BaseModel):
+    name: Optional[str] = None
+    date: Optional[str] = None
+    completed: Optional[bool] = None
+
+
+def _shape_milestone(m: dict, today: date) -> dict:
+    """Add a derived status: done (completed) / overdue (past & not done) /
+    upcoming (future or undated)."""
+    if m.get("completed_at"):
+        status = "done"
+    elif m.get("uniform_date") and m["uniform_date"] < today.isoformat():
+        status = "overdue"
+    else:
+        status = "upcoming"
+    return {
+        "id": m["id"], "name": m.get("name"),
+        "date": m.get("uniform_date"),
+        "completed_at": m.get("completed_at"),
+        "status": status,
+    }
+
+
+def _program_milestone_or_404(sb: Client, program_id: str, milestone_id: str) -> dict:
+    rows = (
+        sb.table("milestones").select("*")
+        .eq("id", milestone_id).eq("parent_type", "program").eq("parent_id", program_id)
+        .execute().data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Milestone not found")
+    return rows[0]
+
+
+@router.get("/{program_id}/milestones")
+def list_program_milestones(
+    program_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Program timeline milestones, earliest-dated first (undated last). Member-read."""
+    program = _get_program_or_404(sb, program_id)
+    require_member(sb, program["business_id"], user["id"])
+    rows = (
+        sb.table("milestones").select("*")
+        .eq("parent_type", "program").eq("parent_id", program_id).execute().data
+    )
+    today = date.today()
+    out = [_shape_milestone(m, today) for m in rows]
+    out.sort(key=lambda m: (m["date"] is None, m["date"] or ""))
+    return out
+
+
+@router.post("/{program_id}/milestones", status_code=201)
+def create_program_milestone(
+    program_id: str,
+    body: MilestoneIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Add a milestone to the program timeline (owner/admin/lead, N3)."""
+    program = _get_program_or_404(sb, program_id)
+    _require_program_admin_or_lead(sb, program, user["id"])
+    rows = sb.table("milestones").insert({
+        "parent_type": "program", "parent_id": program_id,
+        "name": body.name, "date_mode": "uniform", "uniform_date": body.date,
+    }).execute().data
+    if not rows:
+        raise HTTPException(status_code=500, detail="Failed to create milestone")
+    return _shape_milestone(rows[0], date.today())
+
+
+@router.patch("/{program_id}/milestones/{milestone_id}")
+def update_program_milestone(
+    program_id: str,
+    milestone_id: str,
+    body: MilestonePatch,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Rename / re-date / mark a milestone done (owner/admin/lead, N3)."""
+    program = _get_program_or_404(sb, program_id)
+    _require_program_admin_or_lead(sb, program, user["id"])
+    _program_milestone_or_404(sb, program_id, milestone_id)
+
+    updates: dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name cannot be empty")
+        updates["name"] = name[:120]
+    if body.date is not None:
+        updates["uniform_date"] = body.date or None
+    if body.completed is not None:
+        updates["completed_at"] = datetime.now(timezone.utc).isoformat() if body.completed else None
+
+    rows = sb.table("milestones").update(updates).eq("id", milestone_id).execute().data
+    return _shape_milestone(rows[0], date.today())
+
+
+@router.delete("/{program_id}/milestones/{milestone_id}", status_code=204)
+def delete_program_milestone(
+    program_id: str,
+    milestone_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Remove a program milestone (owner/admin/lead, N3)."""
+    program = _get_program_or_404(sb, program_id)
+    _require_program_admin_or_lead(sb, program, user["id"])
+    _program_milestone_or_404(sb, program_id, milestone_id)
+    sb.table("milestone_entities").delete().eq("milestone_id", milestone_id).execute()
+    sb.table("milestones").delete().eq("id", milestone_id).execute()
+
+
 @router.get("/{program_id}/gantt")
 def get_program_gantt(
     program_id: str,
