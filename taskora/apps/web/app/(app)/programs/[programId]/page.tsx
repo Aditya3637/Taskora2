@@ -10,6 +10,7 @@ import { WorkDocPanel } from "../_components/WorkDocPanel";
 import { ProgramAiSummary } from "../_components/ProgramAiSummary";
 import { ProgramAccountability } from "../_components/ProgramAccountability";
 import { ProgramMilestones } from "../_components/ProgramMilestones";
+import { ProgramDependencies } from "../_components/ProgramDependencies";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -861,6 +862,9 @@ export default function ProgramDetailPage() {
 
       {/* P4: milestones on the program timeline */}
       <ProgramMilestones programId={programId} canEdit={canEdit} />
+
+      {/* P6: initiative dependencies / critical path */}
+      <ProgramDependencies programId={programId} canEdit={canEdit} />
 
       {initiatives.length === 0 ? (
         <div className="text-center py-20 bg-white rounded-xl border border-pebble">
