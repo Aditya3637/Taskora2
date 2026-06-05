@@ -865,6 +865,111 @@ def get_initiative_stats(
     return {"stats": out}
 
 
+@router.get("/{program_id}/accountability")
+def get_program_accountability(
+    program_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """P5: two accountability rollups for the program —
+      • owners — per task primary-stakeholder: total / open / overdue / done +
+        completion%, so a lead sees who is carrying (and overloaded by) the work.
+      • sites  — per building/client (via task_entities.per_entity_status): how
+        each site is tracking, for a multi-site operator's per-location view.
+    Member-read gated; additive (reads existing tables)."""
+    program = _get_program_or_404(sb, program_id)
+    require_member(sb, program["business_id"], user["id"])
+    today_iso = date.today().isoformat()
+
+    init_ids = [
+        i["id"] for i in sb.table("initiatives").select("id")
+        .eq("program_id", program_id).neq("status", "cancelled").execute().data
+    ]
+    tasks: list = []
+    if init_ids:
+        tasks = (
+            sb.table("tasks")
+            .select("id, status, due_date, primary_stakeholder_id")
+            .in_("initiative_id", init_ids).execute().data
+        )
+
+    done_states = {"done", "completed"}
+
+    # ── owners ──────────────────────────────────────────────────────────────
+    owner_agg: dict = {}
+    for t in tasks:
+        uid = t.get("primary_stakeholder_id")
+        if not uid:
+            continue
+        a = owner_agg.setdefault(uid, {"total": 0, "done": 0, "open": 0, "overdue": 0})
+        a["total"] += 1
+        st = t.get("status")
+        if st in done_states:
+            a["done"] += 1
+        elif st not in _OPEN_TASK_EXCLUDE:
+            a["open"] += 1
+            if t.get("due_date") and t["due_date"] < today_iso:
+                a["overdue"] += 1
+
+    names: dict = {}
+    if owner_agg:
+        for u in sb.table("users").select("id, name").in_("id", list(owner_agg)).execute().data:
+            names[u["id"]] = u.get("name") or ""
+    owners = []
+    for uid, a in owner_agg.items():
+        active = a["done"] + a["open"]
+        owners.append({
+            "user_id": uid, "name": names.get(uid) or "Unknown",
+            **a, "completion_pct": round(a["done"] / active * 100) if active else None,
+        })
+    # Most-loaded / most-at-risk first.
+    owners.sort(key=lambda o: (-o["overdue"], -o["open"], -o["total"]))
+
+    # ── sites (per building/client) ─────────────────────────────────────────
+    task_ids = [t["id"] for t in tasks]
+    task_due = {t["id"]: t.get("due_date") for t in tasks}
+    ents: list = []
+    if task_ids:
+        ents = (
+            sb.table("task_entities")
+            .select("task_id, entity_type, entity_id, per_entity_status, per_entity_end_date")
+            .in_("task_id", task_ids).execute().data
+        )
+    site_agg: dict = {}
+    for e in ents:
+        key = (e.get("entity_type"), e.get("entity_id"))
+        a = site_agg.setdefault(key, {"total": 0, "done": 0, "open": 0, "overdue": 0})
+        a["total"] += 1
+        if e.get("per_entity_status") == "done":
+            a["done"] += 1
+        else:
+            a["open"] += 1
+            due = e.get("per_entity_end_date") or task_due.get(e.get("task_id"))
+            if due and due < today_iso:
+                a["overdue"] += 1
+
+    b_ids = [eid for (et, eid) in site_agg if et == "building"]
+    c_ids = [eid for (et, eid) in site_agg if et == "client"]
+    ent_name: dict = {}
+    if b_ids:
+        for r in sb.table("buildings").select("id, name").in_("id", b_ids).execute().data:
+            ent_name[r["id"]] = r.get("name") or ""
+    if c_ids:
+        for r in sb.table("clients").select("id, name").in_("id", c_ids).execute().data:
+            ent_name[r["id"]] = r.get("name") or ""
+    sites = []
+    for (et, eid), a in site_agg.items():
+        active = a["done"] + a["open"]
+        sites.append({
+            "entity_type": et, "entity_id": eid,
+            "name": ent_name.get(eid) or "(unnamed)",
+            **a, "completion_pct": round(a["done"] / active * 100) if active else None,
+        })
+    sites.sort(key=lambda s: (-s["overdue"], -s["open"], -s["total"]))
+
+    return {"owners": owners, "sites": sites}
+
+
 @router.get("/{program_id}/gantt")
 def get_program_gantt(
     program_id: str,

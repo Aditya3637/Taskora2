@@ -8,6 +8,7 @@ import { GanttModal } from "../../gantt/GanttChart";
 import { EditInitiativeModal } from "../EditInitiativeModal";
 import { WorkDocPanel } from "../_components/WorkDocPanel";
 import { ProgramAiSummary } from "../_components/ProgramAiSummary";
+import { ProgramAccountability } from "../_components/ProgramAccountability";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -853,6 +854,9 @@ export default function ProgramDetailPage() {
 
       {/* D4: AI-drafted program summary (rolls up initiatives + live signals) */}
       <ProgramAiSummary programId={programId} canEdit={canEdit} />
+
+      {/* P5: accountability — owner load + per-site breakdown */}
+      <ProgramAccountability programId={programId} />
 
       {initiatives.length === 0 ? (
         <div className="text-center py-20 bg-white rounded-xl border border-pebble">
