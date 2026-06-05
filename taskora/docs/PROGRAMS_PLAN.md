@@ -231,3 +231,9 @@ attachment cap/MIME list).
   `_task_signals`/`_derive_initiative_health`; no schema change). FE `InitiativeCard` gained a health
   dot + segmented completion mini-bar + count chips. `test_initiative_stats.py` (6); suite 368 green;
   deployed. **Remaining order: P5 → P4 → D5 → P6.**
+- 2026-06-05 — **P5** (accountability + per-site) ✅ PR #36. `GET /programs/{id}/accountability` →
+  `owners` (per task primary-stakeholder: total/open/overdue/done + completion%, ranked) + `sites`
+  (per building/client via `task_entities.per_entity_status`, overdue from per_entity_end_date→task
+  due fallback, names from buildings/clients). No schema change. FE `ProgramAccountability` section
+  (Owner load | By site). `test_program_accountability.py` (4); suite 372 green; deployed.
+  **Remaining order: P4 → D5 → P6.**
