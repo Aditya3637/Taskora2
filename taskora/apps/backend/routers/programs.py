@@ -811,6 +811,60 @@ def get_program_risks(
     return {"program_id": program_id, **program_risk(sb, program, today)}
 
 
+@router.get("/{program_id}/initiative-stats")
+def get_initiative_stats(
+    program_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """D1: per-initiative task rollup for the inline cards on the program page —
+    total/done/open/overdue/blocked counts, completion % (done of active), the
+    derived health dot, and staleness. One query per table; visible to any
+    member of the program's business."""
+    program = _get_program_or_404(sb, program_id)
+    require_member(sb, program["business_id"], user["id"])
+    today = date.today()
+
+    initiatives = (
+        sb.table("initiatives")
+        .select("id, name, status, start_date, target_end_date")
+        .eq("program_id", program_id).neq("status", "cancelled")
+        .execute().data
+    )
+    init_ids = [i["id"] for i in initiatives]
+    tasks_by_init: dict = {}
+    if init_ids:
+        rows = (
+            sb.table("tasks")
+            .select("id, status, due_date, updated_at, initiative_id")
+            .in_("initiative_id", init_ids).execute().data
+        )
+        for t in rows:
+            tasks_by_init.setdefault(t.get("initiative_id"), []).append(t)
+
+    done_states = {"done", "completed"}
+    out: list = []
+    for i in initiatives:
+        itasks = tasks_by_init.get(i["id"], [])
+        done = sum(1 for t in itasks if t.get("status") in done_states)
+        open_count, overdue, blocked, days_stale = _task_signals(itasks, today)
+        active = done + open_count  # the denominator that ignores cancelled/archived
+        out.append({
+            "id": i["id"],
+            "name": i.get("name"),
+            "status": i.get("status"),
+            "health": _derive_initiative_health(i, today),
+            "total_tasks": len(itasks),
+            "done_tasks": done,
+            "open_tasks": open_count,
+            "overdue_tasks": overdue,
+            "blocked_tasks": blocked,
+            "days_stale": days_stale,
+            "completion_pct": round(done / active * 100) if active else None,
+        })
+    return {"stats": out}
+
+
 @router.get("/{program_id}/gantt")
 def get_program_gantt(
     program_id: str,

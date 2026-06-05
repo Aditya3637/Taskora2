@@ -65,6 +65,19 @@ type Initiative = {
   owner_id?: string | null;
 };
 
+// D1: inline per-initiative task rollup (GET /programs/{id}/initiative-stats).
+type InitiativeStats = {
+  id: string;
+  health: string;
+  total_tasks: number;
+  done_tasks: number;
+  open_tasks: number;
+  overdue_tasks: number;
+  blocked_tasks: number;
+  days_stale: number | null;
+  completion_pct: number | null;
+};
+
 type Program = {
   id: string;
   name: string;
@@ -326,7 +339,7 @@ function AddInitiativeModal({
 
 // ── Initiative Card ───────────────────────────────────────────────────────────
 
-function InitiativeCard({ init, canEdit, onEdit, onOpenDoc }: { init: Initiative; canEdit: boolean; onEdit: () => void; onOpenDoc: () => void }) {
+function InitiativeCard({ init, stats, canEdit, onEdit, onOpenDoc }: { init: Initiative; stats?: InitiativeStats; canEdit: boolean; onEdit: () => void; onOpenDoc: () => void }) {
   const [expanded, setExpanded] = useState(false);
   const [showGantt, setShowGantt] = useState(false);
   const cat = getCategoryMeta(init.impact_category);
@@ -382,7 +395,54 @@ function InitiativeCard({ init, canEdit, onEdit, onOpenDoc }: { init: Initiative
           )}
         </div>
 
-        <h3 className="font-semibold text-midnight text-base mb-2">{init.name}</h3>
+        <h3 className="flex items-center gap-2 font-semibold text-midnight text-base mb-2">
+          {stats && (
+            <span
+              title={`Health: ${stats.health.replace("_", " ")}`}
+              className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${RAG_DOT[stats.health] ?? "bg-gray-300"}`}
+            />
+          )}
+          <span className="min-w-0">{init.name}</span>
+        </h3>
+
+        {/* D1: inline task rollup — completion bar + counts */}
+        {stats && (
+          <div className="mb-3">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] font-medium text-steel">
+                {stats.completion_pct == null ? "No tasks yet" : `${stats.completion_pct}% complete`}
+              </span>
+              {stats.completion_pct != null && (
+                <span className="text-[11px] text-steel/60">
+                  {stats.done_tasks}/{stats.done_tasks + stats.open_tasks} done
+                </span>
+              )}
+            </div>
+            {(() => {
+              const denom = stats.done_tasks + stats.open_tasks;
+              if (!denom) return <div className="h-1.5 rounded-full bg-pebble" />;
+              const pct = (n: number) => `${(n / denom) * 100}%`;
+              const inProgress = Math.max(0, stats.open_tasks - stats.overdue_tasks);
+              return (
+                <div className="h-1.5 rounded-full bg-pebble overflow-hidden flex">
+                  <div className="h-full bg-emerald-500" style={{ width: pct(stats.done_tasks) }} />
+                  <div className="h-full bg-ocean" style={{ width: pct(inProgress) }} />
+                  <div className="h-full bg-red-500" style={{ width: pct(stats.overdue_tasks) }} />
+                </div>
+              );
+            })()}
+            {stats.total_tasks > 0 && (
+              <div className="flex items-center gap-3 mt-1.5 text-[11px] text-steel">
+                <span>{stats.open_tasks} open</span>
+                {stats.overdue_tasks > 0 && <span className="text-red-600 font-medium">{stats.overdue_tasks} overdue</span>}
+                {stats.blocked_tasks > 0 && <span className="text-amber-600 font-medium">{stats.blocked_tasks} blocked</span>}
+                {stats.days_stale != null && stats.days_stale >= 14 && (
+                  <span className="text-steel/60 ml-auto">{stats.days_stale}d stale</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {init.primary_stakeholder_name && (
           <div className="flex items-center gap-1.5 mb-2">
@@ -672,6 +732,7 @@ export default function ProgramDetailPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [editInit, setEditInit] = useState<Initiative | null>(null);
   const [docInit, setDocInit] = useState<Initiative | null>(null);
+  const [statsById, setStatsById] = useState<Record<string, InitiativeStats>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -713,6 +774,17 @@ export default function ProgramDetailPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // D1: per-initiative task stats for the inline cards (best-effort).
+  useEffect(() => {
+    apiFetch(`/api/v1/programs/${programId}/initiative-stats`)
+      .then((r: { stats?: InitiativeStats[] }) => {
+        const map: Record<string, InitiativeStats> = {};
+        for (const s of r?.stats ?? []) map[s.id] = s;
+        setStatsById(map);
+      })
+      .catch(() => {});
+  }, [programId]);
 
   if (loading) {
     return (
@@ -804,7 +876,7 @@ export default function ProgramDetailPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {initiatives.map((init) => (
-            <InitiativeCard key={init.id} init={init} canEdit={canEdit} onEdit={() => setEditInit(init)} onOpenDoc={() => setDocInit(init)} />
+            <InitiativeCard key={init.id} init={init} stats={statsById[init.id]} canEdit={canEdit} onEdit={() => setEditInit(init)} onOpenDoc={() => setDocInit(init)} />
           ))}
         </div>
       )}
