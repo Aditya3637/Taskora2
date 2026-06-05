@@ -34,6 +34,7 @@ export function WorkDocPanel({
   const [backlinks, setBacklinks] = useState<Backlink[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "readonly">("idle");
+  const [promoteMsg, setPromoteMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load the initiative's first work doc (newest), if any.
@@ -101,6 +102,19 @@ export function WorkDocPanel({
 
   useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
 
+  // D5: promote selected text (or the current line) into a task on this initiative.
+  const promoteToTask = useCallback(async (text: string) => {
+    try {
+      const t = await apiFetch(`/api/v1/initiatives/${initiativeId}/promote-task`, {
+        method: "POST", body: JSON.stringify({ title: text }),
+      });
+      setPromoteMsg({ ok: true, text: `Added task: “${t.title}”` });
+    } catch (e: any) {
+      setPromoteMsg({ ok: false, text: e?.status === 403 ? "You can't add tasks here." : "Couldn't add the task." });
+    }
+    setTimeout(() => setPromoteMsg(null), 3000);
+  }, [initiativeId]);
+
   const editable = doc?.can_write !== false;
 
   return (
@@ -163,11 +177,19 @@ export function WorkDocPanel({
                 className="w-full text-xl font-display font-semibold text-fg bg-transparent outline-none mb-2 disabled:opacity-100"
                 placeholder="Untitled"
               />
+              {promoteMsg && (
+                <div className={`mb-2 text-xs rounded-lg px-3 py-2 ${
+                  promoteMsg.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-600"
+                }`}>
+                  {promoteMsg.text}
+                </div>
+              )}
               <WorkDocEditor
                 key={doc.id}
                 value={doc.body}
                 editable={editable}
                 onChange={(json) => queueSave({ body: json })}
+                onPromote={editable ? promoteToTask : undefined}
               />
             </>
           )}

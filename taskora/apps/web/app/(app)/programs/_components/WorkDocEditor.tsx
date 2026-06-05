@@ -4,7 +4,7 @@ import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import Mention from "@tiptap/extension-mention";
 import { useEffect } from "react";
-import { Bold, Italic, Heading1, Heading2, List, ListOrdered, Quote, Code } from "lucide-react";
+import { Bold, Italic, Heading1, Heading2, List, ListOrdered, Quote, Code, ListPlus } from "lucide-react";
 import { mentionSuggestion } from "./mentionSuggestion";
 
 /**
@@ -17,10 +17,13 @@ export function WorkDocEditor({
   value,
   editable,
   onChange,
+  onPromote,
 }: {
   value: unknown;
   editable: boolean;
   onChange: (json: unknown) => void;
+  // D5: promote the current selection (or current line) to a task.
+  onPromote?: (text: string) => void;
 }) {
   const editor = useEditor({
     extensions: [
@@ -53,13 +56,24 @@ export function WorkDocEditor({
 
   return (
     <div className="workdoc-content">
-      {editable && editor && <Toolbar editor={editor} />}
+      {editable && editor && <Toolbar editor={editor} onPromote={onPromote} />}
       <EditorContent editor={editor} />
     </div>
   );
 }
 
-function Toolbar({ editor }: { editor: Editor }) {
+function Toolbar({ editor, onPromote }: { editor: Editor; onPromote?: (text: string) => void }) {
+  // D5: promote selected text — or, if nothing is selected, the current line —
+  // into a task under this initiative.
+  const promote = () => {
+    const { state } = editor;
+    const { from, to, empty } = state.selection;
+    const text = empty
+      ? (state.selection.$from.parent.textContent || "").trim()
+      : state.doc.textBetween(from, to, " ").trim();
+    if (text && onPromote) onPromote(text);
+  };
+
   const Btn = ({
     on,
     active,
@@ -113,6 +127,20 @@ function Toolbar({ editor }: { editor: Editor }) {
       <Btn label="Code block" active={editor.isActive("codeBlock")} on={() => editor.chain().focus().toggleCodeBlock().run()}>
         <Code className="w-4 h-4" />
       </Btn>
+      {onPromote && (
+        <>
+          <span className="w-px h-5 bg-pebble mx-1" />
+          <button
+            type="button"
+            title="Add selection (or current line) as a task"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={promote}
+            className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-fg-muted hover:bg-mist hover:text-ocean transition-colors"
+          >
+            <ListPlus className="w-4 h-4" /> Task
+          </button>
+        </>
+      )}
     </div>
   );
 }
