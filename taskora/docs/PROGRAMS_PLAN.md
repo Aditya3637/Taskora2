@@ -248,3 +248,13 @@ attachment cap/MIME list).
   promoter = owner, status todo; no schema change). FE `WorkDocEditor` "Task" toolbar button promotes
   the selection or current line (no tippy/BubbleMenu dep); `WorkDocPanel` wires it + result chip.
   `test_promote_task.py` (10); suite 390 green; deployed. **Remaining order: P6 (capstone).**
+- 2026-06-05 — **P6** (initiative dependencies / critical path) ✅ PR #39, **migration 051**
+  (`initiatives.depends_on uuid[]` + gin index, mirroring tasks.depends_on; applied via MCP). M2
+  already shipped the portfolio-ranked-by-P3 half, so P6 = the dependencies half. `GET
+  /programs/{id}/dependencies` (per-initiative prereqs + blocked flag + reverse blocks + critical-path
+  `stage`) + `PUT /programs/{id}/dependencies` (set prereqs; in-program only; self/cycle rejected;
+  owner/admin/lead per N3). FE `ProgramDependencies` (stage groups + blocked badges + inline edge
+  editor). `test_program_dependencies.py` (8); suite 398 green; deployed.
+  **🎉 PROGRAMS_PLAN roadmap COMPLETE — P1/P2/P3/P4/P5/P6 + D0–D5 + M1/M2 all shipped.** Open future
+  threads only: D4 weekly auto-gen (needs automation engine / migration 045, deferred) and the
+  WORKSPACE_DOCS_PLAN §8 uploads (Supabase Storage bucket + doc_attachments).
