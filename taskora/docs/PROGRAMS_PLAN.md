@@ -237,3 +237,9 @@ attachment cap/MIME list).
   due fallback, names from buildings/clients). No schema change. FE `ProgramAccountability` section
   (Owner load | By site). `test_program_accountability.py` (4); suite 372 green; deployed.
   **Remaining order: P4 → D5 → P6.**
+- 2026-06-05 — **P4** (milestones on timeline) ✅ PR #37, **migration 050** (extend
+  `milestones.parent_type` CHECK to allow 'program' + add `completed_at`; both additive, applied via
+  MCP). CRUD under `/programs/{id}/milestones` (member list w/ derived done/overdue/upcoming;
+  create/patch/delete owner/admin/lead per N3; cross-program 404). FE `ProgramMilestones` = timeline
+  track + editable list (mark-done/delete/add). `test_program_milestones.py` (8); suite 380 green;
+  deployed. **Remaining order: D5 → P6.**
