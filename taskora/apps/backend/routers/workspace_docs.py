@@ -428,3 +428,55 @@ def mentions_search(
     for u in people[:limit]:
         results.append({"type": "user", "id": f"user:{u['id']}", "label": u.get("name") or "", "sub": "Person"})
     return {"results": results}
+
+
+# ── D5: doc-driven creation — promote a block/selection to a task ────────────
+
+class PromoteIn(BaseModel):
+    title: str
+
+    @field_validator("title")
+    @classmethod
+    def _title(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("title is required")
+        return v[:120]  # tasks.title CHECK is <= 120
+
+
+@router.post("/initiatives/{initiative_id}/promote-task", status_code=201)
+def promote_doc_block_to_task(
+    initiative_id: str,
+    body: PromoteIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Promote a line/selection from the initiative's work doc into a real task
+    under that initiative. Gated by the doc WRITE set (anyone who can edit the
+    doc can promote). The promoter becomes the task's primary stakeholder — they
+    can reassign later. Mirrors the create_task insert (+ primary stakeholder
+    row) so the task behaves like any other."""
+    init = _initiative_or_404(sb, initiative_id)
+    _gate(sb, init, user["id"], write=True)
+    uid = user["id"]
+
+    rows = sb.table("tasks").insert({
+        "title": body.title,
+        "initiative_id": initiative_id,
+        "primary_stakeholder_id": uid,
+        "created_by": uid,
+        "priority": "medium",
+        "status": "todo",
+        "date_mode": "uniform",
+        "entity_inheritance": "inherited",
+    }).execute().data
+    if not rows:
+        raise HTTPException(status_code=500, detail="Failed to create task")
+    task = rows[0]
+    sb.table("task_stakeholders").insert({
+        "task_id": task["id"], "user_id": uid, "role": "primary",
+    }).execute()
+    return {
+        "id": task["id"], "title": task["title"],
+        "status": task["status"], "initiative_id": initiative_id,
+    }
