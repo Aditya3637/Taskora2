@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ListChecks, X, Plus } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import type { Assignment, ChecklistItem } from "../_lib/types";
 
@@ -108,36 +109,30 @@ export default function Checklist({ onChange }: { onChange?: () => void }) {
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between mb-2">
-        <h2 className="text-xs font-bold tracking-wide text-steel uppercase">Checklist</h2>
+        <h2 className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-fg-subtle uppercase">
+          <ListChecks className="w-3.5 h-3.5 text-ocean" /> Checklist
+        </h2>
       </div>
 
-      {/* Tab toggle */}
-      <div className="flex gap-0 mb-2 text-xs">
+      {/* Tab toggle — segmented control */}
+      <div className="flex gap-0.5 mb-3 p-0.5 bg-mist rounded-lg text-xs">
         <button
           onClick={() => setTab("mine")}
-          className={`px-3 py-1.5 rounded-l border ${
-            tab === "mine"
-              ? "bg-midnight text-white border-midnight"
-              : "bg-white text-steel border-pebble hover:text-midnight"
+          className={`flex-1 px-3 py-1.5 rounded-md font-medium transition-colors ${
+            tab === "mine" ? "bg-white text-fg shadow-sm" : "text-fg-muted hover:text-fg"
           }`}
         >
           My checklist
         </button>
         <button
           onClick={() => setTab("assigned")}
-          className={`px-3 py-1.5 rounded-r border-y border-r flex items-center gap-1.5 ${
-            tab === "assigned"
-              ? "bg-midnight text-white border-midnight"
-              : "bg-white text-steel border-pebble hover:text-midnight"
+          className={`flex-1 px-3 py-1.5 rounded-md font-medium transition-colors flex items-center justify-center gap-1.5 ${
+            tab === "assigned" ? "bg-white text-fg shadow-sm" : "text-fg-muted hover:text-fg"
           }`}
         >
-          Assigned by others
+          Assigned
           {assignedCount > 0 && (
-            <span
-              className={`inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold ${
-                tab === "assigned" ? "bg-white text-midnight" : "bg-taskora-red text-white"
-              }`}
-            >
+            <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold bg-taskora-red text-white">
               {assignedCount}
             </span>
           )}
@@ -150,17 +145,17 @@ export default function Checklist({ onChange }: { onChange?: () => void }) {
       {!loading && tab === "mine" && (
         <div className="flex flex-col gap-1 overflow-y-auto flex-1">
           {mine.length === 0 && (
-            <p className="text-xs text-steel/60 italic mb-2">
+            <p className="text-xs text-fg-subtle mb-2">
               No items yet. Add one below — or accept tasks from the other tab.
             </p>
           )}
           {mine.map((item) => (
-            <div key={item.id} className="flex items-start gap-2 group py-1 px-1 hover:bg-pebble/40 rounded">
+            <div key={item.id} className="flex items-start gap-2 group py-1 px-1.5 -mx-1.5 hover:bg-mist rounded-md transition-colors">
               <input
                 type="checkbox"
                 checked={item.status === "done"}
                 onChange={() => toggleDone(item)}
-                className="mt-1 accent-taskora-red flex-shrink-0"
+                className="mt-1 w-4 h-4 accent-ocean flex-shrink-0 cursor-pointer"
               />
               {editingId === item.id ? (
                 <input
@@ -173,14 +168,14 @@ export default function Checklist({ onChange }: { onChange?: () => void }) {
                     if (e.key === "Enter") { e.preventDefault(); saveEdit(); }
                     else if (e.key === "Escape") { e.preventDefault(); setEditingId(null); }
                   }}
-                  className="flex-1 text-sm bg-transparent border-b border-taskora-red focus:outline-none"
+                  className="flex-1 text-sm bg-transparent border-b border-ocean focus:outline-none"
                 />
               ) : (
                 <span
                   onClick={() => item.status !== "done" && startEdit(item)}
                   title={item.status === "done" ? "" : "Click to edit"}
                   className={`flex-1 text-sm cursor-text ${
-                    item.status === "done" ? "line-through text-steel/60 cursor-default" : "text-midnight"
+                    item.status === "done" ? "line-through text-fg-subtle cursor-default" : "text-fg"
                   }`}
                 >
                   {item.content}
@@ -188,14 +183,15 @@ export default function Checklist({ onChange }: { onChange?: () => void }) {
               )}
               <button
                 onClick={() => deleteItem(item.id)}
-                className="opacity-0 group-hover:opacity-100 text-steel/50 hover:text-red-500 text-xs"
+                className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-fg-subtle hover:text-red-500 hover:bg-white"
                 aria-label="Delete"
               >
-                ×
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
           ))}
-          <div className="mt-2 flex gap-2">
+          <div className="mt-2 relative">
+            <Plus className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-subtle pointer-events-none" />
             <input
               ref={addRef}
               type="text"
@@ -205,8 +201,8 @@ export default function Checklist({ onChange }: { onChange?: () => void }) {
                 if (e.key === "Enter") addItem();
                 else if (e.key === "Escape") setNewItem("");
               }}
-              placeholder="+ Add an item — press Enter"
-              className="flex-1 text-sm bg-transparent border-b border-pebble focus:border-taskora-red focus:outline-none py-1"
+              placeholder="Add an item — press Enter"
+              className="w-full text-sm bg-white border border-pebble rounded-lg pl-8 pr-3 py-1.5 placeholder:text-fg-subtle focus:outline-none focus:ring-2 focus:ring-ocean/30 focus:border-ocean transition-shadow"
             />
           </div>
         </div>
@@ -222,21 +218,21 @@ export default function Checklist({ onChange }: { onChange?: () => void }) {
             </p>
           )}
           {assigned.map((a) => (
-            <div key={a.id} className="border border-pebble rounded p-2 bg-white">
-              <p className="text-sm text-midnight">{a.content}</p>
-              <p className="text-[11px] text-steel/70 mt-1">
-                From <span className="font-medium">{a.sender_name || "someone"}</span>
+            <div key={a.id} className="border border-pebble rounded-xl p-3 bg-white shadow-sm">
+              <p className="text-sm text-fg">{a.content}</p>
+              <p className="text-[11px] text-fg-subtle mt-1">
+                From <span className="font-medium text-fg-muted">{a.sender_name || "someone"}</span>
               </p>
-              <div className="flex gap-2 mt-2">
+              <div className="flex gap-2 mt-2.5">
                 <button
                   onClick={() => accept(a)}
-                  className="text-xs px-2 py-1 bg-taskora-red text-white rounded hover:opacity-90"
+                  className="text-xs px-2.5 py-1 bg-ocean text-white rounded-lg hover:opacity-90 font-medium"
                 >
                   Accept
                 </button>
                 <button
                   onClick={() => decline(a)}
-                  className="text-xs px-2 py-1 border border-pebble text-steel rounded hover:bg-pebble/40"
+                  className="text-xs px-2.5 py-1 border border-pebble text-fg-muted rounded-lg hover:bg-mist"
                 >
                   Decline
                 </button>

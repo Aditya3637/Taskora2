@@ -1,5 +1,9 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
+import {
+  PanelLeftClose, Search, X, Plus, Trash2, FileText, FolderClosed,
+  ChevronRight, ChevronDown, CheckSquare, Square,
+} from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import type { Page, Project } from "../_lib/types";
 
@@ -137,40 +141,38 @@ export default function NotebookNav({
   const hasResults = results.pages.length > 0 || results.checklist.length > 0;
 
   return (
-    <aside className="w-60 flex-shrink-0 bg-pebble/30 border-r border-pebble flex flex-col overflow-hidden">
+    <aside className="w-60 flex-shrink-0 bg-mist/30 border-r border-pebble flex flex-col overflow-hidden">
       {/* Header */}
-      <div className="px-3 pt-3 pb-2 border-b border-pebble flex-shrink-0">
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="text-xs font-bold tracking-wide text-steel uppercase">Notebook</h2>
+      <div className="px-3 pt-3 pb-2.5 flex-shrink-0">
+        <div className="flex items-center justify-between mb-2.5">
+          <h2 className="text-[11px] font-semibold tracking-wider text-fg-subtle uppercase">Notebook</h2>
           <button
             onClick={onCollapse}
-            className="text-steel/60 hover:text-midnight text-sm leading-none"
+            className="p-1 rounded-md text-fg-subtle hover:text-fg hover:bg-mist transition-colors"
             title="Collapse sidebar"
             aria-label="Collapse sidebar"
           >
-            ◀
+            <PanelLeftClose className="w-4 h-4" />
           </button>
         </div>
 
         {/* Search */}
         <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-subtle pointer-events-none" />
           <input
             type="text"
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search pages…"
-            className="w-full text-sm bg-white border border-pebble rounded px-2 py-1 pl-7 focus:outline-none focus:border-taskora-red"
+            className="w-full text-sm bg-white border border-pebble rounded-lg pl-8 pr-7 py-1.5 placeholder:text-fg-subtle focus:outline-none focus:ring-2 focus:ring-ocean/30 focus:border-ocean transition-shadow"
           />
-          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-steel/50 text-xs">
-            ⌕
-          </span>
           {q && (
             <button
               onClick={() => setQ("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-steel/60 hover:text-midnight text-xs"
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-fg-subtle hover:text-fg hover:bg-mist"
               aria-label="Clear search"
             >
-              ×
+              <X className="w-3.5 h-3.5" />
             </button>
           )}
         </div>
@@ -179,17 +181,17 @@ export default function NotebookNav({
         <div className="flex items-center gap-1.5 mt-2">
           <button
             onClick={() => onCreatePage(null)}
-            className="flex-1 text-xs bg-midnight text-white px-2 py-1.5 rounded hover:opacity-90 font-medium"
+            className="flex-1 flex items-center justify-center gap-1 text-xs bg-ocean text-white px-2 py-1.5 rounded-lg hover:opacity-90 font-medium transition-opacity"
             title="New page (creates an unfiled page)"
           >
-            + New page
+            <Plus className="w-3.5 h-3.5" /> New page
           </button>
           <button
             onClick={onCreateProject}
-            className="text-xs border border-pebble text-steel px-2 py-1.5 rounded hover:text-midnight hover:bg-white"
+            className="flex items-center gap-1 text-xs border border-pebble text-fg-muted px-2 py-1.5 rounded-lg hover:text-fg hover:bg-white transition-colors"
             title="New project (folder)"
           >
-            + Project
+            <Plus className="w-3.5 h-3.5" /> Project
           </button>
         </div>
       </div>
@@ -230,13 +232,13 @@ export default function NotebookNav({
                     {results.checklist.map((c) => (
                       <div
                         key={c.id}
-                        className="flex items-start gap-1.5 px-2 py-1 text-sm text-steel"
+                        className="flex items-start gap-1.5 px-2 py-1 text-sm text-fg-muted"
                       >
-                        <span aria-hidden className="flex-shrink-0 mt-0.5 text-xs">
-                          {c.status === "done" ? "☑" : "☐"}
-                        </span>
+                        {c.status === "done"
+                          ? <CheckSquare className="w-3.5 h-3.5 mt-0.5 shrink-0 text-ocean" />
+                          : <Square className="w-3.5 h-3.5 mt-0.5 shrink-0 text-fg-subtle" />}
                         <span
-                          className={`truncate ${c.status === "done" ? "line-through text-steel/50" : ""}`}
+                          className={`truncate ${c.status === "done" ? "line-through text-fg-subtle" : ""}`}
                         >
                           {c.content}
                         </span>
@@ -272,26 +274,27 @@ export default function NotebookNav({
                   const childPages = pagesByProject.get(proj.id) ?? [];
                   return (
                     <div key={proj.id}>
-                      <div className="group flex items-center gap-0.5 rounded hover:bg-white">
+                      <div className="group flex items-center gap-0.5 rounded-md hover:bg-mist px-1">
                         <button
                           onClick={() => toggleExpand(proj.id)}
-                          className="w-5 h-6 inline-flex items-center justify-center text-steel/60 text-xs"
+                          className="w-4 h-6 inline-flex items-center justify-center text-fg-subtle"
                           aria-label={isOpen ? "Collapse" : "Expand"}
                         >
-                          {isOpen ? "▾" : "▸"}
+                          {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
                         </button>
+                        <FolderClosed className="w-3.5 h-3.5 text-fg-subtle shrink-0" />
                         <button
                           onClick={() => toggleExpand(proj.id)}
-                          className="flex-1 text-left text-sm text-midnight font-medium truncate py-1"
+                          className="flex-1 text-left text-sm text-fg font-medium truncate py-1 pl-1"
                         >
                           {proj.name}
                         </button>
                         <button
                           onClick={() => onCreatePage(proj.id)}
-                          className="opacity-0 group-hover:opacity-100 text-steel/60 hover:text-midnight text-xs px-1.5 py-0.5"
+                          className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-fg-subtle hover:text-ocean hover:bg-white"
                           title="Add page to this project"
                         >
-                          +
+                          <Plus className="w-3.5 h-3.5" />
                         </button>
                       </div>
                       {isOpen && (
@@ -360,10 +363,10 @@ export default function NotebookNav({
       <div className="border-t border-pebble px-2 py-1.5 flex-shrink-0">
         <button
           onClick={onOpenTrash}
-          className="w-full text-left flex items-center gap-1.5 px-2 py-1 rounded text-sm text-steel hover:text-midnight hover:bg-white"
+          className="w-full text-left flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-fg-muted hover:text-fg hover:bg-mist transition-colors"
           title="Recently deleted pages"
         >
-          <span aria-hidden className="w-4 text-center flex-shrink-0">🗑</span>
+          <Trash2 className="w-3.5 h-3.5 shrink-0" />
           <span className="truncate">Trash</span>
         </button>
       </div>
@@ -373,7 +376,7 @@ export default function NotebookNav({
 
 function SectionHeader({ label }: { label: string }) {
   return (
-    <div className="px-2 py-1 text-[10px] font-bold tracking-wider text-steel/60 uppercase">
+    <div className="px-2 pt-2 pb-1 text-[10px] font-semibold tracking-wider text-fg-subtle/80 uppercase">
       {label}
     </div>
   );
@@ -393,22 +396,16 @@ function PageItem({
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left flex items-center gap-1.5 px-2 py-1 rounded text-sm truncate ${
-        active
-          ? "bg-midnight text-white"
-          : "text-midnight hover:bg-white"
+      className={`w-full text-left flex items-center gap-2 px-2 py-1.5 rounded-md text-sm truncate transition-colors ${
+        active ? "bg-ocean/10 text-ocean font-medium" : "text-fg-muted hover:bg-mist hover:text-fg"
       }`}
     >
-      <span aria-hidden="true" className="w-4 text-center text-sm flex-shrink-0">
-        {page.icon || (active ? "📄" : <span className="text-steel/40">·</span>)}
+      <span aria-hidden="true" className="w-4 flex items-center justify-center text-sm flex-shrink-0">
+        {page.icon || <FileText className={`w-3.5 h-3.5 ${active ? "text-ocean" : "text-fg-subtle"}`} />}
       </span>
       <span className="truncate flex-1">{page.title || "Untitled"}</span>
       {rightLabel && (
-        <span
-          className={`text-[10px] uppercase tracking-wide flex-shrink-0 ${
-            active ? "text-white/70" : "text-steel/50"
-          }`}
-        >
+        <span className={`text-[10px] uppercase tracking-wide flex-shrink-0 ${active ? "text-ocean/70" : "text-fg-subtle"}`}>
           {rightLabel}
         </span>
       )}
@@ -428,33 +425,25 @@ function SearchResultItem({
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left flex flex-col gap-0.5 px-2 py-1.5 rounded ${
-        active ? "bg-midnight text-white" : "hover:bg-white"
+      className={`w-full text-left flex flex-col gap-0.5 px-2 py-1.5 rounded-md transition-colors ${
+        active ? "bg-ocean/10" : "hover:bg-mist"
       }`}
     >
-      <span className="flex items-center gap-1.5 min-w-0">
-        <span aria-hidden className="w-4 text-center text-sm flex-shrink-0">
-          {result.icon || "📄"}
+      <span className="flex items-center gap-2 min-w-0">
+        <span aria-hidden className="w-4 flex items-center justify-center text-sm flex-shrink-0">
+          {result.icon || <FileText className={`w-3.5 h-3.5 ${active ? "text-ocean" : "text-fg-subtle"}`} />}
         </span>
-        <span className={`truncate flex-1 text-sm ${active ? "" : "text-midnight"}`}>
+        <span className={`truncate flex-1 text-sm ${active ? "text-ocean font-medium" : "text-fg"}`}>
           {result.title || "Untitled"}
         </span>
         {result.shared && (
-          <span
-            className={`text-[10px] uppercase tracking-wide flex-shrink-0 ${
-              active ? "text-white/70" : "text-steel/50"
-            }`}
-          >
+          <span className={`text-[10px] uppercase tracking-wide flex-shrink-0 ${active ? "text-ocean/70" : "text-fg-subtle"}`}>
             shared
           </span>
         )}
       </span>
       {result.snippet && (
-        <span
-          className={`text-[11px] leading-snug line-clamp-2 pl-6 ${
-            active ? "text-white/70" : "text-steel/70"
-          }`}
-        >
+        <span className={`text-[11px] leading-snug line-clamp-2 pl-6 ${active ? "text-ocean/80" : "text-fg-subtle"}`}>
           {result.snippet}
         </span>
       )}
