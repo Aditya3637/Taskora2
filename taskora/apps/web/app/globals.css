@@ -222,3 +222,74 @@ input, textarea, select, button { font: inherit; }
   box-shadow: 0 10px 30px -10px rgb(0 0 0 / 0.25);
   padding: 0.25rem 0;
 }
+
+/* ── Editor pass: tables, to-do lists, callouts, toggles (all scoped to the
+   workspace-doc surface so they never leak into the rest of the app). ───── */
+
+/* Tables */
+.workdoc-content :where(table) {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.7rem 0;
+  table-layout: fixed;
+  overflow: hidden;
+}
+.workdoc-content :where(td, th) {
+  border: 1px solid rgb(var(--line));
+  padding: 0.4rem 0.6rem;
+  vertical-align: top;
+  position: relative;
+  min-width: 3rem;
+}
+.workdoc-content :where(th) {
+  background: rgb(var(--muted));
+  font-weight: 600;
+  text-align: left;
+}
+.workdoc-content :where(.selectedCell):after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgb(15 52 96 / 0.08);
+  pointer-events: none;
+}
+.workdoc-content .column-resize-handle {
+  position: absolute;
+  right: -2px; top: 0; bottom: 0;
+  width: 4px;
+  background: #0F3460;
+  cursor: col-resize;
+}
+
+/* To-do lists */
+.workdoc-content :where(ul[data-type="taskList"]) { list-style: none; padding-left: 0.2rem; margin: 0.4rem 0; }
+.workdoc-content :where(ul[data-type="taskList"] li) { display: flex; align-items: flex-start; gap: 0.5rem; margin: 0.2rem 0; }
+.workdoc-content :where(ul[data-type="taskList"] li > label) { margin-top: 0.2rem; user-select: none; }
+.workdoc-content :where(ul[data-type="taskList"] li > div) { flex: 1 1 auto; min-width: 0; }
+.workdoc-content :where(ul[data-type="taskList"] input[type="checkbox"]) { width: 1rem; height: 1rem; accent-color: #0F3460; cursor: pointer; }
+.workdoc-content :where(ul[data-type="taskList"] li[data-checked="true"] > div) { color: rgb(var(--fg-muted)); text-decoration: line-through; }
+
+/* Callout */
+.workdoc-content :where(.wd-callout) {
+  display: flex;
+  gap: 0.6rem;
+  background: rgb(15 52 96 / 0.05);
+  border: 1px solid rgb(15 52 96 / 0.12);
+  border-radius: 10px;
+  padding: 0.7rem 0.9rem;
+  margin: 0.6rem 0;
+}
+.workdoc-content :where(.wd-callout):before { content: "💡"; line-height: 1.6; }
+.workdoc-content :where(.wd-callout > *) { flex: 1 1 auto; min-width: 0; margin: 0.1rem 0; }
+
+/* Toggle (details/summary) */
+.workdoc-content :where(details) {
+  border: 1px solid rgb(var(--line));
+  border-radius: 8px;
+  padding: 0.4rem 0.7rem;
+  margin: 0.5rem 0;
+}
+.workdoc-content :where(details > summary) { cursor: pointer; font-weight: 500; list-style: none; }
+.workdoc-content :where(details > summary)::-webkit-details-marker { display: none; }
+.workdoc-content :where(details > summary):before { content: "▸"; display: inline-block; margin-right: 0.4rem; transition: transform 0.15s; }
+.workdoc-content :where(details[open] > summary):before { transform: rotate(90deg); }
