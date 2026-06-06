@@ -1,6 +1,6 @@
 import { ReactRenderer } from "@tiptap/react";
 import { apiFetch } from "@/lib/api";
-import { MentionList, type MentionItem } from "./MentionList";
+import { MentionList, type MentionItem } from "@/components/richdoc/MentionList";
 
 /**
  * TipTap suggestion config for the @ menu. items() hits our visibility-scoped
