@@ -13,6 +13,7 @@ import Details from "@tiptap/extension-details";
 import DetailsSummary from "@tiptap/extension-details-summary";
 import DetailsContent from "@tiptap/extension-details-content";
 import ListKeymap from "@tiptap/extension-list-keymap";
+import Image from "@tiptap/extension-image";
 import { useEffect, useRef } from "react";
 import {
   Bold, Italic, Heading1, Heading2, List, ListOrdered, ListChecks,
@@ -97,6 +98,9 @@ export function RichDocEditor({
       // you can't exit a checklist except by toggling it off from the toolbar.
       ListKeymap,
       AttachmentNode,
+      // Plain image node (data-URL friendly) — used by the Notebook's inline
+      // images. Programs uploads go through AttachmentNode instead.
+      Image.configure({ allowBase64: true, HTMLAttributes: { class: "wd-image" } }),
       CalloutNode,
       Table.configure({ resizable: true }),
       TableRow,

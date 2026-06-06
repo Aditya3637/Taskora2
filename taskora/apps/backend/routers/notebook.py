@@ -56,6 +56,9 @@ class PageUpdate(BaseModel):
     project_id: Optional[str] = None
     title: Optional[str] = Field(default=None, min_length=1, max_length=200)
     body: Optional[list] = None
+    # N-2: TipTap/ProseMirror JSON + the format flag ('blocks' | 'pm').
+    body_doc: Optional[dict] = None
+    format: Optional[str] = None
     sort_order: Optional[int] = None
     icon: Optional[str] = Field(default=None, max_length=8)
 
@@ -375,6 +378,10 @@ def update_page(
         patch["title"] = body.title.strip()[:200]
     if body.body is not None:
         patch["body"] = body.body
+    if body.body_doc is not None:
+        patch["body_doc"] = body.body_doc
+    if body.format is not None:
+        patch["format"] = body.format
     if body.sort_order is not None:
         patch["sort_order"] = body.sort_order
     if "icon" in fields_set:
