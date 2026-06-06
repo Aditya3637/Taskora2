@@ -138,7 +138,7 @@ export function RichDocEditor({
             HTMLAttributes: { class: "wd-mention" },
             // id is the "type:uuid" payload the host reconciles (e.g. entity_links).
             renderText: ({ node }: any) => `@${node.attrs.label ?? node.attrs.id}`,
-            renderHTML: ({ node }: any) => ["span", { class: "wd-mention" }, `@${node.attrs.label ?? node.attrs.id}`],
+            renderHTML: ({ node }: any) => ["span", { class: "wd-mention", "data-mention-id": node.attrs.id }, `@${node.attrs.label ?? node.attrs.id}`],
             suggestion: mention as any,
           })]
         : []),
