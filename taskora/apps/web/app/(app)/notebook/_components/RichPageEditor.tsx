@@ -5,6 +5,7 @@ import { RichDocEditor } from "@/components/richdoc/RichDocEditor";
 import EmojiPicker from "./EmojiPicker";
 import type { Page } from "../_lib/types";
 import { blocksToProseMirror } from "../_lib/convert";
+import { compressImageToDataUrl } from "../_lib/image";
 
 /**
  * Notebook page editor on the shared TipTap surface (convergence N-2). Renders
@@ -80,6 +81,37 @@ export default function RichPageEditor({
 
   useEffect(() => () => { if (debounceRef.current) clearTimeout(debounceRef.current); }, []);
 
+  // N-3 adapters ──────────────────────────────────────────────────────────
+  // Images stay as compressed data URLs (no storage bucket).
+  const onImageUpload = useCallback(async (file: File) => {
+    try {
+      const src = await compressImageToDataUrl(file);
+      return { src, alt: file.name };
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // Promote a line → a personal checklist item (the notebook-native "task").
+  const onPromote = useCallback(async (text: string) => {
+    try {
+      await apiFetch("/api/v1/notebook/checklist", {
+        method: "POST",
+        body: JSON.stringify({ content: text, source_page_id: page.id }),
+      });
+    } catch { /* surfaced to the user via the AI card / non-blocking */ }
+  }, [page.id]);
+
+  // ✨ AI grounded in the page, billed to the caller's active workspace key.
+  const onAssist = useCallback(async (action: string, selection: string) => {
+    const bid = typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
+    if (!bid) throw { detail: "Open a workspace first to use AI." };
+    return apiFetch(`/api/v1/notebook/pages/${page.id}/ai?business_id=${bid}`, {
+      method: "POST",
+      body: JSON.stringify({ action, selection: selection || undefined }),
+    });
+  }, [page.id]);
+
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-[760px] px-6 py-6">
@@ -123,6 +155,10 @@ export default function RichPageEditor({
             value={doc}
             editable={!readOnly}
             onChange={(json) => scheduleSave({ body_doc: json })}
+            onImageUpload={readOnly ? undefined : onImageUpload}
+            onPromote={readOnly ? undefined : onPromote}
+            onAssist={readOnly ? undefined : onAssist}
+            promoteLabel="checklist item"
             placeholder="Write… type “/” for blocks, or drop an image in."
           />
         )}

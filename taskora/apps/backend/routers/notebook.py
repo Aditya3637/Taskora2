@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 from supabase import Client
 
 from auth import get_current_user
-from deps import get_supabase
+from deps import get_supabase, require_member
 
 router = APIRouter(prefix="/api/v1/notebook", tags=["notebook"])
 
@@ -390,6 +390,53 @@ def update_page(
         return page
     result = sb.table("notebook_pages").update(patch).eq("id", page_id).execute()
     return result.data[0] if result.data else page
+
+
+class PageAiIn(BaseModel):
+    action: str
+    selection: Optional[str] = None
+
+
+@router.post("/pages/{page_id}/ai")
+def page_ai_assist(
+    page_id: str,
+    body: PageAiIn,
+    business_id: str = Query(..., description="The caller's active workspace, whose AI key is used."),
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Run a ✨ action (enhance / summarize / extract_actions / draft_status) on a
+    notebook page, grounded in the page text. The personal notebook has no
+    workspace of its own, so it borrows the caller's ACTIVE workspace's AI key
+    (they must be a member). AI drafts; the client inserts. 503 if no key."""
+    from ai import doc_assist
+    from ai.doc_assist import ACTIONS
+    from ai.program_summary import resolve_config
+
+    if body.action not in ACTIONS:
+        raise HTTPException(status_code=422, detail=f"action must be one of {sorted(ACTIONS)}")
+
+    page = _page_or_404(sb, page_id)
+    if not _page_writable_by(sb, page, user["id"]):
+        raise HTTPException(status_code=403, detail="Read-only on this page")
+
+    require_member(sb, business_id, user["id"])
+    config = resolve_config(sb, business_id)
+    if not config:
+        raise HTTPException(
+            status_code=503,
+            detail="AI isn't configured for this workspace. Add a key in Workspace settings → Profile.",
+        )
+
+    content = (body.selection or "").strip() or doc_assist.flatten_doc(page.get("body_doc") or {})
+    context = {"surface": "personal notebook page", "title": page.get("title")}
+    try:
+        result = doc_assist.run_doc_assist(body.action, content, context, config)
+    except Exception:
+        raise HTTPException(status_code=502, detail="The AI provider couldn't complete the request.")
+    if result is None:
+        raise HTTPException(status_code=503, detail="AI isn't configured for this workspace.")
+    return result
 
 
 @router.delete("/pages/{page_id}", status_code=204)

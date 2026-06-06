@@ -45,10 +45,12 @@ export function AiAssist({
   editor,
   onAssist,
   onPromote,
+  promoteLabel,
 }: {
   editor: Editor;
   onAssist: (action: string, selection: string) => Promise<AiResult>;
   onPromote?: (text: string) => void;
+  promoteLabel?: string;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -195,7 +197,7 @@ export function AiAssist({
                     {onPromote && (
                       <button onClick={() => addAsTasks(result.actions.filter((_, i) => picked[i] ?? true))}
                         className="px-2.5 py-1.5 rounded-lg text-xs font-medium border border-pebble hover:border-ocean hover:text-ocean">
-                        Add as tasks
+                        Add as {promoteLabel ?? "task"}s
                       </button>
                     )}
                     <button onClick={() => insertChecklist(result.actions.filter((_, i) => picked[i] ?? true))}
