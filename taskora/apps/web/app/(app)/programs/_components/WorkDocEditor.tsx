@@ -21,6 +21,7 @@ import { mentionSuggestion } from "./mentionSuggestion";
 import { AttachmentNode } from "./AttachmentNode";
 import { CalloutNode } from "./CalloutNode";
 import { SlashCommand } from "./slashCommand";
+import { AiAssist, type AiResult } from "./AiAssist";
 
 // What WorkDocPanel.uploadAttachment resolves to after sign → upload → record.
 export type UploadedAttachment = { id: string; filename: string; mime_type: string; is_image: boolean };
@@ -40,6 +41,7 @@ export function WorkDocEditor({
   onChange,
   onPromote,
   onUpload,
+  onAssist,
 }: {
   value: unknown;
   editable: boolean;
@@ -48,6 +50,8 @@ export function WorkDocEditor({
   onPromote?: (text: string) => void;
   // §8: sign → upload → record a file; returns the recorded attachment.
   onUpload?: (file: File) => Promise<UploadedAttachment | null>;
+  // AI pass: run a ✨ action server-side and return the result.
+  onAssist?: (action: string, selection: string) => Promise<AiResult>;
 }) {
   // The paste/drop/slash handlers are configured once but need the live
   // onUpload + editor instance — reach them through refs.
@@ -142,7 +146,7 @@ export function WorkDocEditor({
           }}
         />
       )}
-      {editable && editor && <Toolbar editor={editor} onPromote={onPromote} onPickFile={onUpload ? openFilePicker : undefined} />}
+      {editable && editor && <Toolbar editor={editor} onPromote={onPromote} onPickFile={onUpload ? openFilePicker : undefined} onAssist={onAssist} />}
       <EditorContent editor={editor} />
     </div>
   );
@@ -152,10 +156,12 @@ function Toolbar({
   editor,
   onPromote,
   onPickFile,
+  onAssist,
 }: {
   editor: Editor;
   onPromote?: (text: string) => void;
   onPickFile?: () => void;
+  onAssist?: (action: string, selection: string) => Promise<AiResult>;
 }) {
   // D5: promote selected text — or, if nothing is selected, the current line —
   // into a task under this initiative.
@@ -251,6 +257,11 @@ function Toolbar({
             <ListPlus className="w-4 h-4" /> Task
           </button>
         </>
+      )}
+      {onAssist && (
+        <span className="ml-auto">
+          <AiAssist editor={editor} onAssist={onAssist} onPromote={onPromote} />
+        </span>
       )}
     </div>
   );
