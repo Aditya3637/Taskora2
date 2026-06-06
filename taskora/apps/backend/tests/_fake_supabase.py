@@ -320,12 +320,49 @@ class _Query:
         return _Result([])
 
 
+class _FakeBucket:
+    """Minimal Storage bucket proxy mirroring storage3's SyncBucketProxy for the
+    handful of methods the attachment endpoints call. Records every call on the
+    owning client so tests can assert (e.g.) that a delete reached Storage."""
+
+    def __init__(self, client: "FakeSupabase", bucket: str):
+        self._client = client
+        self._bucket = bucket
+
+    def create_signed_upload_url(self, path):
+        self._client.storage_calls.append(("sign_upload", self._bucket, path))
+        return {"signed_url": f"https://fake.storage/upload/{path}?token=upload-tok",
+                "token": "upload-tok", "path": path}
+
+    def create_signed_url(self, path, expires_in=3600):
+        self._client.storage_calls.append(("sign_download", self._bucket, path))
+        return {"signedURL": f"https://fake.storage/object/sign/{path}?token=dl-tok&exp={expires_in}"}
+
+    def remove(self, paths):
+        self._client.storage_calls.append(("remove", self._bucket, tuple(paths)))
+        return [{"name": p} for p in paths]
+
+
+class _FakeStorage:
+    def __init__(self, client: "FakeSupabase"):
+        self._client = client
+
+    def from_(self, bucket):
+        return _FakeBucket(self._client, bucket)
+
+
 class FakeSupabase:
     def __init__(self, store=None):
         self.store = store or {}
         # Tables whose next insert should raise (simulate a mid-flow failure
         # to exercise compensating-cleanup paths).
         self.fail_inserts: set = set()
+        # Storage calls recorded for assertions (sign/download/remove).
+        self.storage_calls: list = []
 
     def table(self, name):
         return _Query(self, name)
+
+    @property
+    def storage(self):
+        return _FakeStorage(self)

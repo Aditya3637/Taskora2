@@ -15,14 +15,17 @@ it; the editor (TipTap) is the next slice (D2). Reads degrade gracefully if the
 047 migration hasn't been applied yet (returns empty / 404 rather than 500),
 matching the best-effort pattern used elsewhere (program_outcome_pct).
 """
+import re
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
 from supabase import Client
 
 from auth import get_current_user
+from config import Settings, get_settings
 from deps import (
     get_supabase, require_member, is_admin_or_owner,
     visible_initiative_ids, writable_initiative_ids,
@@ -480,3 +483,226 @@ def promote_doc_block_to_task(
         "id": task["id"], "title": task["title"],
         "status": task["status"], "initiative_id": initiative_id,
     }
+
+
+# ── D6 (§8): uploads & attachments ──────────────────────────────────────────
+# Real files live in the private `workspace-docs` Storage bucket (migration
+# 052), never in the doc body. The body references an attachment by id. Three
+# guarantees make this tenant-safe:
+#   1. The object PATH is generated server-side, tenant-prefixed
+#      `{business_id}/{doc_id}/{uuid}-{filename}` — the client never picks it.
+#   2. Recording an attachment re-checks the path sits under THIS doc's prefix,
+#      so a forged body can't register an object from another tenant/doc.
+#   3. Every download mints a short-lived SIGNED url only after re-checking the
+#      doc's initiative visibility — the bucket is private, so a leaked path is
+#      useless without a fresh signature and can never cross tenants.
+
+# Allowlist (defence-in-depth alongside the bucket's allowed_mime_types).
+# Executables and anything unlisted are rejected.
+_IMAGE_MIME = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+_ALLOWED_MIME = _IMAGE_MIME | {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",   # .docx
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",          # .xlsx
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
+    "text/csv",
+    "text/plain",
+}
+
+_SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
+_DOWNLOAD_TTL = 3600  # 1h signed-download lifetime
+
+
+def _safe_filename(name: Optional[str]) -> str:
+    """Strip any directory part and reduce to a safe basename for the object
+    key (the real filename is also stored verbatim in the row for display)."""
+    base = (name or "file").replace("\\", "/").split("/")[-1].strip()
+    base = _SAFE_FILENAME.sub("_", base).strip("._") or "file"
+    return base[:120]
+
+
+def _validate_upload(mime_type: str, size_bytes: Optional[int], max_bytes: int) -> None:
+    if mime_type not in _ALLOWED_MIME:
+        raise HTTPException(status_code=415, detail=f"File type '{mime_type}' is not allowed")
+    if size_bytes is None or size_bytes <= 0:
+        raise HTTPException(status_code=422, detail="size_bytes must be a positive integer")
+    if size_bytes > max_bytes:
+        raise HTTPException(status_code=413, detail=f"File exceeds the {max_bytes}-byte limit")
+
+
+def _attachment_or_404(sb: Client, attachment_id: str) -> dict:
+    """Load an attachment. Missing doc_attachments table (pre-052/047) → 404."""
+    try:
+        rows = sb.table("doc_attachments").select("*").eq("id", attachment_id).execute().data
+    except Exception:
+        rows = []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    return rows[0]
+
+
+def _shape_attachment(a: dict) -> dict:
+    return {
+        "id": a["id"], "doc_id": a.get("doc_id"),
+        "filename": a.get("filename"), "mime_type": a.get("mime_type"),
+        "size_bytes": a.get("size_bytes"), "storage_path": a.get("storage_path"),
+        "uploaded_by": a.get("uploaded_by"), "created_at": a.get("created_at"),
+        "is_image": a.get("mime_type") in _IMAGE_MIME,
+    }
+
+
+class AttachmentSignIn(BaseModel):
+    filename: str
+    mime_type: str
+    size_bytes: int
+
+    @field_validator("filename", "mime_type")
+    @classmethod
+    def _nonblank(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("must not be blank")
+        return v
+
+
+class AttachmentRecordIn(AttachmentSignIn):
+    storage_path: str
+
+    @field_validator("storage_path")
+    @classmethod
+    def _path_nonblank(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not v:
+            raise ValueError("storage_path is required")
+        return v
+
+
+@router.post("/docs/{doc_id}/attachments/sign")
+def sign_attachment_upload(
+    doc_id: str,
+    body: AttachmentSignIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    """Mint a short-lived signed UPLOAD url for a new attachment. Write-gated.
+    The object path is generated here (tenant-prefixed) — the client uploads to
+    exactly this path, then calls POST /attachments to record the row."""
+    doc = _doc_or_404(sb, doc_id)
+    init = _initiative_or_404(sb, doc["parent_id"])
+    _gate(sb, init, user["id"], write=True)
+    _validate_upload(body.mime_type, body.size_bytes, settings.doc_upload_max_bytes)
+
+    path = f"{doc['business_id']}/{doc_id}/{uuid4().hex}-{_safe_filename(body.filename)}"
+    try:
+        signed = sb.storage.from_(settings.workspace_docs_bucket).create_signed_upload_url(path)
+    except Exception:
+        raise HTTPException(status_code=503, detail="File storage is not available")
+    return {
+        "path": path,
+        "token": signed.get("token"),
+        "signed_url": signed.get("signed_url") or signed.get("signedURL"),
+        "bucket": settings.workspace_docs_bucket,
+        "max_bytes": settings.doc_upload_max_bytes,
+    }
+
+
+@router.post("/docs/{doc_id}/attachments", status_code=201)
+def record_attachment(
+    doc_id: str,
+    body: AttachmentRecordIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    """Record a freshly-uploaded object as a doc_attachments row. Write-gated.
+    Re-validates type/size and that the path sits under THIS doc's tenant prefix
+    so a forged path can't register another tenant's or another doc's object."""
+    doc = _doc_or_404(sb, doc_id)
+    init = _initiative_or_404(sb, doc["parent_id"])
+    _gate(sb, init, user["id"], write=True)
+    _validate_upload(body.mime_type, body.size_bytes, settings.doc_upload_max_bytes)
+
+    prefix = f"{doc['business_id']}/{doc_id}/"
+    if not body.storage_path.startswith(prefix) or ".." in body.storage_path:
+        raise HTTPException(status_code=400, detail="storage_path is not within this document")
+
+    rows = sb.table("doc_attachments").insert({
+        "business_id": doc["business_id"], "doc_id": doc_id,
+        "storage_path": body.storage_path, "filename": _safe_filename(body.filename),
+        "mime_type": body.mime_type, "size_bytes": body.size_bytes,
+        "uploaded_by": user["id"],
+    }).execute().data
+    if not rows:
+        raise HTTPException(status_code=500, detail="Failed to record attachment")
+    return _shape_attachment(rows[0])
+
+
+@router.get("/docs/{doc_id}/attachments")
+def list_attachments(
+    doc_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """List attachments on a doc, oldest first. Read-gated by doc visibility."""
+    doc = _doc_or_404(sb, doc_id)
+    init = _initiative_or_404(sb, doc["parent_id"])
+    _gate(sb, init, user["id"], write=False)
+    try:
+        rows = (
+            sb.table("doc_attachments").select("*")
+            .eq("doc_id", doc_id).order("created_at", desc=False).execute().data
+        )
+    except Exception:
+        rows = []
+    return [_shape_attachment(r) for r in rows]
+
+
+@router.get("/attachments/{attachment_id}/url")
+def attachment_download_url(
+    attachment_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    """Mint a short-lived signed DOWNLOAD url. Read-gated — re-checks the doc's
+    initiative visibility on EVERY call, so a business-B user can never fetch a
+    business-A attachment even with its id or object path."""
+    att = _attachment_or_404(sb, attachment_id)
+    doc = _doc_or_404(sb, att["doc_id"])
+    init = _initiative_or_404(sb, doc["parent_id"])
+    _gate(sb, init, user["id"], write=False)
+    try:
+        res = sb.storage.from_(settings.workspace_docs_bucket).create_signed_url(
+            att["storage_path"], _DOWNLOAD_TTL
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="File storage is not available")
+    url = res.get("signedURL") or res.get("signed_url") or res.get("signedUrl")
+    return {
+        "url": url, "filename": att.get("filename"),
+        "mime_type": att.get("mime_type"), "size_bytes": att.get("size_bytes"),
+        "is_image": att.get("mime_type") in _IMAGE_MIME, "expires_in": _DOWNLOAD_TTL,
+    }
+
+
+@router.delete("/attachments/{attachment_id}", status_code=204)
+def delete_attachment(
+    attachment_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    """Delete an attachment (row + Storage object). Write-gated. Removing the
+    object is best-effort — the orphan sweep (automation engine) reclaims any
+    object whose row is already gone."""
+    att = _attachment_or_404(sb, attachment_id)
+    doc = _doc_or_404(sb, att["doc_id"])
+    init = _initiative_or_404(sb, doc["parent_id"])
+    _gate(sb, init, user["id"], write=True)
+    try:
+        sb.storage.from_(settings.workspace_docs_bucket).remove([att["storage_path"]])
+    except Exception:
+        pass
+    sb.table("doc_attachments").delete().eq("id", attachment_id).execute()
+    return None

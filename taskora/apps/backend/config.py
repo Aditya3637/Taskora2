@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     # returns 503 — nothing else breaks (mirrors the resend_api_key pattern).
     anthropic_api_key: Optional[str] = None
     anthropic_model: str = "claude-opus-4-8"
+    # Workspace-doc uploads (D6). The private Storage bucket provisioned by
+    # migration 052; the per-file size cap is enforced on the sign + record
+    # endpoints and mirrored as the bucket's storage-layer file_size_limit.
+    workspace_docs_bucket: str = "workspace-docs"
+    doc_upload_max_bytes: int = 26_214_400  # 25 MiB
 
 
 @lru_cache

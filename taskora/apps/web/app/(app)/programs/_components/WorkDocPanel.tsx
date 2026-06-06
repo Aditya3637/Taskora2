@@ -1,9 +1,10 @@
 "use client";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { apiFetch } from "@/lib/api";
+import { supabase } from "@/lib/supabase";
 import { Spinner } from "@/components/ui";
 import { X, Maximize2, Minimize2, FileText } from "lucide-react";
-import { WorkDocEditor } from "./WorkDocEditor";
+import { WorkDocEditor, type UploadedAttachment } from "./WorkDocEditor";
 
 type Doc = {
   id: string;
@@ -115,6 +116,45 @@ export function WorkDocPanel({
     setTimeout(() => setPromoteMsg(null), 3000);
   }, [initiativeId]);
 
+  // §8: upload a file as a doc attachment — sign (backend), upload directly to
+  // Storage with the one-time token, then record the row. Returns the recorded
+  // attachment so the editor can insert a node referencing its id.
+  const uploadAttachment = useCallback(
+    async (file: File): Promise<UploadedAttachment | null> => {
+      if (!doc) return null;
+      const meta = {
+        filename: file.name,
+        mime_type: file.type || "application/octet-stream",
+        size_bytes: file.size,
+      };
+      try {
+        const signed = await apiFetch(`/api/v1/docs/${doc.id}/attachments/sign`, {
+          method: "POST",
+          body: JSON.stringify(meta),
+        });
+        const { error: upErr } = await supabase.storage
+          .from(signed.bucket)
+          .uploadToSignedUrl(signed.path, signed.token, file);
+        if (upErr) throw new Error(upErr.message);
+        const att = await apiFetch(`/api/v1/docs/${doc.id}/attachments`, {
+          method: "POST",
+          body: JSON.stringify({ ...meta, storage_path: signed.path }),
+        });
+        return { id: att.id, filename: att.filename, mime_type: att.mime_type, is_image: att.is_image };
+      } catch (e: any) {
+        const text =
+          e?.status === 413 ? "File too large (max 25 MB)."
+          : e?.status === 415 ? "That file type isn’t allowed."
+          : e?.status === 403 ? "You can’t upload here."
+          : "Upload failed — please try again.";
+        setPromoteMsg({ ok: false, text });
+        setTimeout(() => setPromoteMsg(null), 3000);
+        return null;
+      }
+    },
+    [doc],
+  );
+
   const editable = doc?.can_write !== false;
 
   return (
@@ -190,6 +230,7 @@ export function WorkDocPanel({
                 editable={editable}
                 onChange={(json) => queueSave({ body: json })}
                 onPromote={editable ? promoteToTask : undefined}
+                onUpload={editable ? uploadAttachment : undefined}
               />
             </>
           )}

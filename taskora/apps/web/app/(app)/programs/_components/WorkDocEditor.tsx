@@ -3,9 +3,13 @@ import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import Mention from "@tiptap/extension-mention";
-import { useEffect } from "react";
-import { Bold, Italic, Heading1, Heading2, List, ListOrdered, Quote, Code, ListPlus } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Bold, Italic, Heading1, Heading2, List, ListOrdered, Quote, Code, ListPlus, Paperclip, Loader2 } from "lucide-react";
 import { mentionSuggestion } from "./mentionSuggestion";
+import { AttachmentNode } from "./AttachmentNode";
+
+// What WorkDocPanel.uploadAttachment resolves to after sign → upload → record.
+export type UploadedAttachment = { id: string; filename: string; mime_type: string; is_image: boolean };
 
 /**
  * TipTap rich-text editor for a Workspace Document (D2). StarterKit gives
@@ -18,16 +22,20 @@ export function WorkDocEditor({
   editable,
   onChange,
   onPromote,
+  onUpload,
 }: {
   value: unknown;
   editable: boolean;
   onChange: (json: unknown) => void;
   // D5: promote the current selection (or current line) to a task.
   onPromote?: (text: string) => void;
+  // §8: sign → upload → record a file; returns the recorded attachment.
+  onUpload?: (file: File) => Promise<UploadedAttachment | null>;
 }) {
   const editor = useEditor({
     extensions: [
       StarterKit,
+      AttachmentNode,
       Placeholder.configure({
         placeholder: "Write the plan… type “# ” for a heading, “- ” for a list, “@” to link.",
       }),
@@ -56,13 +64,24 @@ export function WorkDocEditor({
 
   return (
     <div className="workdoc-content">
-      {editable && editor && <Toolbar editor={editor} onPromote={onPromote} />}
+      {editable && editor && <Toolbar editor={editor} onPromote={onPromote} onUpload={onUpload} />}
       <EditorContent editor={editor} />
     </div>
   );
 }
 
-function Toolbar({ editor, onPromote }: { editor: Editor; onPromote?: (text: string) => void }) {
+function Toolbar({
+  editor,
+  onPromote,
+  onUpload,
+}: {
+  editor: Editor;
+  onPromote?: (text: string) => void;
+  onUpload?: (file: File) => Promise<UploadedAttachment | null>;
+}) {
+  const fileInput = useRef<HTMLInputElement | null>(null);
+  const [uploading, setUploading] = useState(false);
+
   // D5: promote selected text — or, if nothing is selected, the current line —
   // into a task under this initiative.
   const promote = () => {
@@ -72,6 +91,25 @@ function Toolbar({ editor, onPromote }: { editor: Editor; onPromote?: (text: str
       ? (state.selection.$from.parent.textContent || "").trim()
       : state.doc.textBetween(from, to, " ").trim();
     if (text && onPromote) onPromote(text);
+  };
+
+  // §8: pick a file → upload → insert an attachment node referencing its id.
+  const pickFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file
+    if (!file || !onUpload) return;
+    setUploading(true);
+    try {
+      const att = await onUpload(file);
+      if (att) {
+        editor.chain().focus().insertContent({
+          type: "attachment",
+          attrs: { attachmentId: att.id, filename: att.filename, mime: att.mime_type, isImage: att.is_image },
+        }).run();
+      }
+    } finally {
+      setUploading(false);
+    }
   };
 
   const Btn = ({
@@ -127,6 +165,29 @@ function Toolbar({ editor, onPromote }: { editor: Editor; onPromote?: (text: str
       <Btn label="Code block" active={editor.isActive("codeBlock")} on={() => editor.chain().focus().toggleCodeBlock().run()}>
         <Code className="w-4 h-4" />
       </Btn>
+      {onUpload && (
+        <>
+          <span className="w-px h-5 bg-pebble mx-1" />
+          <input
+            ref={fileInput}
+            type="file"
+            className="hidden"
+            accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,.docx,.xlsx,.pptx,.csv,.txt"
+            onChange={pickFile}
+          />
+          <button
+            type="button"
+            title="Attach a file or image"
+            aria-label="Attach a file or image"
+            disabled={uploading}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => fileInput.current?.click()}
+            className="p-1.5 rounded-md hover:bg-mist text-fg-muted transition-colors disabled:opacity-60"
+          >
+            {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
+          </button>
+        </>
+      )}
       {onPromote && (
         <>
           <span className="w-px h-5 bg-pebble mx-1" />
