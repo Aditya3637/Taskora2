@@ -706,3 +706,64 @@ def delete_attachment(
         pass
     sb.table("doc_attachments").delete().eq("id", attachment_id).execute()
     return None
+
+
+# ── AI pass (✨): in-document assistance grounded in the initiative's data ────
+
+class DocAiIn(BaseModel):
+    action: str
+    # Optional selected text; when omitted the whole doc body is used.
+    selection: Optional[str] = None
+
+    @field_validator("action")
+    @classmethod
+    def _action(cls, v: str) -> str:
+        from ai.doc_assist import ACTIONS
+        v = (v or "").strip()
+        if v not in ACTIONS:
+            raise ValueError(f"action must be one of {sorted(ACTIONS)}")
+        return v
+
+
+@router.post("/docs/{doc_id}/ai")
+def doc_ai_assist(
+    doc_id: str,
+    body: DocAiIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Run a ✨ action (enhance / summarize / draft_status / extract_actions) on
+    the doc, grounded in the initiative's live data. Write-gated — only editors
+    can invoke AI. AI drafts; the client inserts/edits. 503 when the workspace
+    has no AI key; 502 if the provider call fails."""
+    from datetime import date as _date
+    from ai import doc_assist
+    from ai.program_summary import resolve_config
+
+    doc = _doc_or_404(sb, doc_id)
+    init = _initiative_or_404(sb, doc["parent_id"])
+    _gate(sb, init, user["id"], write=True)
+
+    config = resolve_config(sb, doc["business_id"])
+    if not config:
+        raise HTTPException(
+            status_code=503,
+            detail="AI isn't configured for this workspace. Add a key in Workspace settings → Profile.",
+        )
+
+    # Full initiative row so the context carries the name/status for grounding.
+    rows = (
+        sb.table("initiatives").select("id, name, status, program_id, business_id")
+        .eq("id", init["id"]).execute().data
+    )
+    init_full = rows[0] if rows else init
+
+    content = (body.selection or "").strip() or doc_assist.flatten_doc(doc.get("body"))
+    context = doc_assist.gather_doc_context(sb, init_full, _date.today())
+    try:
+        result = doc_assist.run_doc_assist(body.action, content, context, config)
+    except Exception:
+        raise HTTPException(status_code=502, detail="The AI provider couldn't complete the request.")
+    if result is None:
+        raise HTTPException(status_code=503, detail="AI isn't configured for this workspace.")
+    return result

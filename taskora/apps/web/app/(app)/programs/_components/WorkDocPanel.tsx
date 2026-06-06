@@ -173,6 +173,18 @@ export function WorkDocPanel({
     [doc],
   );
 
+  // AI pass: run a ✨ action server-side (grounded in the initiative's live data).
+  const runAssist = useCallback(
+    async (action: string, selection: string) => {
+      if (!doc) throw new Error("No document");
+      return apiFetch(`/api/v1/docs/${doc.id}/ai`, {
+        method: "POST",
+        body: JSON.stringify({ action, selection: selection || undefined }),
+      });
+    },
+    [doc],
+  );
+
   const editable = doc?.can_write !== false;
 
   // The writing surface (shared by both layouts).
@@ -224,6 +236,7 @@ export function WorkDocPanel({
         onChange={(json) => queueSave({ body: json })}
         onPromote={editable ? promoteToTask : undefined}
         onUpload={editable ? uploadAttachment : undefined}
+        onAssist={editable ? runAssist : undefined}
       />
     </>
   );
