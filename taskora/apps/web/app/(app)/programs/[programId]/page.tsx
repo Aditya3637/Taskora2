@@ -915,6 +915,7 @@ export default function ProgramDetailPage() {
         <WorkDocPanel
           initiativeId={docInit.id}
           initiativeName={docInit.name}
+          programName={program?.name}
           onClose={() => setDocInit(null)}
         />
       )}

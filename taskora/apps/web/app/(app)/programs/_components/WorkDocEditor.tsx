@@ -32,6 +32,29 @@ export function WorkDocEditor({
   // §8: sign → upload → record a file; returns the recorded attachment.
   onUpload?: (file: File) => Promise<UploadedAttachment | null>;
 }) {
+  // The paste/drop handlers are configured once on the editor but need the
+  // live onUpload + editor instance — reach them through refs.
+  const onUploadRef = useRef(onUpload);
+  useEffect(() => { onUploadRef.current = onUpload; }, [onUpload]);
+  const editorRef = useRef<Editor | null>(null);
+
+  // Upload one or more files (picked, pasted, or dropped) and insert an
+  // attachment node for each — the heart of the resistance-free flow.
+  const uploadFiles = async (files: File[]) => {
+    const up = onUploadRef.current;
+    const ed = editorRef.current;
+    if (!up || !ed || files.length === 0) return;
+    for (const file of files) {
+      const att = await up(file);
+      if (att) {
+        ed.chain().focus().insertContent({
+          type: "attachment",
+          attrs: { attachmentId: att.id, filename: att.filename, mime: att.mime_type, isImage: att.is_image },
+        }).run();
+      }
+    }
+  };
+
   const editor = useEditor({
     extensions: [
       StarterKit,
@@ -53,6 +76,17 @@ export function WorkDocEditor({
     immediatelyRender: false,
     editorProps: {
       attributes: { class: "ProseMirror focus:outline-none min-h-[55vh] text-[15px] text-fg" },
+      // Drag-drop or paste an image/file anywhere on the canvas to upload it.
+      handlePaste: (_view, event) => {
+        const files = Array.from(event.clipboardData?.files ?? []).filter((f) => f.size > 0);
+        if (files.length && onUploadRef.current) { event.preventDefault(); void uploadFiles(files); return true; }
+        return false;
+      },
+      handleDrop: (_view, event) => {
+        const files = Array.from((event as DragEvent).dataTransfer?.files ?? []);
+        if (files.length && onUploadRef.current) { event.preventDefault(); void uploadFiles(files); return true; }
+        return false;
+      },
     },
     onUpdate: ({ editor }) => onChange(editor.getJSON()),
   });
@@ -61,6 +95,8 @@ export function WorkDocEditor({
   useEffect(() => {
     editor?.setEditable(editable);
   }, [editable, editor]);
+
+  useEffect(() => { editorRef.current = editor; }, [editor]);
 
   return (
     <div className="workdoc-content">

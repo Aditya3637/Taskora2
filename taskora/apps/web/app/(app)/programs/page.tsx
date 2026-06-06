@@ -800,6 +800,7 @@ function ProgramRow({
         <WorkDocPanel
           initiativeId={docInit.id}
           initiativeName={docInit.name}
+          programName={program.name}
           onClose={() => setDocInit(null)}
         />
       )}
