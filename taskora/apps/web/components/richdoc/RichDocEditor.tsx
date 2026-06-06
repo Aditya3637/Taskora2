@@ -15,7 +15,7 @@ import DetailsContent from "@tiptap/extension-details-content";
 import ListKeymap from "@tiptap/extension-list-keymap";
 import Image from "@tiptap/extension-image";
 import { useEffect, useRef } from "react";
-import { Bold, Italic, Heading1, Heading2, Quote, ListPlus } from "lucide-react";
+import { Bold, Italic, Heading1, Heading2, Quote, ListPlus, Rows3, Columns3, Trash2 } from "lucide-react";
 import { AttachmentNode } from "./AttachmentNode";
 import { CalloutNode } from "./CalloutNode";
 import { SlashCommand } from "./slashCommand";
@@ -188,13 +188,36 @@ export function RichDocEditor({
       {/* Formatting lives in a floating menu shown only on text selection —
           the page itself stays clean. Blocks come from the "/" menu. */}
       {editable && editor && (
-        <BubbleMenu editor={editor} tippyOptions={{ duration: 120 }} className="wd-bubble">
+        <BubbleMenu
+          editor={editor}
+          tippyOptions={{ duration: 120 }}
+          className="wd-bubble"
+          shouldShow={({ editor, state }) => !state.selection.empty && !editor.isActive("table")}
+        >
           <FmtBtn label="Bold" active={editor.isActive("bold")} on={() => editor.chain().focus().toggleBold().run()}><Bold className="w-4 h-4" /></FmtBtn>
           <FmtBtn label="Italic" active={editor.isActive("italic")} on={() => editor.chain().focus().toggleItalic().run()}><Italic className="w-4 h-4" /></FmtBtn>
           <span className="w-px h-5 bg-pebble/70 mx-0.5" />
           <FmtBtn label="Heading 1" active={editor.isActive("heading", { level: 1 })} on={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}><Heading1 className="w-4 h-4" /></FmtBtn>
           <FmtBtn label="Heading 2" active={editor.isActive("heading", { level: 2 })} on={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}><Heading2 className="w-4 h-4" /></FmtBtn>
           <FmtBtn label="Quote" active={editor.isActive("blockquote")} on={() => editor.chain().focus().toggleBlockquote().run()}><Quote className="w-4 h-4" /></FmtBtn>
+        </BubbleMenu>
+      )}
+      {/* Table controls — appear whenever the cursor is inside a table. */}
+      {editable && editor && (
+        <BubbleMenu
+          editor={editor}
+          pluginKey="tableMenu"
+          tippyOptions={{ duration: 120, placement: "top" }}
+          className="wd-bubble"
+          shouldShow={({ editor }) => editor.isActive("table")}
+        >
+          <TblBtn label="Add row" on={() => editor.chain().focus().addRowAfter().run()}><Rows3 className="w-4 h-4" /> Row</TblBtn>
+          <TblBtn label="Add column" on={() => editor.chain().focus().addColumnAfter().run()}><Columns3 className="w-4 h-4" /> Col</TblBtn>
+          <span className="w-px h-5 bg-pebble/70 mx-0.5" />
+          <TblBtn label="Delete row" on={() => editor.chain().focus().deleteRow().run()}><Rows3 className="w-4 h-4" />−</TblBtn>
+          <TblBtn label="Delete column" on={() => editor.chain().focus().deleteColumn().run()}><Columns3 className="w-4 h-4" />−</TblBtn>
+          <span className="w-px h-5 bg-pebble/70 mx-0.5" />
+          <TblBtn label="Delete table" danger on={() => editor.chain().focus().deleteTable().run()}><Trash2 className="w-4 h-4" /></TblBtn>
         </BubbleMenu>
       )}
       {/* Signature actions — a quiet right-aligned row, not a full toolbar. */}
@@ -221,6 +244,25 @@ function FmtBtn({ on, active, label, children }: {
       onMouseDown={(e) => e.preventDefault()} // keep the editor selection
       onClick={on}
       className={`p-1.5 rounded-md transition-colors ${active ? "text-ocean bg-mist" : "text-fg-muted hover:bg-mist"}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function TblBtn({ on, label, danger, children }: {
+  on: () => void; label: string; danger?: boolean; children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={on}
+      className={`flex items-center gap-0.5 px-1.5 py-1 rounded-md text-xs font-medium transition-colors ${
+        danger ? "text-fg-muted hover:bg-red-50 hover:text-red-600" : "text-fg-muted hover:bg-mist hover:text-ocean"
+      }`}
     >
       {children}
     </button>

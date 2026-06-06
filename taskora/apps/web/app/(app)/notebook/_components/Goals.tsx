@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Target, X, Plus } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 
 /**
@@ -135,43 +136,45 @@ export default function Goals() {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <h2 className="text-xs font-bold tracking-wide text-steel uppercase">Goals</h2>
-        {saving && <span className="text-[10px] text-steel/60">saving…</span>}
+        <h2 className="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-fg-subtle uppercase">
+          <Target className="w-3.5 h-3.5 text-ocean" /> Goals
+        </h2>
+        {saving && <span className="text-[10px] text-fg-subtle">saving…</span>}
       </div>
       {items.length === 0 && (
-        <p className="text-xs text-steel/60 italic">
+        <p className="text-xs text-fg-subtle">
           No goals yet — add one below. These are private to you.
         </p>
       )}
-      <ul className="space-y-1">
+      <ul className="space-y-0.5">
         {items.map((g, i) => (
-          <li key={i} className="flex gap-1.5 items-start group">
-            <span className="text-taskora-red mt-1.5 text-xs">◆</span>
+          <li key={i} className="flex gap-2 items-start group rounded-md px-1.5 py-1 -mx-1.5 hover:bg-mist/60 transition-colors">
+            <span className="mt-2 w-1.5 h-1.5 rounded-full bg-ocean/70 shrink-0" />
             <textarea
               ref={(el) => { inputRefs.current[i] = el; }}
               value={g}
               onChange={(e) => updateAt(i, e.target.value)}
               onKeyDown={(e) => onKeyDown(e, i)}
               rows={1}
-              className="flex-1 bg-transparent text-sm text-midnight resize-none focus:outline-none placeholder:text-steel/40"
+              className="flex-1 bg-transparent text-sm text-fg resize-none focus:outline-none placeholder:text-fg-subtle"
               placeholder="What are you aiming for?"
               style={{ minHeight: "1.5rem" }}
             />
             <button
               onClick={() => removeAt(i)}
-              className="opacity-0 group-hover:opacity-100 text-steel/50 hover:text-red-500 text-xs leading-none mt-1"
+              className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-fg-subtle hover:text-red-500 hover:bg-white mt-0.5"
               aria-label="Remove goal"
             >
-              ×
+              <X className="w-3.5 h-3.5" />
             </button>
           </li>
         ))}
       </ul>
       <button
         onClick={() => insertAfter(-1)}
-        className="text-xs text-steel/70 hover:text-taskora-red transition-colors"
+        className="flex items-center gap-1 text-xs text-fg-subtle hover:text-ocean transition-colors mt-1"
       >
-        + Add a goal <span className="text-steel/40">· or press Enter</span>
+        <Plus className="w-3.5 h-3.5" /> Add a goal <span className="text-fg-subtle/70">· or press Enter</span>
       </button>
     </div>
   );
