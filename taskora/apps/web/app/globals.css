@@ -223,6 +223,18 @@ input, textarea, select, button { font: inherit; }
   padding: 0.25rem 0;
 }
 
+/* Floating formatting menu (shown only on text selection). */
+.wd-bubble {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  background: #fff;
+  border: 1px solid rgb(var(--line));
+  border-radius: 10px;
+  box-shadow: 0 8px 24px -8px rgb(0 0 0 / 0.28);
+  padding: 0.2rem 0.25rem;
+}
+
 /* ── Editor pass: tables, to-do lists, callouts, toggles (all scoped to the
    workspace-doc surface so they never leak into the rest of the app). ───── */
 
