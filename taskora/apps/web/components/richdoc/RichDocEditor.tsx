@@ -48,27 +48,36 @@ export function RichDocEditor({
   onChange,
   onPromote,
   onUpload,
+  onImageUpload,
   onAssist,
   mention,
   placeholder,
+  promoteLabel,
 }: {
   value: unknown;
   editable: boolean;
   onChange: (json: unknown) => void;
   // promote the current selection (or current line) — task, checklist item, etc.
   onPromote?: (text: string) => void;
-  // store a file and return a reference to insert; omit to disable uploads.
+  // store a file as an attachment (id-based node); omit to disable file uploads.
   onUpload?: (file: File) => Promise<UploadedAttachment | null>;
+  // store an image and return its src (e.g. a data URL) for an inline image
+  // node; takes precedence for image files. The Notebook uses this.
+  onImageUpload?: (file: File) => Promise<{ src: string; alt?: string } | null>;
   // run a ✨ AI action server-side and return the result; omit to hide AI.
   onAssist?: (action: string, selection: string) => Promise<AiResult>;
   // a TipTap suggestion config for "@"; omit to disable mentions on this surface.
   mention?: unknown;
   placeholder?: string;
+  // verb for the "promote a line" affordances (default "task").
+  promoteLabel?: string;
 }) {
   // The paste/drop/slash handlers are configured once but need the live
-  // onUpload + editor instance — reach them through refs.
+  // adapters + editor instance — reach them through refs.
   const onUploadRef = useRef(onUpload);
   useEffect(() => { onUploadRef.current = onUpload; }, [onUpload]);
+  const onImageUploadRef = useRef(onImageUpload);
+  useEffect(() => { onImageUploadRef.current = onImageUpload; }, [onImageUpload]);
   const editorRef = useRef<Editor | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const openFilePicker = () => fileInputRef.current?.click();
@@ -76,16 +85,22 @@ export function RichDocEditor({
   // Upload one or more files (picked, pasted, dropped, or via "/") and insert
   // an attachment node for each — the heart of the resistance-free flow.
   const uploadFiles = async (files: File[]) => {
-    const up = onUploadRef.current;
     const ed = editorRef.current;
-    if (!up || !ed || files.length === 0) return;
+    const up = onUploadRef.current;
+    const img = onImageUploadRef.current;
+    if (!ed || files.length === 0 || (!up && !img)) return;
     for (const file of files) {
-      const att = await up(file);
-      if (att) {
-        ed.chain().focus().insertContent({
-          type: "attachment",
-          attrs: { attachmentId: att.id, filename: att.filename, mime: att.mime_type, isImage: att.is_image },
-        }).run();
+      if (img && file.type.startsWith("image/")) {
+        const r = await img(file);
+        if (r) ed.chain().focus().insertContent({ type: "image", attrs: { src: r.src, alt: r.alt ?? null } }).run();
+      } else if (up) {
+        const att = await up(file);
+        if (att) {
+          ed.chain().focus().insertContent({
+            type: "attachment",
+            attrs: { attachmentId: att.id, filename: att.filename, mime: att.mime_type, isImage: att.is_image },
+          }).run();
+        }
       }
     }
   };
@@ -137,12 +152,12 @@ export function RichDocEditor({
       // Drag-drop or paste an image/file anywhere on the canvas to upload it.
       handlePaste: (_view, event) => {
         const files = Array.from(event.clipboardData?.files ?? []).filter((f) => f.size > 0);
-        if (files.length && onUploadRef.current) { event.preventDefault(); void uploadFiles(files); return true; }
+        if (files.length && (onUploadRef.current || onImageUploadRef.current)) { event.preventDefault(); void uploadFiles(files); return true; }
         return false;
       },
       handleDrop: (_view, event) => {
         const files = Array.from((event as DragEvent).dataTransfer?.files ?? []);
-        if (files.length && onUploadRef.current) { event.preventDefault(); void uploadFiles(files); return true; }
+        if (files.length && (onUploadRef.current || onImageUploadRef.current)) { event.preventDefault(); void uploadFiles(files); return true; }
         return false;
       },
     },
@@ -160,7 +175,8 @@ export function RichDocEditor({
           ref={fileInputRef}
           type="file"
           className="hidden"
-          accept={UPLOAD_ACCEPT}
+          // Image-only surfaces (e.g. the Notebook) restrict the picker to images.
+          accept={onUpload ? UPLOAD_ACCEPT : "image/*"}
           onChange={(e) => {
             const files = Array.from(e.target.files ?? []);
             e.target.value = "";
@@ -168,7 +184,15 @@ export function RichDocEditor({
           }}
         />
       )}
-      {editable && editor && <Toolbar editor={editor} onPromote={onPromote} onPickFile={onUpload ? openFilePicker : undefined} onAssist={onAssist} />}
+      {editable && editor && (
+        <Toolbar
+          editor={editor}
+          onPromote={onPromote}
+          onPickFile={onUpload || onImageUpload ? openFilePicker : undefined}
+          onAssist={onAssist}
+          promoteLabel={promoteLabel}
+        />
+      )}
       <EditorContent editor={editor} />
     </div>
   );
@@ -179,11 +203,13 @@ function Toolbar({
   onPromote,
   onPickFile,
   onAssist,
+  promoteLabel,
 }: {
   editor: Editor;
   onPromote?: (text: string) => void;
   onPickFile?: () => void;
   onAssist?: (action: string, selection: string) => Promise<AiResult>;
+  promoteLabel?: string;
 }) {
   // D5: promote selected text — or, if nothing is selected, the current line —
   // into a task under this initiative.
@@ -274,15 +300,15 @@ function Toolbar({
             title="Add selection (or current line) as a task"
             onMouseDown={(e) => e.preventDefault()}
             onClick={promote}
-            className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-fg-muted hover:bg-mist hover:text-ocean transition-colors"
+            className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-fg-muted hover:bg-mist hover:text-ocean transition-colors capitalize"
           >
-            <ListPlus className="w-4 h-4" /> Task
+            <ListPlus className="w-4 h-4" /> {promoteLabel ?? "Task"}
           </button>
         </>
       )}
       {onAssist && (
         <span className="ml-auto">
-          <AiAssist editor={editor} onAssist={onAssist} onPromote={onPromote} />
+          <AiAssist editor={editor} onAssist={onAssist} onPromote={onPromote} promoteLabel={promoteLabel} />
         </span>
       )}
     </div>
