@@ -1,5 +1,5 @@
 "use client";
-import { useEditor, EditorContent, type Editor } from "@tiptap/react";
+import { useEditor, EditorContent, BubbleMenu, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import Mention from "@tiptap/extension-mention";
@@ -15,10 +15,7 @@ import DetailsContent from "@tiptap/extension-details-content";
 import ListKeymap from "@tiptap/extension-list-keymap";
 import Image from "@tiptap/extension-image";
 import { useEffect, useRef } from "react";
-import {
-  Bold, Italic, Heading1, Heading2, List, ListOrdered, ListChecks,
-  Quote, Code, Lightbulb, Table as TableIcon, ListPlus, Paperclip,
-} from "lucide-react";
+import { Bold, Italic, Heading1, Heading2, Quote, ListPlus } from "lucide-react";
 import { AttachmentNode } from "./AttachmentNode";
 import { CalloutNode } from "./CalloutNode";
 import { SlashCommand } from "./slashCommand";
@@ -188,137 +185,68 @@ export function RichDocEditor({
           }}
         />
       )}
+      {/* Formatting lives in a floating menu shown only on text selection —
+          the page itself stays clean. Blocks come from the "/" menu. */}
       {editable && editor && (
-        <Toolbar
-          editor={editor}
-          onPromote={onPromote}
-          onPickFile={onUpload || onImageUpload ? openFilePicker : undefined}
-          onAssist={onAssist}
-          promoteLabel={promoteLabel}
-          renderExtra={renderExtra}
-        />
+        <BubbleMenu editor={editor} tippyOptions={{ duration: 120 }} className="wd-bubble">
+          <FmtBtn label="Bold" active={editor.isActive("bold")} on={() => editor.chain().focus().toggleBold().run()}><Bold className="w-4 h-4" /></FmtBtn>
+          <FmtBtn label="Italic" active={editor.isActive("italic")} on={() => editor.chain().focus().toggleItalic().run()}><Italic className="w-4 h-4" /></FmtBtn>
+          <span className="w-px h-5 bg-pebble/70 mx-0.5" />
+          <FmtBtn label="Heading 1" active={editor.isActive("heading", { level: 1 })} on={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}><Heading1 className="w-4 h-4" /></FmtBtn>
+          <FmtBtn label="Heading 2" active={editor.isActive("heading", { level: 2 })} on={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}><Heading2 className="w-4 h-4" /></FmtBtn>
+          <FmtBtn label="Quote" active={editor.isActive("blockquote")} on={() => editor.chain().focus().toggleBlockquote().run()}><Quote className="w-4 h-4" /></FmtBtn>
+        </BubbleMenu>
+      )}
+      {/* Signature actions — a quiet right-aligned row, not a full toolbar. */}
+      {editable && editor && (onAssist || onPromote || renderExtra) && (
+        <div className="flex items-center justify-end gap-1 mb-1 -mt-1">
+          {onPromote && <PromoteButton editor={editor} onPromote={onPromote} label={promoteLabel} />}
+          {renderExtra?.(editor)}
+          {onAssist && <AiAssist editor={editor} onAssist={onAssist} onPromote={onPromote} promoteLabel={promoteLabel} />}
+        </div>
       )}
       <EditorContent editor={editor} />
     </div>
   );
 }
 
-function Toolbar({
-  editor,
-  onPromote,
-  onPickFile,
-  onAssist,
-  promoteLabel,
-  renderExtra,
-}: {
-  editor: Editor;
-  onPromote?: (text: string) => void;
-  onPickFile?: () => void;
-  onAssist?: (action: string, selection: string) => Promise<AiResult>;
-  promoteLabel?: string;
-  renderExtra?: (editor: Editor) => React.ReactNode;
+function FmtBtn({ on, active, label, children }: {
+  on: () => void; active: boolean; label: string; children: React.ReactNode;
 }) {
-  // D5: promote selected text — or, if nothing is selected, the current line —
-  // into a task under this initiative.
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      onMouseDown={(e) => e.preventDefault()} // keep the editor selection
+      onClick={on}
+      className={`p-1.5 rounded-md transition-colors ${active ? "text-ocean bg-mist" : "text-fg-muted hover:bg-mist"}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function PromoteButton({ editor, onPromote, label }: {
+  editor: Editor; onPromote: (text: string) => void; label?: string;
+}) {
   const promote = () => {
     const { state } = editor;
     const { from, to, empty } = state.selection;
     const text = empty
       ? (state.selection.$from.parent.textContent || "").trim()
       : state.doc.textBetween(from, to, " ").trim();
-    if (text && onPromote) onPromote(text);
+    if (text) onPromote(text);
   };
-
-  const Btn = ({ on, active, label, children }: {
-    on: () => void; active: boolean; label: string; children: React.ReactNode;
-  }) => (
+  return (
     <button
       type="button"
-      title={label}
-      aria-label={label}
-      onMouseDown={(e) => e.preventDefault()} // keep editor selection
-      onClick={on}
-      className={`p-1.5 rounded-md hover:bg-mist transition-colors ${active ? "bg-mist text-ocean" : "text-fg-muted"}`}
+      title={`Add selection (or current line) as a ${label ?? "task"}`}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={promote}
+      className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-fg-muted hover:bg-mist hover:text-ocean transition-colors capitalize"
     >
-      {children}
+      <ListPlus className="w-4 h-4" /> {label ?? "Task"}
     </button>
-  );
-
-  const Sep = () => <span className="w-px h-5 bg-pebble mx-1" />;
-
-  return (
-    <div className="sticky top-0 z-10 flex items-center gap-0.5 flex-wrap border-b border-pebble bg-white/90 backdrop-blur px-1 py-1 mb-3">
-      <Btn label="Bold" active={editor.isActive("bold")} on={() => editor.chain().focus().toggleBold().run()}>
-        <Bold className="w-4 h-4" />
-      </Btn>
-      <Btn label="Italic" active={editor.isActive("italic")} on={() => editor.chain().focus().toggleItalic().run()}>
-        <Italic className="w-4 h-4" />
-      </Btn>
-      <Sep />
-      <Btn label="Heading 1" active={editor.isActive("heading", { level: 1 })} on={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}>
-        <Heading1 className="w-4 h-4" />
-      </Btn>
-      <Btn label="Heading 2" active={editor.isActive("heading", { level: 2 })} on={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}>
-        <Heading2 className="w-4 h-4" />
-      </Btn>
-      <Sep />
-      <Btn label="Bullet list" active={editor.isActive("bulletList")} on={() => editor.chain().focus().toggleBulletList().run()}>
-        <List className="w-4 h-4" />
-      </Btn>
-      <Btn label="Numbered list" active={editor.isActive("orderedList")} on={() => editor.chain().focus().toggleOrderedList().run()}>
-        <ListOrdered className="w-4 h-4" />
-      </Btn>
-      <Btn label="To-do list" active={editor.isActive("taskList")} on={() => editor.chain().focus().toggleTaskList().run()}>
-        <ListChecks className="w-4 h-4" />
-      </Btn>
-      <Sep />
-      <Btn label="Quote" active={editor.isActive("blockquote")} on={() => editor.chain().focus().toggleBlockquote().run()}>
-        <Quote className="w-4 h-4" />
-      </Btn>
-      <Btn label="Callout" active={editor.isActive("callout")} on={() => editor.chain().focus().toggleCallout().run()}>
-        <Lightbulb className="w-4 h-4" />
-      </Btn>
-      <Btn label="Table" active={editor.isActive("table")} on={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}>
-        <TableIcon className="w-4 h-4" />
-      </Btn>
-      <Btn label="Code block" active={editor.isActive("codeBlock")} on={() => editor.chain().focus().toggleCodeBlock().run()}>
-        <Code className="w-4 h-4" />
-      </Btn>
-      {onPickFile && (
-        <>
-          <Sep />
-          <button
-            type="button"
-            title="Attach a file or image"
-            aria-label="Attach a file or image"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={onPickFile}
-            className="p-1.5 rounded-md hover:bg-mist text-fg-muted transition-colors"
-          >
-            <Paperclip className="w-4 h-4" />
-          </button>
-        </>
-      )}
-      {onPromote && (
-        <>
-          <Sep />
-          <button
-            type="button"
-            title="Add selection (or current line) as a task"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={promote}
-            className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium text-fg-muted hover:bg-mist hover:text-ocean transition-colors capitalize"
-          >
-            <ListPlus className="w-4 h-4" /> {promoteLabel ?? "Task"}
-          </button>
-        </>
-      )}
-      {renderExtra && <>{renderExtra(editor)}</>}
-      {onAssist && (
-        <span className="ml-auto">
-          <AiAssist editor={editor} onAssist={onAssist} onPromote={onPromote} promoteLabel={promoteLabel} />
-        </span>
-      )}
-    </div>
   );
 }
