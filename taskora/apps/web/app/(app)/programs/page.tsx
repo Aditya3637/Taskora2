@@ -11,10 +11,12 @@ import {
   Pencil,
   BarChart3,
   Calendar,
+  FileText,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useWorkspaceFormat } from "@/lib/use-workspace-format";
 import { EditInitiativeModal, type EditableInitiative } from "./EditInitiativeModal";
+import { WorkDocPanel } from "./_components/WorkDocPanel";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -505,6 +507,8 @@ function ProgramRow({
   const [showAddInit, setShowAddInit] = useState(false);
   const [hoveredInitId, setHoveredInitId] = useState<string | null>(null);
   const [editInit, setEditInit] = useState<EditableInitiative | null>(null);
+  // Which initiative's Work doc slide-over is open (opened from the row chip).
+  const [docInit, setDocInit] = useState<{ id: string; name: string } | null>(null);
 
   // Fetch detail whenever the row is expanded and we don't already have it
   // (covers both manual toggle and restored-from-sessionStorage initial state).
@@ -698,6 +702,19 @@ function ProgramRow({
                       <BarChart3 className="w-3 h-3" />
                     </button>
 
+                    {/* Work doc — opens the initiative's workspace document */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDocInit({ id: init.id, name: init.name });
+                      }}
+                      title="Open work document"
+                      aria-label="Open work document"
+                      className="flex items-center justify-center w-6 h-6 rounded-full border border-pebble text-steel hover:border-ocean hover:text-ocean transition-colors flex-shrink-0"
+                    >
+                      <FileText className="w-3 h-3" />
+                    </button>
+
                     {/* Edit icon button (workspace owner/admin only) */}
                     {canEdit && (
                       <button
@@ -761,6 +778,15 @@ function ProgramRow({
           businessId={businessId}
           onClose={() => setEditInit(null)}
           onSaved={handleInitiativeCreated}
+        />
+      )}
+
+      {/* Work document slide-over (opened from an initiative row's chip) */}
+      {docInit && (
+        <WorkDocPanel
+          initiativeId={docInit.id}
+          initiativeName={docInit.name}
+          onClose={() => setDocInit(null)}
         />
       )}
     </div>
