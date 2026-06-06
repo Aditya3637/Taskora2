@@ -17,7 +17,7 @@ import Goals from "./_components/Goals";
 import Checklist from "./_components/Checklist";
 import CommandPalette from "./_components/CommandPalette";
 import NotebookNav from "./_components/NotebookNav";
-import PageEditor from "./_components/PageEditor";
+import RichPageEditor from "./_components/RichPageEditor";
 import ShareModal from "./_components/ShareModal";
 import ShortcutsHelp from "./_components/ShortcutsHelp";
 import TrashModal from "./_components/TrashModal";
@@ -429,13 +429,10 @@ export default function NotebookPage() {
                     onCreate={() => createPage(null)}
                   />
                 ) : (
-                  <PageEditor
+                  <RichPageEditor
                     page={activePage}
-                    workspacePeople={people}
                     readOnly={!canEditActive}
                     onSaved={updatePageInList}
-                    allPages={[...pages, ...sharedPages]}
-                    onOpenPage={(id) => setActivePageId(id)}
                   />
                 )}
               </div>

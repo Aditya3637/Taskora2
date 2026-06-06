@@ -148,6 +148,10 @@ export interface Page {
   owner_id: string;
   title: string;
   body: Block[];
+  /** N-2: TipTap/ProseMirror JSON (the new body); null until a page is converted. */
+  body_doc?: unknown;
+  /** 'blocks' = legacy flat body; 'pm' = use body_doc. Defaults to 'blocks'. */
+  format?: "blocks" | "pm" | string;
   updated_at: string;
   follower_role?: "viewer" | "editor";
   /** Optional emoji icon shown next to the title in editor + sidebar. */
