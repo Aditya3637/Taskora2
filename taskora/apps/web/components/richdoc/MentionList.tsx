@@ -1,13 +1,14 @@
 "use client";
 import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
-import { FolderKanban, CheckSquare, User } from "lucide-react";
+import { FolderKanban, CheckSquare, User, FileText } from "lucide-react";
 
-export type MentionItem = { type: "initiative" | "task" | "user"; id: string; label: string; sub: string };
+export type MentionItem = { type: "initiative" | "task" | "user" | "page"; id: string; label: string; sub: string };
 
 const ICON = {
   initiative: FolderKanban,
   task: CheckSquare,
   user: User,
+  page: FileText,
 } as const;
 
 /**

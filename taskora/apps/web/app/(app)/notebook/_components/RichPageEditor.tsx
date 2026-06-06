@@ -1,30 +1,51 @@
 "use client";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { FileText } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { RichDocEditor } from "@/components/richdoc/RichDocEditor";
 import EmojiPicker from "./EmojiPicker";
-import type { Page } from "../_lib/types";
+import type { Page, Person } from "../_lib/types";
 import { blocksToProseMirror } from "../_lib/convert";
 import { compressImageToDataUrl } from "../_lib/image";
+import { notebookMention } from "../_lib/notebookMention";
+
+/** Walk a TipTap doc and collect the page ids it @-mentions (id "page:<id>"). */
+function mentionedPageIds(body: unknown): Set<string> {
+  const ids = new Set<string>();
+  const walk = (n: any) => {
+    if (Array.isArray(n)) { n.forEach(walk); return; }
+    if (n && typeof n === "object") {
+      if (n.type === "mention") {
+        const raw = n.attrs?.id;
+        if (typeof raw === "string" && raw.startsWith("page:")) ids.add(raw.slice(5));
+      }
+      if (n.content) walk(n.content);
+    }
+  };
+  walk(body);
+  return ids;
+}
 
 /**
- * Notebook page editor on the shared TipTap surface (convergence N-2). Renders
- * the title + icon header and the RichDocEditor body. On first open a legacy
- * (`format !== 'pm'`) page is converted from its flat Block[] body to TipTap
- * JSON and saved (migrate-on-open) — the old `body` is kept server-side as a
- * backup. Title / icon / body autosave on a debounce.
- *
- * Notebook-specific @person-delegation and [[page]] links/backlinks are not yet
- * on this surface (rebuilt in a later phase); for now those read as plain text.
+ * Notebook page editor on the shared TipTap surface (convergence N-2 + N-4).
+ * Title + icon header + RichDocEditor body. Legacy pages convert on first open
+ * (migrate-on-open; old `body` kept as backup). N-4 restores @-mentions of
+ * people + pages, clickable page links, and a backlinks panel.
  */
 export default function RichPageEditor({
   page,
   onSaved,
   readOnly,
+  people,
+  allPages,
+  onOpenPage,
 }: {
   page: Page;
   onSaved?: (next: Page) => void;
   readOnly: boolean;
+  people: Person[];
+  allPages: Page[];
+  onOpenPage: (pageId: string) => void;
 }) {
   const [title, setTitle] = useState(page.title);
   const [icon, setIcon] = useState<string | null>(page.icon ?? null);
@@ -32,6 +53,18 @@ export default function RichPageEditor({
   const [iconOpen, setIconOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // The "@" picker is built once but must see the latest people/pages — feed it
+  // through a ref so the suggestion list stays fresh without re-mounting.
+  const dataRef = useRef({ people, pages: allPages });
+  useEffect(() => { dataRef.current = { people, pages: allPages }; }, [people, allPages]);
+  const mention = useMemo(() => notebookMention(() => dataRef.current), []);
+
+  // Backlinks: other pages whose body @-mentions this page.
+  const backlinks = useMemo(
+    () => allPages.filter((p) => p.id !== page.id && p.body_doc && mentionedPageIds(p.body_doc).has(page.id)),
+    [allPages, page.id],
+  );
 
   const persist = useCallback(
     async (patch: Record<string, unknown>) => {
@@ -148,19 +181,51 @@ export default function RichPageEditor({
           </span>
         </div>
 
-        {/* Body — mount only once the TipTap doc is ready (after conversion). */}
+        {/* Body — mount only once the TipTap doc is ready (after conversion).
+            Click a page chip (data-mention-id="page:<id>") to navigate. */}
         {doc !== null && (
-          <RichDocEditor
-            key={page.id}
-            value={doc}
-            editable={!readOnly}
-            onChange={(json) => scheduleSave({ body_doc: json })}
-            onImageUpload={readOnly ? undefined : onImageUpload}
-            onPromote={readOnly ? undefined : onPromote}
-            onAssist={readOnly ? undefined : onAssist}
-            promoteLabel="checklist item"
-            placeholder="Write… type “/” for blocks, or drop an image in."
-          />
+          <div
+            onClick={(e) => {
+              const el = (e.target as HTMLElement).closest('[data-mention-id^="page:"]');
+              const id = el?.getAttribute("data-mention-id")?.slice(5);
+              if (id) onOpenPage(id);
+            }}
+          >
+            <RichDocEditor
+              key={page.id}
+              value={doc}
+              editable={!readOnly}
+              onChange={(json) => scheduleSave({ body_doc: json })}
+              onImageUpload={readOnly ? undefined : onImageUpload}
+              onPromote={readOnly ? undefined : onPromote}
+              onAssist={readOnly ? undefined : onAssist}
+              mention={mention}
+              promoteLabel="checklist item"
+              placeholder="Write… type “/” for blocks, “@” for people/pages, or drop an image."
+            />
+          </div>
+        )}
+
+        {/* Backlinks — pages that @-mention this one. */}
+        {backlinks.length > 0 && (
+          <div className="mt-8 pt-4 border-t border-pebble">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle mb-2">
+              Linked from
+            </div>
+            <ul className="space-y-1">
+              {backlinks.map((p) => (
+                <li key={p.id}>
+                  <button
+                    onClick={() => onOpenPage(p.id)}
+                    className="flex items-center gap-1.5 text-sm text-fg-muted hover:text-ocean truncate"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-fg-subtle shrink-0" />
+                    {p.icon ? `${p.icon} ` : ""}{p.title || "Untitled"}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
       </div>
     </div>
