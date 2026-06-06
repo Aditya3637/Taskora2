@@ -8,6 +8,7 @@ import type { Page, Person } from "../_lib/types";
 import { blocksToProseMirror } from "../_lib/convert";
 import { compressImageToDataUrl } from "../_lib/image";
 import { notebookMention } from "../_lib/notebookMention";
+import { DelegateButton } from "./DelegateButton";
 
 /** Walk a TipTap doc and collect the page ids it @-mentions (id "page:<id>"). */
 function mentionedPageIds(body: unknown): Set<string> {
@@ -201,6 +202,7 @@ export default function RichPageEditor({
               onAssist={readOnly ? undefined : onAssist}
               mention={mention}
               promoteLabel="checklist item"
+              renderExtra={readOnly ? undefined : (editor) => <DelegateButton editor={editor} pageId={page.id} />}
               placeholder="Write… type “/” for blocks, “@” for people/pages, or drop an image."
             />
           </div>
