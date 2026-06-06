@@ -12,6 +12,7 @@ import TaskItem from "@tiptap/extension-task-item";
 import Details from "@tiptap/extension-details";
 import DetailsSummary from "@tiptap/extension-details-summary";
 import DetailsContent from "@tiptap/extension-details-content";
+import ListKeymap from "@tiptap/extension-list-keymap";
 import { useEffect, useRef } from "react";
 import {
   Bold, Italic, Heading1, Heading2, List, ListOrdered, ListChecks,
@@ -81,6 +82,10 @@ export function WorkDocEditor({
   const editor = useEditor({
     extensions: [
       StarterKit,
+      // Enter on an empty list/checklist item lifts out of the list (and
+      // Backspace joins) — covers bullet, ordered, AND task lists. Without this
+      // you can't exit a checklist except by toggling it off from the toolbar.
+      ListKeymap,
       AttachmentNode,
       CalloutNode,
       Table.configure({ resizable: true }),
