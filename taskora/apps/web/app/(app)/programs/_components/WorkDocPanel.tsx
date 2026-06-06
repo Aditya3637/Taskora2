@@ -3,8 +3,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { apiFetch } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 import { Spinner } from "@/components/ui";
-import { X, Maximize2, Minimize2, FileText } from "lucide-react";
+import { X, Maximize2, Minimize2, FileText, Paperclip, Link2 } from "lucide-react";
 import { WorkDocEditor, type UploadedAttachment } from "./WorkDocEditor";
+import { DocFilesRail } from "./DocFilesRail";
 
 type Doc = {
   id: string;
@@ -15,18 +16,33 @@ type Doc = {
 };
 type Backlink = { doc_id: string; doc_title: string; initiative_id: string; initiative_name: string };
 
+function editedAgo(iso?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso).getTime();
+  if (Number.isNaN(d)) return "";
+  const s = Math.max(0, Math.floor((Date.now() - d) / 1000));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
 /**
- * Slide-over Work Document for an initiative (D2). Opens from the right; the
- * page stays behind it; ⤢ expands to full width. Loads the initiative's first
- * work doc (or offers to create one), then autosaves the body + title.
+ * The initiative Work Document (D2 + the §-feel pass). Opens as a right
+ * slide-over (quick peek) and expands (⤢) to a full-page focus view: a
+ * centered writing canvas with a right context rail (Files · Mentions).
+ * Loads the initiative's first work doc (or offers to create one), autosaves
+ * body + title, and accepts drag-drop / paste / 📎 uploads.
  */
 export function WorkDocPanel({
   initiativeId,
   initiativeName,
+  programName,
   onClose,
 }: {
   initiativeId: string;
   initiativeName: string;
+  programName?: string;
   onClose: () => void;
 }) {
   const [loading, setLoading] = useState(true);
@@ -36,6 +52,8 @@ export function WorkDocPanel({
   const [expanded, setExpanded] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "readonly">("idle");
   const [promoteMsg, setPromoteMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [filesVersion, setFilesVersion] = useState(0); // bump to reload the Files rail
+  const [railTab, setRailTab] = useState<"files" | "mentions">("files");
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load the initiative's first work doc (newest), if any.
@@ -62,7 +80,7 @@ export function WorkDocPanel({
 
   useEffect(() => { load(); }, [load]);
 
-  // Esc closes; lock body scroll while open.
+  // Esc closes.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -81,7 +99,7 @@ export function WorkDocPanel({
     }
   }
 
-  // Debounced autosave of the editor body.
+  // Debounced autosave of the editor body / title.
   const queueSave = useCallback(
     (patch: { body?: unknown; title?: string }) => {
       if (!doc) return;
@@ -92,6 +110,7 @@ export function WorkDocPanel({
         try {
           await apiFetch(`/api/v1/docs/${doc.id}`, { method: "PATCH", body: JSON.stringify(patch) });
           setSaveState("saved");
+          setDoc((d) => (d ? { ...d, updated_at: new Date().toISOString() } : d));
         } catch (e: any) {
           setSaveState(e?.status === 403 ? "readonly" : "idle");
           if (e?.status !== 403) setError("Autosave failed — your last edits may not be saved.");
@@ -103,7 +122,7 @@ export function WorkDocPanel({
 
   useEffect(() => () => { if (saveTimer.current) clearTimeout(saveTimer.current); }, []);
 
-  // D5: promote selected text (or the current line) into a task on this initiative.
+  // D5: promote selected text (or the current line) into a task.
   const promoteToTask = useCallback(async (text: string) => {
     try {
       const t = await apiFetch(`/api/v1/initiatives/${initiativeId}/promote-task`, {
@@ -116,9 +135,7 @@ export function WorkDocPanel({
     setTimeout(() => setPromoteMsg(null), 3000);
   }, [initiativeId]);
 
-  // §8: upload a file as a doc attachment — sign (backend), upload directly to
-  // Storage with the one-time token, then record the row. Returns the recorded
-  // attachment so the editor can insert a node referencing its id.
+  // §8: upload a file — sign, upload to Storage with the one-time token, record.
   const uploadAttachment = useCallback(
     async (file: File): Promise<UploadedAttachment | null> => {
       if (!doc) return null;
@@ -140,6 +157,7 @@ export function WorkDocPanel({
           method: "POST",
           body: JSON.stringify({ ...meta, storage_path: signed.path }),
         });
+        setFilesVersion((v) => v + 1); // refresh the Files rail
         return { id: att.id, filename: att.filename, mime_type: att.mime_type, is_image: att.is_image };
       } catch (e: any) {
         const text =
@@ -157,112 +175,164 @@ export function WorkDocPanel({
 
   const editable = doc?.can_write !== false;
 
+  // The writing surface (shared by both layouts).
+  const canvas = loading ? (
+    <div className="h-[50vh] flex items-center justify-center"><Spinner /></div>
+  ) : error ? (
+    <div className="text-sm text-danger-600">
+      {error}
+      <button onClick={load} className="ml-2 underline text-ocean">Retry</button>
+    </div>
+  ) : !doc ? (
+    <div className="h-[50vh] flex flex-col items-center justify-center text-center gap-3">
+      <FileText className="w-8 h-8 text-fg-subtle" />
+      <p className="text-sm text-fg-muted max-w-xs">
+        No work document yet for <span className="font-medium text-fg">{initiativeName}</span>.
+      </p>
+      <button onClick={createDoc}
+        className="px-3 py-1.5 rounded-lg bg-ocean text-white text-sm font-semibold hover:opacity-90">
+        Start a work document
+      </button>
+    </div>
+  ) : (
+    <>
+      {!editable && (
+        <div className="mb-3 text-xs text-fg-subtle bg-mist rounded-lg px-3 py-2">
+          You have read-only access to this document.
+        </div>
+      )}
+      <input
+        defaultValue={doc.title}
+        disabled={!editable}
+        onChange={(e) => queueSave({ title: e.target.value || "Work document" })}
+        className={`w-full bg-transparent outline-none font-display font-semibold text-fg disabled:opacity-100 mb-2 ${
+          expanded ? "text-3xl" : "text-xl"
+        }`}
+        placeholder="Untitled"
+      />
+      {promoteMsg && (
+        <div className={`mb-2 text-xs rounded-lg px-3 py-2 ${
+          promoteMsg.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-600"
+        }`}>
+          {promoteMsg.text}
+        </div>
+      )}
+      <WorkDocEditor
+        key={doc.id}
+        value={doc.body}
+        editable={editable}
+        onChange={(json) => queueSave({ body: json })}
+        onPromote={editable ? promoteToTask : undefined}
+        onUpload={editable ? uploadAttachment : undefined}
+      />
+    </>
+  );
+
+  const mentionsList = (
+    <div className="p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <Link2 className="w-3.5 h-3.5 text-fg-subtle" />
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">
+          Mentioned in {backlinks.length > 0 && <span className="text-fg-subtle/70">· {backlinks.length}</span>}
+        </span>
+      </div>
+      {backlinks.length === 0 ? (
+        <p className="text-xs text-fg-subtle">No other docs mention this initiative yet.</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {backlinks.map((b) => (
+            <li key={b.doc_id} className="text-xs text-fg-muted truncate">
+              <FileText className="inline w-3.5 h-3.5 text-fg-subtle mr-1 -mt-0.5" />
+              {b.doc_title}
+              <span className="text-fg-subtle"> · {b.initiative_name}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+
+  const header = (
+    <div className="flex items-center gap-2 px-4 py-3 border-b border-pebble shrink-0">
+      <FileText className="w-4 h-4 text-ocean shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[11px] text-fg-subtle truncate">
+          {programName ? `${programName} · ` : ""}{initiativeName}
+        </div>
+        <div className="text-sm font-semibold text-fg truncate">Work document</div>
+      </div>
+      {doc?.updated_at && saveState !== "saving" && (
+        <span className="text-[11px] text-fg-subtle shrink-0 hidden sm:inline">Edited {editedAgo(doc.updated_at)}</span>
+      )}
+      <SaveBadge state={saveState} />
+      <button onClick={() => setExpanded((v) => !v)} title={expanded ? "Collapse" : "Expand to full screen"}
+        className="p-1.5 rounded-md hover:bg-mist text-fg-muted">
+        {expanded ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+      </button>
+      <button onClick={onClose} title="Close (Esc)" className="p-1.5 rounded-md hover:bg-mist text-fg-muted">
+        <X className="w-4 h-4" />
+      </button>
+    </div>
+  );
+
+  // ── Full-page focus mode: centered canvas + right context rail ────────────
+  if (expanded) {
+    return (
+      <div className="fixed inset-0 z-50 bg-white flex flex-col">
+        {header}
+        <div className="flex-1 flex min-h-0">
+          <div className="flex-1 overflow-y-auto">
+            <div className="mx-auto max-w-[760px] px-8 py-10">{canvas}</div>
+          </div>
+          {doc && (
+            <aside className="w-80 shrink-0 border-l border-pebble bg-mist/10 overflow-y-auto">
+              <div className="flex items-center gap-1 px-3 pt-3">
+                <RailTab label="Files" active={railTab === "files"} onClick={() => setRailTab("files")} icon={<Paperclip className="w-3.5 h-3.5" />} />
+                <RailTab label="Mentions" active={railTab === "mentions"} onClick={() => setRailTab("mentions")} icon={<Link2 className="w-3.5 h-3.5" />} />
+              </div>
+              {railTab === "files" ? <DocFilesRail docId={doc.id} refreshKey={filesVersion} /> : mentionsList}
+            </aside>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Side-peek (quick) ─────────────────────────────────────────────────────
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
-      {/* scrim */}
       <button aria-label="Close" onClick={onClose} className="absolute inset-0 bg-midnight/20 backdrop-blur-[1px]" />
-      <aside
-        className={`relative h-full bg-white shadow-2xl border-l border-pebble flex flex-col animate-slide-in-right ${
-          expanded ? "w-full max-w-4xl" : "w-full max-w-xl"
-        }`}
-      >
-        {/* header */}
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-pebble shrink-0">
-          <FileText className="w-4 h-4 text-ocean shrink-0" />
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold text-fg truncate">Work document</div>
-            <div className="text-xs text-fg-subtle truncate">{initiativeName}</div>
-          </div>
-          <SaveBadge state={saveState} />
-          <button onClick={() => setExpanded((v) => !v)} title={expanded ? "Collapse" : "Expand"}
-            className="p-1.5 rounded-md hover:bg-mist text-fg-muted">
-            {expanded ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-          </button>
-          <button onClick={onClose} title="Close (Esc)" className="p-1.5 rounded-md hover:bg-mist text-fg-muted">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* body */}
+      <aside className="relative h-full bg-white shadow-2xl border-l border-pebble flex flex-col animate-slide-in-right w-full max-w-xl">
+        {header}
         <div className="flex-1 overflow-y-auto px-5 py-4">
-          {loading ? (
-            <div className="h-[50vh] flex items-center justify-center"><Spinner /></div>
-          ) : error ? (
-            <div className="text-sm text-danger-600">
-              {error}
-              <button onClick={load} className="ml-2 underline text-ocean">Retry</button>
-            </div>
-          ) : !doc ? (
-            <div className="h-[50vh] flex flex-col items-center justify-center text-center gap-3">
-              <FileText className="w-8 h-8 text-fg-subtle" />
-              <p className="text-sm text-fg-muted max-w-xs">
-                No work document yet for <span className="font-medium text-fg">{initiativeName}</span>.
-              </p>
-              <button onClick={createDoc}
-                className="px-3 py-1.5 rounded-lg bg-ocean text-white text-sm font-semibold hover:opacity-90">
-                Start a work document
-              </button>
-            </div>
-          ) : (
-            <>
-              {!editable && (
-                <div className="mb-3 text-xs text-fg-subtle bg-mist rounded-lg px-3 py-2">
-                  You have read-only access to this document.
-                </div>
-              )}
-              <input
-                defaultValue={doc.title}
-                disabled={!editable}
-                onChange={(e) => queueSave({ title: e.target.value || "Work document" })}
-                className="w-full text-xl font-display font-semibold text-fg bg-transparent outline-none mb-2 disabled:opacity-100"
-                placeholder="Untitled"
-              />
-              {promoteMsg && (
-                <div className={`mb-2 text-xs rounded-lg px-3 py-2 ${
-                  promoteMsg.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-600"
-                }`}>
-                  {promoteMsg.text}
-                </div>
-              )}
-              <WorkDocEditor
-                key={doc.id}
-                value={doc.body}
-                editable={editable}
-                onChange={(json) => queueSave({ body: json })}
-                onPromote={editable ? promoteToTask : undefined}
-                onUpload={editable ? uploadAttachment : undefined}
-              />
-            </>
-          )}
-
-          {backlinks.length > 0 && (
-            <div className="mt-6 pt-4 border-t border-pebble">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle mb-2">
-                Mentioned in
-              </div>
-              <ul className="space-y-1">
-                {backlinks.map((b) => (
-                  <li key={b.doc_id} className="text-sm text-fg-muted truncate">
-                    <FileText className="inline w-3.5 h-3.5 text-fg-subtle mr-1 -mt-0.5" />
-                    {b.doc_title}
-                    <span className="text-fg-subtle"> · {b.initiative_name}</span>
-                  </li>
-                ))}
-              </ul>
+          {canvas}
+          {doc && (
+            <div className="mt-6 pt-2 border-t border-pebble">
+              <DocFilesRail docId={doc.id} refreshKey={filesVersion} />
             </div>
           )}
+          {backlinks.length > 0 && mentionsList}
         </div>
       </aside>
     </div>
   );
 }
 
+function RailTab({ label, active, onClick, icon }: { label: string; active: boolean; onClick: () => void; icon: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-md transition-colors ${
+        active ? "bg-white text-ocean shadow-sm" : "text-fg-muted hover:text-fg"
+      }`}
+    >
+      {icon} {label}
+    </button>
+  );
+}
+
 function SaveBadge({ state }: { state: "idle" | "saving" | "saved" | "readonly" }) {
   if (state === "idle") return null;
-  const map = {
-    saving: "Saving…",
-    saved: "Saved",
-    readonly: "Read-only",
-  } as const;
+  const map = { saving: "Saving…", saved: "Saved", readonly: "Read-only" } as const;
   return <span className="text-xs text-fg-subtle shrink-0">{map[state]}</span>;
 }
