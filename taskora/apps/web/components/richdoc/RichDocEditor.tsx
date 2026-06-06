@@ -53,6 +53,7 @@ export function RichDocEditor({
   mention,
   placeholder,
   promoteLabel,
+  renderExtra,
 }: {
   value: unknown;
   editable: boolean;
@@ -71,6 +72,9 @@ export function RichDocEditor({
   placeholder?: string;
   // verb for the "promote a line" affordances (default "task").
   promoteLabel?: string;
+  // host-injected toolbar control(s) — receives the live editor (e.g. the
+  // Notebook's "Delegate" button). Keeps surface-specific actions out of here.
+  renderExtra?: (editor: Editor) => React.ReactNode;
 }) {
   // The paste/drop/slash handlers are configured once but need the live
   // adapters + editor instance — reach them through refs.
@@ -191,6 +195,7 @@ export function RichDocEditor({
           onPickFile={onUpload || onImageUpload ? openFilePicker : undefined}
           onAssist={onAssist}
           promoteLabel={promoteLabel}
+          renderExtra={renderExtra}
         />
       )}
       <EditorContent editor={editor} />
@@ -204,12 +209,14 @@ function Toolbar({
   onPickFile,
   onAssist,
   promoteLabel,
+  renderExtra,
 }: {
   editor: Editor;
   onPromote?: (text: string) => void;
   onPickFile?: () => void;
   onAssist?: (action: string, selection: string) => Promise<AiResult>;
   promoteLabel?: string;
+  renderExtra?: (editor: Editor) => React.ReactNode;
 }) {
   // D5: promote selected text — or, if nothing is selected, the current line —
   // into a task under this initiative.
@@ -306,6 +313,7 @@ function Toolbar({
           </button>
         </>
       )}
+      {renderExtra && <>{renderExtra(editor)}</>}
       {onAssist && (
         <span className="ml-auto">
           <AiAssist editor={editor} onAssist={onAssist} onPromote={onPromote} promoteLabel={promoteLabel} />
