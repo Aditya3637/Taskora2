@@ -12,6 +12,7 @@ import {
   BarChart3,
   Calendar,
   FileText,
+  ArrowUpRight,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useWorkspaceFormat } from "@/lib/use-workspace-format";
@@ -546,45 +547,58 @@ function ProgramRow({
   return (
     <div className="border border-pebble rounded-xl bg-white overflow-hidden shadow-sm">
       {/* Program Header Row */}
-      <button
-        className="w-full flex items-center gap-3 px-5 py-4 hover:bg-mist/40 transition-colors text-left group"
-        onClick={handleExpand}
-        aria-expanded={expanded}
-      >
-        {/* Colored dot */}
-        <span
-          className="w-3 h-3 rounded-full flex-shrink-0"
-          style={{ backgroundColor: program.color }}
-        />
-
-        {/* Chevron */}
-        <span className="flex-shrink-0 text-steel/50 group-hover:text-steel transition-colors">
-          {expanded ? (
-            <ChevronDown className="w-4 h-4" />
-          ) : (
-            <ChevronRight className="w-4 h-4" />
-          )}
-        </span>
-
-        {/* Name */}
-        <span className="flex-1 font-semibold text-midnight text-sm">
-          {program.name}
-        </span>
-
-        {/* Status badge */}
-        <span
-          className={`text-[11px] px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${
-            STATUS_BADGE[program.status] ?? "bg-gray-100 text-gray-500"
-          }`}
+      <div className="w-full flex items-center gap-3 px-5 py-4 hover:bg-mist/40 transition-colors group">
+        {/* Expand/collapse (covers dot → name → badges) */}
+        <button
+          className="flex-1 min-w-0 flex items-center gap-3 text-left"
+          onClick={handleExpand}
+          aria-expanded={expanded}
         >
-          {program.status}
-        </span>
+          {/* Colored dot */}
+          <span
+            className="w-3 h-3 rounded-full flex-shrink-0"
+            style={{ backgroundColor: program.color }}
+          />
 
-        {/* Initiative count */}
-        <span className="text-xs text-steel/60 flex-shrink-0 ml-1">
-          {count} initiative{count !== 1 ? "s" : ""}
-        </span>
-      </button>
+          {/* Chevron */}
+          <span className="flex-shrink-0 text-steel/50 group-hover:text-steel transition-colors">
+            {expanded ? (
+              <ChevronDown className="w-4 h-4" />
+            ) : (
+              <ChevronRight className="w-4 h-4" />
+            )}
+          </span>
+
+          {/* Name */}
+          <span className="flex-1 min-w-0 font-semibold text-midnight text-sm truncate">
+            {program.name}
+          </span>
+
+          {/* Status badge */}
+          <span
+            className={`text-[11px] px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${
+              STATUS_BADGE[program.status] ?? "bg-gray-100 text-gray-500"
+            }`}
+          >
+            {program.status}
+          </span>
+
+          {/* Initiative count */}
+          <span className="text-xs text-steel/60 flex-shrink-0 ml-1">
+            {count} initiative{count !== 1 ? "s" : ""}
+          </span>
+        </button>
+
+        {/* Open the full program page (AI summary, milestones, deps, docs…) */}
+        <button
+          onClick={() => router.push(`/programs/${program.id}`)}
+          title="Open full program page"
+          aria-label="Open full program page"
+          className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-full font-medium border border-pebble text-steel hover:border-ocean hover:text-ocean transition-colors flex-shrink-0 whitespace-nowrap"
+        >
+          Open <ArrowUpRight className="w-3.5 h-3.5" />
+        </button>
+      </div>
 
       {/* Expanded Panel */}
       {expanded && (
