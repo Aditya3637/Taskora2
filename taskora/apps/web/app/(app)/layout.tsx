@@ -21,7 +21,7 @@ import {
   Menu,
   X as XIcon,
 } from "lucide-react";
-import { supabase } from "@/lib/supabase";
+import { supabase, getSessionSafe } from "@/lib/supabase";
 import { apiFetch } from "@/lib/api";
 import PersonaSwitcher from "@/components/testing/PersonaSwitcher";
 import { Avatar, Tooltip, Spinner, Badge, cn } from "@/components/ui";
@@ -112,7 +112,7 @@ function SidebarContent({
       } catch { /* not signed in / transient */ }
 
       try {
-        const { data: { session } } = await supabase.auth.getSession();
+        const { data: { session } } = await getSessionSafe();
         if (!session) return;
 
         let businessId =
@@ -556,8 +556,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     (async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session) return;
+        const { data: { session } } = await getSessionSafe();
+        // Middleware already gated auth server-side, so a null session here
+        // means a token desync or a wedged auth lock — not a logged-out user.
+        // Clear the loader optimistically rather than hanging on it.
+        if (!session) {
+          if (!cancelled) setOnboarded(true);
+          return;
+        }
         const storedBizId =
           typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
         const res = await fetch(
@@ -607,7 +613,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     (async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
+        const { data: { session } } = await getSessionSafe();
         if (!session) {
           if (!cancelled) setWorkspaceReady(true);
           return;

@@ -207,6 +207,35 @@ def test_outsider_denied(_wire):
     assert client.get("/api/v1/tasks/my/page").json()["items"] == []
 
 
+# ════════════════════════════ B2. Tab counts ═══════════════════════════════
+
+def test_my_counts_for_owner(_wire):
+    """Owner sees every task in the workspace; counts mirror that set."""
+    _as(U_OWNER)
+    counts = client.get("/api/v1/tasks/my/counts").json()
+    assert counts["All"] == 2                 # T1 + T2
+    assert counts["in_progress"] == 2
+    assert counts["approval_pending"] == 0
+    assert counts["reopened"] == 0
+
+
+def test_my_counts_outsider_is_empty(_wire):
+    _as(U_OUT)
+    counts = client.get("/api/v1/tasks/my/counts").json()
+    assert counts == {"All": 0, "approval_pending": 0, "reopened": 0}
+
+
+def test_my_counts_tracks_pending_pill(_wire):
+    """Sending a task for approval moves it into the approval_pending count."""
+    _as(U_OWNER)
+    add_watcher("task", "approver", U_APP)
+    client.patch("/api/v1/tasks/T1", json={"status": "done"})  # → pending
+    counts = client.get("/api/v1/tasks/my/counts").json()
+    assert counts["approval_pending"] == 1
+    assert counts["done"] == 1                # T1 is closed-but-pending
+    assert counts["All"] == 2
+
+
 # ════════════════════ C. Close → pending (all scopes) ═══════════════════════
 
 def test_done_without_approver_just_closes(_wire):

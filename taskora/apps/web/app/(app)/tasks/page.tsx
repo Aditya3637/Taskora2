@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck, GanttChartSquare, MoreHorizontal, Search, Trash2, Inbox, Filter, ChevronsUpDown } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck, GanttChartSquare, MoreHorizontal, Search, Trash2, Inbox, Filter, ChevronsUpDown, Check } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { GanttModal } from "../gantt/GanttChart";
 import { Button, Badge, Skeleton, EmptyState, PageHeader, cn } from "@/components/ui";
@@ -322,7 +322,7 @@ function FilterSelect({
         title={label}
         aria-label={label}
         className={cn(
-          "h-9 pl-3 pr-8 bg-surface border rounded-md text-[13px] appearance-none cursor-pointer",
+          "h-10 pl-3.5 pr-8 bg-surface/80 backdrop-blur border rounded-xl text-[13px] appearance-none cursor-pointer shadow-sm",
           "transition-colors duration-fast",
           "focus:outline-none focus:ring-2 focus:ring-brand-500/20",
           active
@@ -2127,6 +2127,22 @@ function TaskCard({
   // task's due date directly from the row.
   const canEditTask = canManageWatchers;
 
+  // Overdue = a due date earlier than today on a task that isn't finished.
+  // Drives the red date treatment + "Overdue" badge so a blown deadline is
+  // unmissable when scanning the list. Uses the local calendar date (not UTC)
+  // so it doesn't flip a day early/late for non-UTC users.
+  const todayISO = (() => {
+    const d = new Date();
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    return d.toISOString().slice(0, 10);
+  })();
+  const effectiveDueDate = canEditTask ? editDueDate : task.due_date ?? "";
+  const isOverdue =
+    !!effectiveDueDate &&
+    effectiveDueDate < todayISO &&
+    task.status !== "done" &&
+    task.status !== "archived";
+
   const isApproverTask = taskWatchers.some(
     (w) => w.role === "approver" && w.user_id === currentUserId
   );
@@ -2392,7 +2408,13 @@ function TaskCard({
                     disabled={savingDate}
                     aria-label="Due date"
                     title={dateError || "Click to change the due date"}
-                    className={`border rounded px-1.5 py-0.5 text-midnight bg-transparent focus:outline-none focus:border-ocean disabled:opacity-50 ${dateError ? "border-red-300" : "border-pebble"}`}
+                    className={`border rounded px-1.5 py-0.5 bg-transparent focus:outline-none focus:border-ocean disabled:opacity-50 ${
+                      dateError
+                        ? "border-red-300 text-midnight"
+                        : isOverdue
+                        ? "border-red-300 text-red-700 font-semibold"
+                        : "border-pebble text-midnight"
+                    }`}
                   />
                   {dateChangeCount > 0 && (
                     <button
@@ -2417,8 +2439,14 @@ function TaskCard({
                         && task.due_date > task.initiative_target_end_date;
                       return (
                         <span
-                          className={beyond ? "text-amber-700 font-semibold" : undefined}
-                          title={beyond
+                          className={isOverdue
+                            ? "text-red-700 font-semibold"
+                            : beyond
+                            ? "text-amber-700 font-semibold"
+                            : undefined}
+                          title={isOverdue
+                            ? "Overdue"
+                            : beyond
                             ? `Beyond initiative due date (target end ${task.initiative_target_end_date})`
                             : undefined}
                         >
@@ -2438,6 +2466,15 @@ function TaskCard({
                     )}
                   </span>
                 )
+              )}
+
+              {/* Overdue pill — a status-independent signal that the due date
+                  has passed, shown next to the date in both edit and read-only
+                  modes (native date inputs can't be reliably recoloured alone). */}
+              {isOverdue && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 font-semibold">
+                  Overdue
+                </span>
               )}
 
               {/* Card-level closure stamp, right after the target date */}
@@ -2492,10 +2529,14 @@ function TaskCard({
               if (!assigneeId) return null;
               const isMe = assigneeId === currentUserId;
               const assignee = members.find((m) => m.user_id === assigneeId);
-              const name = isMe ? "Me" : assignee?.name || assignee?.email || "Member";
-              const inits = isMe
-                ? "Me"
-                : (name.trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "").join("") || "?");
+              // Initials always come from the real person (so the avatar reads
+              // "AS", not "Me") — only the text label collapses to "Me". This
+              // removes the "Me"-in-circle + "Me"-label duplication.
+              const fullName =
+                assignee?.name || assignee?.email || (isMe ? "You" : "Member");
+              const name = isMe ? "Me" : fullName;
+              const inits =
+                fullName.trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "").join("") || "?";
               return (
                 <span
                   className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] font-medium max-w-[140px] ${
@@ -3547,29 +3588,38 @@ function InitiativeGroup({
   return (
     <div
       ref={groupRef}
-      className={`rounded-xl border overflow-hidden transition-colors ${
+      className={`group relative rounded-2xl border overflow-hidden shadow-sm hover:shadow-md transition-shadow ${
         highlighted
           ? "border-ocean/20 bg-ocean/5"
           : "border-pebble bg-white"
       }`}
     >
+      {/* Left accent rail — carries the program color (replaces the old dot). */}
+      <span
+        className="absolute left-0 top-0 bottom-0 w-[3px]"
+        style={{ backgroundColor: programColor }}
+        aria-hidden
+      />
       {/* Group Header — clickable to collapse, with action buttons that
           stop propagation so they don't trigger the collapse toggle. */}
-      <div className="w-full flex items-center gap-3 px-5 py-3.5 hover:bg-black/[0.02] transition-colors">
-        {/* Colored dot */}
+      <div className="w-full flex items-center gap-3 pl-5 pr-3 py-3.5 hover:bg-black/[0.015] transition-colors">
         <button
           type="button"
           className="flex items-center gap-3 flex-1 min-w-0 text-left"
           onClick={() => onSetCollapsed(!collapsed)}
           aria-expanded={!collapsed}
         >
-          <span
-            className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-            style={{ backgroundColor: programColor }}
-          />
+          {/* Chevron — disclosure indicator, leads the row. */}
+          <span className="text-steel/40 flex-shrink-0">
+            {collapsed ? (
+              <ChevronRight className="w-4 h-4" />
+            ) : (
+              <ChevronDown className="w-4 h-4" />
+            )}
+          </span>
 
           {/* Initiative name */}
-          <span className="flex-1 font-semibold text-midnight text-sm truncate">
+          <span className="flex-1 font-semibold text-midnight text-[15px] tracking-[-.01em] truncate">
             {initiative ? initiative.name : "Unlinked Tasks"}
           </span>
 
@@ -3592,32 +3642,47 @@ function InitiativeGroup({
             </span>
           )}
 
-          {/* X/Y done — or a "No tasks yet" hint when the initiative
-              hasn't been broken down. Surfaces empty work so an admin
-              filtering by owner sees who has open initiatives but no tasks. */}
+          {/* Progress — a ring + count, a "Complete" pill at 100%, or a
+              "No tasks yet" hint when the initiative hasn't been broken
+              down. The hint surfaces empty work so an admin filtering by
+              owner sees who has open initiatives but no tasks. */}
           {total === 0 ? (
             <span className="text-[11px] px-2 py-0.5 rounded-full font-medium bg-amber-50 text-amber-700 border border-amber-200 flex-shrink-0">
               No tasks yet
             </span>
+          ) : doneCount === total ? (
+            <span className="flex-shrink-0 inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-1 rounded-full">
+              <Check className="w-3 h-3" strokeWidth={2.6} />
+              Complete
+            </span>
           ) : (
-            <span className="text-xs text-steel/60 flex-shrink-0 tabular-nums">
-              {doneCount}/{total} done
+            <span className="flex-shrink-0 flex items-center gap-2" title={`${doneCount} of ${total} done`}>
+              <svg width="22" height="22" viewBox="0 0 36 36" className="-rotate-90" aria-hidden>
+                <circle cx="18" cy="18" r="15" fill="none" stroke="#ECECEE" strokeWidth="4" />
+                <circle
+                  cx="18"
+                  cy="18"
+                  r="15"
+                  fill="none"
+                  stroke="#E63946"
+                  strokeWidth="4"
+                  strokeLinecap="round"
+                  strokeDasharray={`${(doneCount / total) * 94.2} 94.2`}
+                />
+              </svg>
+              <span className="text-[12px] text-steel/80 font-medium tabular-nums">
+                {doneCount}/{total}
+              </span>
             </span>
           )}
-
-          {/* Chevron */}
-          <span className="text-steel/40 flex-shrink-0">
-            {collapsed ? (
-              <ChevronRight className="w-4 h-4" />
-            ) : (
-              <ChevronDown className="w-4 h-4" />
-            )}
-          </span>
         </button>
 
-        {/* Per-initiative actions — only on real initiatives, not the Unlinked group */}
+        {/* Per-initiative actions — only on real initiatives, not the Unlinked
+            group. Quietly recede until the card is hovered/focused so the
+            header reads calm; stay visible for keyboard + touch via
+            focus-within and the no-hover fallback. */}
         {hasActions && (
-          <div className="flex items-center gap-1 flex-shrink-0">
+          <div className="flex items-center gap-1 flex-shrink-0 opacity-60 group-hover:opacity-100 focus-within:opacity-100 transition-opacity [@media(hover:none)]:opacity-100">
             {onBreakdown && (
               <button
                 type="button"
@@ -3774,6 +3839,10 @@ function TasksPageInner() {
   // P3: TaskDetailSheet — opens on title click, replaces inline-expand for
   // detail. Inline expand-children stays alongside this phase.
   const [sheetScope, setSheetScope] = useState<SheetScope | null>(null);
+  // Per-status totals for the tab count badges. Spans the whole visible set
+  // (not just the loaded page), so it comes from the server, not `tasks`.
+  // null = not yet loaded → render tabs without counts rather than "0".
+  const [tabCounts, setTabCounts] = useState<Record<string, number> | null>(null);
 
   // Fetches a page of tasks. When `append` is true, results are appended to the
   // current list (used by Load More). Otherwise the list is replaced and the
@@ -3801,6 +3870,23 @@ function TasksPageInner() {
     },
     []
   );
+
+  // Per-status counts for the tab badges. Best-effort and independent of the
+  // page fetch — a failure just leaves the tabs count-less, never blocks the
+  // list. Re-run after mutations so a status change moves the badge.
+  const refreshCounts = useCallback(async () => {
+    try {
+      const bid =
+        typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
+      const q = bid
+        ? `/api/v1/tasks/my/counts?business_id=${encodeURIComponent(bid)}`
+        : "/api/v1/tasks/my/counts";
+      const data = await apiFetch(q);
+      if (data && typeof data === "object") setTabCounts(data as Record<string, number>);
+    } catch {
+      /* counts are decorative — ignore */
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -3831,6 +3917,10 @@ function TasksPageInner() {
         fetchTaskPage(filter, null, false),
         apiFetch(initQ),
       ]);
+
+      // Tab counts: best-effort, fired alongside the load (don't await — the
+      // list shouldn't wait on decorative badges).
+      refreshCounts();
 
       setInitiatives(Array.isArray(initData) ? initData : []);
       if (biz?.id) {
@@ -3863,7 +3953,7 @@ function TasksPageInner() {
     } finally {
       setLoading(false);
     }
-  }, [filter, fetchTaskPage, router]);
+  }, [filter, fetchTaskPage, router, refreshCounts]);
 
   // Hydrate filter state from localStorage on mount, then mark hydrated.
   // After this, every filter change is persisted.
@@ -4109,7 +4199,16 @@ function TasksPageInner() {
   const displayInitiativeIds = useMemo(() => {
     const withTasks = new Set(Object.keys(tasksByInitiative));
     const ids = new Set<string>(withTasks);
-    for (const i of filteredInitiatives) ids.add(i.id);
+    // Empty (task-less) initiatives are only surfaced on the unfiltered "All"
+    // view with no search — there the "No tasks yet" badge is a useful signal
+    // (e.g. an admin filtering by owner spotting un-broken-down work). Under a
+    // status tab (To Do, Reopened, …) or an active search the user is hunting
+    // existing tasks, so a wall of empty initiatives just reads as a broken
+    // filter. Program/owner filtering still applies to the tasks themselves.
+    const surfaceEmpty = filter === "All" && !searchLower;
+    if (surfaceEmpty) {
+      for (const i of filteredInitiatives) ids.add(i.id);
+    }
     return Array.from(ids).sort((a, b) => {
       const aHas = withTasks.has(a);
       const bHas = withTasks.has(b);
@@ -4118,7 +4217,7 @@ function TasksPageInner() {
       const nameB = initiativeMap[b]?.name ?? "";
       return nameA.localeCompare(nameB);
     });
-  }, [tasksByInitiative, filteredInitiatives, initiativeMap]);
+  }, [tasksByInitiative, filteredInitiatives, initiativeMap, filter, searchLower]);
 
   // Auto-expand the first non-empty group on first arrival so the page
   // doesn't read empty when every group is collapsed. Runs once per session
@@ -4155,11 +4254,19 @@ function TasksPageInner() {
   }, []);
 
   const activeFilterCount =
+    (filter !== "All" ? 1 : 0) +
     (programFilter ? 1 : 0) +
     (ownerFilter !== "__me__" && ownerFilter !== "" ? 1 : 0) +
     (search.trim() ? 1 : 0);
 
   return (
+    <div
+      className="relative min-h-screen"
+      style={{
+        backgroundImage:
+          "radial-gradient(120% 80% at 100% 0%, #fbf4f4 0%, rgba(251,244,244,0) 45%), radial-gradient(120% 80% at 0% 0%, #f3f6fb 0%, rgba(243,246,251,0) 40%)",
+      }}
+    >
     <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 sm:py-10 animate-fade-up">
       <PageHeader
         eyebrow="Workspace"
@@ -4190,7 +4297,7 @@ function TasksPageInner() {
             aria-label="Search tasks"
             autoComplete="off"
             spellCheck={false}
-            className="w-full h-9 pl-9 pr-3 bg-surface border border-line rounded-md text-[13px] text-fg placeholder:text-fg-subtle focus:outline-none focus:border-brand-500/60 focus:ring-2 focus:ring-brand-500/20 transition-colors duration-fast"
+            className="w-full h-10 pl-9 pr-3 bg-surface/80 backdrop-blur border border-line rounded-xl text-[13px] text-fg placeholder:text-fg-subtle shadow-sm focus:outline-none focus:border-brand-500/60 focus:ring-4 focus:ring-brand-500/10 transition-colors duration-fast"
           />
         </div>
         <FilterSelect
@@ -4213,7 +4320,7 @@ function TasksPageInner() {
           />
         ) : (
           <div
-            className="h-9 px-3 border border-line rounded-md text-[13px] bg-muted/60 flex items-center gap-2 text-fg-subtle cursor-not-allowed select-none"
+            className="h-10 px-3.5 border border-line rounded-xl text-[13px] bg-muted/60 flex items-center gap-2 text-fg-subtle cursor-not-allowed select-none shadow-sm"
             title="Only admins and owners can filter by other people"
             aria-disabled
           >
@@ -4226,6 +4333,7 @@ function TasksPageInner() {
             size="sm"
             variant="ghost"
             onClick={() => {
+              setFilter("All");
               setSearch("");
               setProgramFilter("");
               setOwnerFilter("__me__");
@@ -4238,9 +4346,10 @@ function TasksPageInner() {
       </div>
 
       {/* Status filter tabs */}
-      <div role="tablist" aria-label="Status filter" className="flex gap-1.5 flex-wrap mb-6 p-0.5 bg-muted rounded-lg w-fit">
+      <div role="tablist" aria-label="Status filter" className="inline-flex items-center gap-0.5 flex-wrap mb-6 p-1 bg-midnight/[0.045] border border-black/[0.04] rounded-2xl w-fit">
         {STATUSES.map((s) => {
           const active = filter === s;
+          const count = tabCounts?.[s];
           return (
             <button
               key={s}
@@ -4248,14 +4357,30 @@ function TasksPageInner() {
               aria-selected={active}
               onClick={() => setFilter(s)}
               className={cn(
-                "px-3 py-1.5 rounded-md text-[12px] font-semibold transition-all duration-fast",
+                "px-3 h-8 rounded-xl text-[12.5px] font-semibold transition-all duration-fast",
+                "inline-flex items-center gap-1.5",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40",
                 active
-                  ? "bg-surface text-fg shadow-xs"
+                  ? "bg-surface text-fg shadow-sm"
                   : "text-fg-muted hover:text-fg",
               )}
             >
               {FILTER_LABELS[s] ?? s}
+              {/* Count badge — only once loaded and non-zero. The two approval
+                  pills get a brand-tinted pill so a non-empty queue stands out;
+                  plain statuses get a quiet muted number. */}
+              {count != null && count > 0 && (
+                <span
+                  className={cn(
+                    "tabular-nums",
+                    s === "approval_pending" || s === "reopened"
+                      ? "text-[10px] font-bold text-brand-600 bg-brand-50 px-1.5 rounded-full"
+                      : "text-[11px] text-fg-subtle",
+                  )}
+                >
+                  {count}
+                </span>
+              )}
             </button>
           );
         })}
@@ -4314,6 +4439,7 @@ function TasksPageInner() {
                     variant="secondary"
                     iconLeft={<X className="h-3.5 w-3.5" strokeWidth={1.8} />}
                     onClick={() => {
+                      setFilter("All");
                       setSearch("");
                       setProgramFilter("");
                       setOwnerFilter("__me__");
@@ -4456,6 +4582,7 @@ function TasksPageInner() {
         }}
         onNavigate={setSheetScope}
       />
+    </div>
     </div>
   );
 }
