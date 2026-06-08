@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>My Work — redesign mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      fontFamily: {
+        sans: ['Inter', 'system-ui', 'sans-serif'],
+        display: ['"Plus Jakarta Sans"', 'Inter', 'sans-serif'],
+      },
+      colors: {
+        brand: { 50:'#FDECEE',500:'#E63946',600:'#D32F3C',700:'#B91C2A' },
+        midnight: '#0E0E12', steel:'#6B7280', pebble:'#ECECEE', mist:'#FAFAFA', ocean:'#0F3460',
+      },
+      boxShadow: {
+        card: '0 1px 2px rgba(16,18,24,.04), 0 1px 3px rgba(16,18,24,.05)',
+        cardHover: '0 4px 16px -4px rgba(16,18,24,.10), 0 2px 6px rgba(16,18,24,.06)',
+        pop: '0 8px 30px -8px rgba(16,18,24,.18)',
+      },
+    },
+  },
+};
+</script>
+<style>
+  body{ background:
+      radial-gradient(120% 80% at 100% 0%, #fbf4f4 0%, rgba(251,244,244,0) 45%),
+      radial-gradient(120% 80% at 0% 0%, #f3f6fb 0%, rgba(243,246,251,0) 40%),
+      #FBFBFC;
+    font-feature-settings:"cv11","ss01"; }
+  .tnum{ font-variant-numeric: tabular-nums; }
+  /* hover-reveal row actions */
+  .row .row-actions{ opacity:0; transform: translateX(4px); transition: all .14s ease; }
+  .row:hover .row-actions{ opacity:1; transform:none; }
+  @media (hover:none){ .row .row-actions{ opacity:1; transform:none; } }
+  .grip{ opacity:0; transition:opacity .14s ease; }
+  .row:hover .grip{ opacity:1; }
+  /* check */
+  .check{ transition: all .15s ease; }
+  .check:hover{ transform: scale(1.08); }
+  /* stagger in */
+  @keyframes up{ from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:none;} }
+  .up{ animation: up .5s cubic-bezier(.22,.61,.36,1) both; }
+  details > summary{ list-style:none; } details > summary::-webkit-details-marker{ display:none; }
+  details[open] .chev{ transform: rotate(90deg); }
+  .chev{ transition: transform .18s ease; }
+  .seg-ind{ transition: all .22s cubic-bezier(.22,.61,.36,1); }
+</style>
+</head>
+<body class="text-midnight font-sans antialiased">
+
+<div class="max-w-[880px] mx-auto px-5 sm:px-6 py-9 sm:py-12">
+
+  <!-- ░░ Header ░░ -->
+  <header class="up mb-7" style="animation-delay:.02s">
+    <div class="flex items-start justify-between gap-4">
+      <div>
+        <div class="text-[11px] font-semibold tracking-[.14em] text-steel/70 uppercase mb-2">Workspace</div>
+        <h1 class="font-display text-[34px] leading-none font-extrabold tracking-[-.02em]">My Work</h1>
+        <p class="text-[14px] text-steel mt-2.5">Active initiatives and the tasks driving them forward.</p>
+      </div>
+      <button class="group inline-flex items-center gap-2 h-10 pl-3.5 pr-4 rounded-xl bg-midnight text-white text-[13.5px] font-semibold shadow-card hover:shadow-cardHover hover:-translate-y-px active:translate-y-0 transition-all">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        New task
+      </button>
+    </div>
+  </header>
+
+  <!-- ░░ Toolbar ░░ -->
+  <div class="up flex flex-wrap items-center gap-2 mb-4" style="animation-delay:.06s">
+    <label class="relative flex-1 min-w-[220px]">
+      <svg class="absolute left-3 top-1/2 -translate-y-1/2 text-steel/60" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/></svg>
+      <input placeholder="Search tasks…" class="w-full h-10 pl-9 pr-3 bg-white/80 backdrop-blur border border-pebble rounded-xl text-[13.5px] placeholder:text-steel/55 shadow-card focus:outline-none focus:border-brand-500/50 focus:ring-4 focus:ring-brand-500/10 transition" />
+    </label>
+    <button class="h-10 px-3.5 rounded-xl bg-white/80 border border-pebble shadow-card text-[13px] font-medium text-midnight/80 inline-flex items-center gap-2 hover:border-steel/30 transition">
+      All programs
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-steel/60"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+    <button class="h-10 px-3.5 rounded-xl bg-white/80 border border-pebble shadow-card text-[13px] font-medium text-midnight/80 inline-flex items-center gap-2 hover:border-steel/30 transition">
+      <span class="w-5 h-5 rounded-full bg-brand-500 text-white text-[10px] font-bold grid place-items-center">Me</span>
+      Owner: Me
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-steel/60"><path d="m6 9 6 6 6-6"/></svg>
+    </button>
+  </div>
+
+  <!-- ░░ Status tabs (segmented, with counts) ░░ -->
+  <div class="up mb-6" style="animation-delay:.10s">
+    <div class="inline-flex items-center gap-0.5 p-1 rounded-2xl bg-midnight/[.045] border border-black/[.04]">
+      <button class="px-3 h-8 rounded-xl bg-white text-[12.5px] font-semibold text-midnight shadow-card inline-flex items-center gap-1.5">All <span class="tnum text-[11px] text-steel/70">24</span></button>
+      <button class="px-3 h-8 rounded-xl text-[12.5px] font-medium text-steel hover:text-midnight transition">To&nbsp;Do</button>
+      <button class="px-3 h-8 rounded-xl text-[12.5px] font-medium text-steel hover:text-midnight transition">In&nbsp;Progress</button>
+      <button class="px-3 h-8 rounded-xl text-[12.5px] font-medium text-steel hover:text-midnight transition">Pending</button>
+      <button class="px-3 h-8 rounded-xl text-[12.5px] font-medium text-steel hover:text-midnight transition inline-flex items-center gap-1.5">Blocked <span class="tnum text-[10px] font-bold text-brand-600 bg-brand-50 px-1.5 rounded-full">2</span></button>
+      <button class="px-3 h-8 rounded-xl text-[12.5px] font-medium text-steel hover:text-midnight transition">Done</button>
+      <button class="px-3 h-8 rounded-xl text-[12.5px] font-medium text-steel hover:text-midnight transition">Approval</button>
+    </div>
+  </div>
+
+  <!-- ░░ Groups ░░ -->
+  <div class="space-y-3.5">
+
+    <!-- ── Group 1 ── -->
+    <section class="up group/card relative rounded-2xl bg-white border border-pebble shadow-card hover:shadow-cardHover transition-shadow overflow-hidden" style="animation-delay:.14s">
+      <span class="absolute left-0 top-0 bottom-0 w-[3px] bg-brand-500"></span>
+      <details open>
+        <summary class="flex items-center gap-3 pl-5 pr-3 py-3.5 cursor-pointer select-none hover:bg-black/[.015] transition-colors">
+          <svg class="chev text-steel/40 shrink-0" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+          <h3 class="font-semibold text-[15px] tracking-[-.01em] truncate">Backnet in Top 5 Properties</h3>
+          <!-- quiet badges -->
+          <span class="shrink-0 inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-full bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>Electricity</span>
+          <span class="shrink-0 text-[11px] font-medium px-2 py-1 rounded-full bg-violet-50 text-violet-700">Process</span>
+          <div class="flex-1"></div>
+          <!-- progress ring + label -->
+          <div class="shrink-0 flex items-center gap-2 mr-1">
+            <svg width="22" height="22" viewBox="0 0 36 36" class="-rotate-90"><circle cx="18" cy="18" r="15" fill="none" stroke="#ECECEE" stroke-width="4"/><circle cx="18" cy="18" r="15" fill="none" stroke="#E63946" stroke-width="4" stroke-linecap="round" stroke-dasharray="0 94.2"/></svg>
+            <span class="tnum text-[12px] text-steel/80 font-medium">0/2</span>
+          </div>
+          <div class="shrink-0 flex items-center gap-0.5 opacity-0 group-hover/card:opacity-100 transition-opacity">
+            <button class="w-8 h-8 grid place-items-center rounded-lg text-steel hover:bg-mist hover:text-brand-500 transition"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+            <button class="w-8 h-8 grid place-items-center rounded-lg text-steel hover:bg-mist hover:text-midnight transition"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg></button>
+          </div>
+        </summary>
+
+        <div class="border-t border-pebble/70 px-2.5 py-2 space-y-px">
+          <!-- task row -->
+          <div class="row group/row flex items-center gap-3 rounded-xl px-2.5 py-2.5 hover:bg-mist transition-colors">
+            <svg class="grip text-steel/30 shrink-0 cursor-grab" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg>
+            <button class="check shrink-0 w-[18px] h-[18px] rounded-full border-2 border-steel/35 hover:border-brand-500 grid place-items-center"></button>
+            <span class="text-[14px] font-medium truncate">Software updates</span>
+            <span class="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium text-steel/80 bg-midnight/[.04] px-1.5 py-0.5 rounded-md"><span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>To&nbsp;Do</span>
+            <div class="flex-1"></div>
+            <!-- meta -->
+            <span class="shrink-0 inline-flex items-center gap-1.5 text-[12px] text-steel tnum"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4.5" width="18" height="16" rx="2.5"/><path d="M3 9h18M8 2.5v4M16 2.5v4"/></svg>Jun&nbsp;30</span>
+            <span class="shrink-0 w-6 h-6 rounded-full bg-brand-500 text-white text-[10px] font-bold grid place-items-center ring-2 ring-white" title="Owner: Me">Me</span>
+            <div class="row-actions shrink-0 flex items-center gap-0.5">
+              <button class="w-7 h-7 grid place-items-center rounded-lg text-steel/70 hover:bg-white hover:text-midnight hover:shadow-card transition" title="Comments"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M21 11.5a8.4 8.4 0 0 1-12 7.6L3 21l1.9-6A8.4 8.4 0 1 1 21 11.5Z"/></svg></button>
+              <button class="w-7 h-7 grid place-items-center rounded-lg text-steel/70 hover:bg-white hover:text-midnight hover:shadow-card transition" title="Open details"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M7 17 17 7M9 7h8v8"/></svg></button>
+              <button class="w-7 h-7 grid place-items-center rounded-lg text-steel/70 hover:bg-white hover:text-midnight hover:shadow-card transition" title="More"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></button>
+            </div>
+          </div>
+
+          <!-- task row: overdue + subtasks -->
+          <div class="row group/row flex items-center gap-3 rounded-xl px-2.5 py-2.5 hover:bg-mist transition-colors">
+            <svg class="grip text-steel/30 shrink-0 cursor-grab" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg>
+            <button class="check shrink-0 w-[18px] h-[18px] rounded-full border-2 border-steel/35 hover:border-brand-500"></button>
+            <span class="text-[14px] font-medium truncate">GVT — 100% installation of Hardware</span>
+            <span class="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium text-steel/80 bg-midnight/[.04] px-1.5 py-0.5 rounded-md"><span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>To&nbsp;Do</span>
+            <span class="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium text-steel/70"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M9 6v12M15 6v12M5 9h14M5 15h14" opacity=".0"/><path d="M3 6h18M3 12h18M3 18h12"/></svg>2 subtasks</span>
+            <div class="flex-1"></div>
+            <span class="shrink-0 inline-flex items-center gap-1.5 text-[12px] font-semibold text-brand-600 bg-brand-50 px-2 py-0.5 rounded-md tnum"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v5M12 16h.01"/><circle cx="12" cy="12" r="9"/></svg>Overdue · May&nbsp;22</span>
+            <span class="shrink-0 w-6 h-6 rounded-full bg-brand-500 text-white text-[10px] font-bold grid place-items-center ring-2 ring-white">Me</span>
+            <div class="row-actions shrink-0 flex items-center gap-0.5">
+              <button class="w-7 h-7 grid place-items-center rounded-lg text-steel/70 hover:bg-white hover:text-midnight hover:shadow-card transition"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M21 11.5a8.4 8.4 0 0 1-12 7.6L3 21l1.9-6A8.4 8.4 0 1 1 21 11.5Z"/></svg></button>
+              <button class="w-7 h-7 grid place-items-center rounded-lg text-steel/70 hover:bg-white hover:text-midnight hover:shadow-card transition"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M7 17 17 7M9 7h8v8"/></svg></button>
+              <button class="w-7 h-7 grid place-items-center rounded-lg text-steel/70 hover:bg-white hover:text-midnight hover:shadow-card transition"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></button>
+            </div>
+          </div>
+
+          <!-- add task affordance -->
+          <button class="w-full flex items-center gap-2 rounded-xl px-2.5 py-2 text-[13px] text-steel/70 hover:text-brand-600 hover:bg-brand-50/50 transition group/add">
+            <span class="w-[18px] h-[18px] rounded-full border-[1.5px] border-dashed border-steel/40 group-hover/add:border-brand-500 grid place-items-center"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
+            Add task
+          </button>
+        </div>
+      </details>
+    </section>
+
+    <!-- ── Group 2 (status variety) ── -->
+    <section class="up group/card relative rounded-2xl bg-white border border-pebble shadow-card hover:shadow-cardHover transition-shadow overflow-hidden" style="animation-delay:.18s">
+      <span class="absolute left-0 top-0 bottom-0 w-[3px] bg-brand-500"></span>
+      <details open>
+        <summary class="flex items-center gap-3 pl-5 pr-3 py-3.5 cursor-pointer select-none hover:bg-black/[.015] transition-colors">
+          <svg class="chev text-steel/40 shrink-0" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+          <h3 class="font-semibold text-[15px] tracking-[-.01em] truncate">Contract Demand Reduction</h3>
+          <span class="shrink-0 inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-full bg-brand-50 text-brand-700"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span>Electricity</span>
+          <span class="shrink-0 text-[11px] font-medium px-2 py-1 rounded-full bg-emerald-50 text-emerald-700">Cost</span>
+          <div class="flex-1"></div>
+          <div class="shrink-0 flex items-center gap-2 mr-1">
+            <svg width="22" height="22" viewBox="0 0 36 36" class="-rotate-90"><circle cx="18" cy="18" r="15" fill="none" stroke="#ECECEE" stroke-width="4"/><circle cx="18" cy="18" r="15" fill="none" stroke="#E63946" stroke-width="4" stroke-linecap="round" stroke-dasharray="47.1 94.2"/></svg>
+            <span class="tnum text-[12px] text-steel/80 font-medium">1/2</span>
+          </div>
+        </summary>
+        <div class="border-t border-pebble/70 px-2.5 py-2 space-y-px">
+          <!-- in progress -->
+          <div class="row group/row flex items-center gap-3 rounded-xl px-2.5 py-2.5 hover:bg-mist transition-colors">
+            <svg class="grip text-steel/30 shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg>
+            <button class="check shrink-0 w-[18px] h-[18px] rounded-full border-2 border-blue-500 grid place-items-center"><span class="w-1.5 h-1.5 rounded-full bg-blue-500"></span></button>
+            <span class="text-[14px] font-medium truncate">Negotiate revised sanctioned load</span>
+            <span class="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded-md"><span class="w-1.5 h-1.5 rounded-full bg-blue-500"></span>In&nbsp;Progress</span>
+            <div class="flex-1"></div>
+            <span class="shrink-0 inline-flex items-center gap-1.5 text-[12px] text-steel tnum"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4.5" width="18" height="16" rx="2.5"/><path d="M3 9h18M8 2.5v4M16 2.5v4"/></svg>Jul&nbsp;12</span>
+            <span class="shrink-0 w-6 h-6 rounded-full bg-ocean text-white text-[10px] font-bold grid place-items-center ring-2 ring-white">RA</span>
+            <div class="row-actions shrink-0 flex items-center gap-0.5">
+              <button class="w-7 h-7 grid place-items-center rounded-lg text-steel/70 hover:bg-white hover:text-midnight hover:shadow-card transition"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M7 17 17 7M9 7h8v8"/></svg></button>
+              <button class="w-7 h-7 grid place-items-center rounded-lg text-steel/70 hover:bg-white hover:text-midnight hover:shadow-card transition"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></button>
+            </div>
+          </div>
+          <!-- done -->
+          <div class="row group/row flex items-center gap-3 rounded-xl px-2.5 py-2.5 hover:bg-mist transition-colors">
+            <svg class="grip text-steel/30 shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg>
+            <button class="check shrink-0 w-[18px] h-[18px] rounded-full bg-emerald-500 border-2 border-emerald-500 grid place-items-center"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></button>
+            <span class="text-[14px] font-medium truncate text-steel/55 line-through decoration-steel/30">Baseline current demand profile</span>
+            <span class="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded-md">Done</span>
+            <div class="flex-1"></div>
+            <span class="shrink-0 w-6 h-6 rounded-full bg-ocean text-white text-[10px] font-bold grid place-items-center ring-2 ring-white">RA</span>
+            <div class="row-actions shrink-0 flex items-center gap-0.5">
+              <button class="w-7 h-7 grid place-items-center rounded-lg text-steel/70 hover:bg-white hover:text-midnight hover:shadow-card transition"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></button>
+            </div>
+          </div>
+          <button class="w-full flex items-center gap-2 rounded-xl px-2.5 py-2 text-[13px] text-steel/70 hover:text-brand-600 hover:bg-brand-50/50 transition group/add">
+            <span class="w-[18px] h-[18px] rounded-full border-[1.5px] border-dashed border-steel/40 group-hover/add:border-brand-500 grid place-items-center"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
+            Add task
+          </button>
+        </div>
+      </details>
+    </section>
+
+    <!-- ── Group 3 collapsed, complete ── -->
+    <section class="up group/card relative rounded-2xl bg-white border border-pebble shadow-card hover:shadow-cardHover transition-shadow overflow-hidden" style="animation-delay:.22s">
+      <span class="absolute left-0 top-0 bottom-0 w-[3px] bg-ocean"></span>
+      <details>
+        <summary class="flex items-center gap-3 pl-5 pr-3 py-3.5 cursor-pointer select-none hover:bg-black/[.015] transition-colors">
+          <svg class="chev text-steel/40 shrink-0" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+          <h3 class="font-semibold text-[15px] tracking-[-.01em] truncate">Electricity Billing</h3>
+          <span class="shrink-0 inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-full bg-blue-50 text-blue-700"><span class="w-1.5 h-1.5 rounded-full bg-ocean"></span>Supplementary Revenue</span>
+          <span class="shrink-0 text-[11px] font-medium px-2 py-1 rounded-full bg-slate-100 text-slate-600">Other</span>
+          <div class="flex-1"></div>
+          <span class="shrink-0 inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-1 rounded-full"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg>Complete</span>
+        </summary>
+        <div class="border-t border-pebble/70 px-2.5 py-2">
+          <div class="row group/row flex items-center gap-3 rounded-xl px-2.5 py-2.5 hover:bg-mist transition-colors">
+            <button class="check shrink-0 w-[18px] h-[18px] rounded-full bg-emerald-500 border-2 border-emerald-500 grid place-items-center"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg></button>
+            <span class="text-[14px] font-medium truncate text-steel/55 line-through decoration-steel/30">Reconcile Q1 billing variances</span>
+            <div class="flex-1"></div>
+            <span class="shrink-0 w-6 h-6 rounded-full bg-brand-500 text-white text-[10px] font-bold grid place-items-center ring-2 ring-white">Me</span>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ── Group 4 (blocked + pending decision) ── -->
+    <section class="up group/card relative rounded-2xl bg-white border border-pebble shadow-card hover:shadow-cardHover transition-shadow overflow-hidden" style="animation-delay:.26s">
+      <span class="absolute left-0 top-0 bottom-0 w-[3px] bg-pink-500"></span>
+      <details open>
+        <summary class="flex items-center gap-3 pl-5 pr-3 py-3.5 cursor-pointer select-none hover:bg-black/[.015] transition-colors">
+          <svg class="chev text-steel/40 shrink-0" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 6 6 6-6 6"/></svg>
+          <h3 class="font-semibold text-[15px] tracking-[-.01em] truncate">Launch Regularisation Limiting Module</h3>
+          <span class="shrink-0 inline-flex items-center gap-1.5 text-[11px] font-medium px-2 py-1 rounded-full bg-pink-50 text-pink-700"><span class="w-1.5 h-1.5 rounded-full bg-pink-500"></span>Manpower</span>
+          <span class="shrink-0 text-[11px] font-medium px-2 py-1 rounded-full bg-violet-50 text-violet-700">Process</span>
+          <div class="flex-1"></div>
+          <div class="shrink-0 flex items-center gap-2 mr-1">
+            <svg width="22" height="22" viewBox="0 0 36 36" class="-rotate-90"><circle cx="18" cy="18" r="15" fill="none" stroke="#ECECEE" stroke-width="4"/><circle cx="18" cy="18" r="15" fill="none" stroke="#E63946" stroke-width="4" stroke-linecap="round" stroke-dasharray="0 94.2"/></svg>
+            <span class="tnum text-[12px] text-steel/80 font-medium">0/4</span>
+          </div>
+        </summary>
+        <div class="border-t border-pebble/70 px-2.5 py-2 space-y-px">
+          <!-- blocked -->
+          <div class="row group/row flex items-center gap-3 rounded-xl px-2.5 py-2.5 hover:bg-mist transition-colors">
+            <svg class="grip text-steel/30 shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg>
+            <button class="check shrink-0 w-[18px] h-[18px] rounded-full border-2 border-brand-500 grid place-items-center"><span class="w-1.5 h-1.5 rounded-full bg-brand-500"></span></button>
+            <span class="text-[14px] font-medium truncate">Final Email and Execution of Limits in the software</span>
+            <span class="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-brand-700 bg-brand-50 px-1.5 py-0.5 rounded-md"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 8v4M12 16h.01"/><circle cx="12" cy="12" r="9"/></svg>Blocked</span>
+            <div class="flex-1"></div>
+            <span class="shrink-0 inline-flex items-center gap-1.5 text-[12px] font-semibold text-brand-600 bg-brand-50 px-2 py-0.5 rounded-md tnum">Overdue · May&nbsp;28</span>
+            <span class="shrink-0 w-6 h-6 rounded-full bg-brand-500 text-white text-[10px] font-bold grid place-items-center ring-2 ring-white">Me</span>
+            <div class="row-actions shrink-0 flex items-center gap-0.5">
+              <button class="w-7 h-7 grid place-items-center rounded-lg text-steel/70 hover:bg-white hover:text-midnight hover:shadow-card transition"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M21 11.5a8.4 8.4 0 0 1-12 7.6L3 21l1.9-6A8.4 8.4 0 1 1 21 11.5Z"/></svg></button>
+              <button class="w-7 h-7 grid place-items-center rounded-lg text-steel/70 hover:bg-white hover:text-midnight hover:shadow-card transition"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M7 17 17 7M9 7h8v8"/></svg></button>
+              <button class="w-7 h-7 grid place-items-center rounded-lg text-steel/70 hover:bg-white hover:text-midnight hover:shadow-card transition"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></button>
+            </div>
+          </div>
+          <!-- pending decision / approval -->
+          <div class="row group/row flex items-center gap-3 rounded-xl px-2.5 py-2.5 hover:bg-mist transition-colors">
+            <svg class="grip text-steel/30 shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/></svg>
+            <button class="check shrink-0 w-[18px] h-[18px] rounded-full border-2 border-amber-500 grid place-items-center"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span></button>
+            <span class="text-[14px] font-medium truncate">Approve rollout plan with operations</span>
+            <span class="shrink-0 inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-md"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Sent for Approval</span>
+            <div class="flex-1"></div>
+            <span class="shrink-0 inline-flex items-center gap-1.5 text-[12px] text-steel tnum"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="4.5" width="18" height="16" rx="2.5"/><path d="M3 9h18M8 2.5v4M16 2.5v4"/></svg>Jun&nbsp;18</span>
+            <div class="shrink-0 flex -space-x-1.5">
+              <span class="w-6 h-6 rounded-full bg-ocean text-white text-[10px] font-bold grid place-items-center ring-2 ring-white">RA</span>
+              <span class="w-6 h-6 rounded-full bg-brand-500 text-white text-[10px] font-bold grid place-items-center ring-2 ring-white">Me</span>
+            </div>
+            <div class="row-actions shrink-0 flex items-center gap-0.5">
+              <button class="w-7 h-7 grid place-items-center rounded-lg text-steel/70 hover:bg-white hover:text-midnight hover:shadow-card transition"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M7 17 17 7M9 7h8v8"/></svg></button>
+              <button class="w-7 h-7 grid place-items-center rounded-lg text-steel/70 hover:bg-white hover:text-midnight hover:shadow-card transition"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></button>
+            </div>
+          </div>
+          <button class="w-full flex items-center gap-2 rounded-xl px-2.5 py-2 text-[13px] text-steel/70 hover:text-brand-600 hover:bg-brand-50/50 transition group/add">
+            <span class="w-[18px] h-[18px] rounded-full border-[1.5px] border-dashed border-steel/40 group-hover/add:border-brand-500 grid place-items-center"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
+            Add task
+          </button>
+        </div>
+      </details>
+    </section>
+
+  </div>
+
+  <p class="text-center text-[12px] text-steel/50 mt-10">Mockup · proposed “My Work” redesign — static preview, real data wiring unchanged.</p>
+</div>
+</body>
+</html>

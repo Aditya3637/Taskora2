@@ -524,6 +524,106 @@ def get_my_tasks_page(
     }
 
 
+@router.get("/my/counts")
+def get_my_tasks_counts(
+    business_id: Optional[str] = Query(default=None, description="Scope to a specific workspace."),
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Per-status task counts for the My Work status tabs.
+
+    Drives the count badges on each tab. Mirrors /my/page's visibility cascade
+    so a tab's count matches what that tab would actually list. Returns a flat
+    {status: count} map:
+      - "All" — total visible tasks
+      - each tasks.status value present (todo, in_progress, …)
+      - "approval_pending" / "reopened" — the two pills that aren't plain
+        tasks.status values; computed approval-aware over task_entities, the
+        same predicates as the FE's matchesApprovalFilter.
+    Counts span the whole visible set (not a single page), which is exactly why
+    they can't be derived client-side from the paginated /my/page response.
+    """
+    uid = user["id"]
+    business_id = _user_business_id(sb, uid, prefer=business_id)
+    empty = {"All": 0, "approval_pending": 0, "reopened": 0}
+    if not business_id:
+        return empty
+
+    visible = _visible_task_ids_for(sb, business_id, uid)
+    if visible is None:
+        # Admin/owner: every task whose initiative is in this business.
+        biz_init_ids = [
+            r["id"]
+            for r in sb.table("initiatives")
+            .select("id")
+            .eq("business_id", business_id)
+            .execute()
+            .data
+        ]
+        if not biz_init_ids:
+            return empty
+        rows = (
+            sb.table("tasks")
+            .select("id, status, approval_state")
+            .in_("initiative_id", biz_init_ids)
+            .execute()
+            .data
+        )
+    else:
+        if not visible:
+            return empty
+        rows = (
+            sb.table("tasks")
+            .select("id, status, approval_state")
+            .in_("id", list(visible))
+            .execute()
+            .data
+        )
+
+    counts: dict = {"All": len(rows)}
+    for r in rows:
+        st = r.get("status") or "todo"
+        counts[st] = counts.get(st, 0) + 1
+
+    # The two approval pills also depend on per-entity approval state, so fetch
+    # task_entities once and apply the same predicates the FE uses.
+    task_ids = [r["id"] for r in rows]
+    ents = (
+        sb.table("task_entities")
+        .select("task_id, approval_state, per_entity_status")
+        .in_("task_id", task_ids)
+        .execute()
+        .data
+        if task_ids
+        else []
+    )
+    ents_by_task: dict = {}
+    for e in ents:
+        ents_by_task.setdefault(e["task_id"], []).append(e)
+
+    pending = 0
+    reopened = 0
+    for r in rows:
+        es = ents_by_task.get(r["id"], [])
+        if r.get("approval_state") == "pending" or any(
+            e.get("approval_state") == "pending" for e in es
+        ):
+            pending += 1
+        if (
+            r.get("status") == "reopened"
+            or r.get("approval_state") == "rejected"
+            or any(
+                e.get("approval_state") == "rejected"
+                or e.get("per_entity_status") == "reopened"
+                for e in es
+            )
+        ):
+            reopened += 1
+    counts["approval_pending"] = pending
+    counts["reopened"] = reopened
+    return counts
+
+
 # Registered at both "" and "/" because the Vercel/Next.js rewrite strips the
 # trailing slash, so the proxied request arrives as POST /api/v1/tasks (no
 # slash) and FastAPI's slash-redirect does not survive the proxy.
