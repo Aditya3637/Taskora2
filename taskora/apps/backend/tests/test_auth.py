@@ -47,12 +47,15 @@ def test_health_no_auth_required():
     assert r.json()["status"] == "ok"
 
 
-def test_missing_token_returns_403():
+def test_missing_token_returns_401():
     # No Authorization header — HTTPBearer rejects before get_current_user.
-    # Path is slash-less: redirect_slashes=False makes the trailing-slash
-    # form 405 (it only matches the POST route).
+    # FastAPI >=0.1xx returns 401 (Unauthorized) for a MISSING credential,
+    # which is the correct HTTP semantic and distinct from the 403 this app
+    # uses for "authenticated but not a member" (so the FE can redirect-to-login
+    # on 401 vs show-forbidden on 403). Path is slash-less: redirect_slashes=
+    # False makes the trailing-slash form 405 (it only matches the POST route).
     r = client.get("/api/v1/businesses")
-    assert r.status_code == 403
+    assert r.status_code == 401
 
 
 def test_invalid_token_returns_401():
