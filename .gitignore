@@ -34,3 +34,6 @@ build/
 .idea/
 .vscode/settings.json
 .vercel
+
+# Local-only gitleaks binary (CI downloads its own; never commit it)
+gitleaks
