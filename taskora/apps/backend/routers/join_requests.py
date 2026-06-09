@@ -11,7 +11,8 @@ match a workspace.
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from rate_limit import limiter
 from pydantic import BaseModel
 from supabase import Client
 
@@ -147,7 +148,9 @@ class JoinRequestBody(BaseModel):
 
 
 @router.post("/requests", status_code=201)
+@limiter.limit("20/minute")  # join-request spam guard
 def create_request(
+    request: Request,
     body: JoinRequestBody,
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),

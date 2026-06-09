@@ -20,7 +20,8 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from rate_limit import limiter
 from pydantic import BaseModel, field_validator
 from supabase import Client
 
@@ -726,7 +727,9 @@ class DocAiIn(BaseModel):
 
 
 @router.post("/docs/{doc_id}/ai")
+@limiter.limit("20/minute")  # LLM call — cost + abuse guard
 def doc_ai_assist(
+    request: Request,
     doc_id: str,
     body: DocAiIn,
     user: dict = Depends(get_current_user),

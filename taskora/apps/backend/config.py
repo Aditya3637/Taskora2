@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     # endpoints and mirrored as the bucket's storage-layer file_size_limit.
     workspace_docs_bucket: str = "workspace-docs"
     doc_upload_max_bytes: int = 26_214_400  # 25 MiB
+    # App-layer encryption for secrets stored at rest (BYO AI keys). A
+    # urlsafe-base64 32-byte Fernet key. When unset, secrets are stored as
+    # plaintext with a warning (dev) — production MUST set this. See crypto.py.
+    app_encryption_key: Optional[str] = None
 
 
 @lru_cache

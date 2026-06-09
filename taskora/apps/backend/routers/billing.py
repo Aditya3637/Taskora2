@@ -1,3 +1,4 @@
+import hashlib
 from typing import Literal
 from datetime import datetime, timedelta, timezone
 
@@ -6,6 +7,7 @@ from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
 from deps import get_supabase, require_member
+from rate_limit import limiter
 from config import get_settings, Settings
 from automation import events as ev
 
@@ -26,7 +28,9 @@ class CreateSubscription(BaseModel):
 
 
 @router.post("/subscribe", status_code=201)
+@limiter.limit("10/minute")  # payment-provider calls — abuse guard
 def create_subscription(
+    request: Request,
     body: CreateSubscription,
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
@@ -101,6 +105,30 @@ async def razorpay_webhook(
     sub_entity = event.get("payload", {}).get("subscription", {}).get("entity", {})
     sub_id = sub_entity.get("id")
 
+    # Replay / idempotency guard. The signature proves the payload is authentic
+    # but not fresh — a captured, validly-signed event can be replayed to
+    # manipulate subscription state (revive a cancelled sub via a stale
+    # `activated`, or push current_period_end forward via a stale `charged` =
+    # free extension). Dedup on the provider event id, falling back to a hash of
+    # the raw body so byte-identical replays are caught even when the header is
+    # absent. SELECT-first handles the common case; the (provider, event_id)
+    # unique index is the concurrent-delivery backstop (see migration 054).
+    event_id = (
+        request.headers.get("x-razorpay-event-id")
+        or hashlib.sha256(payload).hexdigest()
+    )
+    seen = (
+        sb.table("processed_webhook_events")
+        .select("event_id")
+        .eq("provider", "razorpay")
+        .eq("event_id", event_id)
+        .limit(1)
+        .execute()
+        .data
+    )
+    if seen:
+        return {"ok": True, "duplicate": True}
+
     def _biz_for_sub() -> str | None:
         rows = sb.table("subscriptions").select("business_id").eq("razorpay_subscription_id", sub_id).limit(1).execute().data
         return rows[0]["business_id"] if rows else None
@@ -130,6 +158,17 @@ async def razorpay_webhook(
         ev.emit(sb, ev.PAYMENT_FAILED, business_id=_biz_for_sub(), props={"rz_event": event_name})
     elif event_name == "subscription.cancelled":
         sb.table("subscriptions").update({"status": "cancelled"}).eq("razorpay_subscription_id", sub_id).execute()
+
+    # Record the event as processed so a later replay is refused. Done after the
+    # state change so a failed apply lets the provider retry; best-effort insert
+    # swallows a unique violation from a concurrent duplicate (whose idempotent
+    # state change already landed).
+    try:
+        sb.table("processed_webhook_events").insert(
+            {"provider": "razorpay", "event_id": event_id, "event_type": event_name}
+        ).execute()
+    except Exception:
+        pass
 
     return {"ok": True}
 

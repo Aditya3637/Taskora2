@@ -44,7 +44,10 @@ def resolve_config(sb: Client, business_id: str) -> Optional[dict]:
         if rows:
             r = rows[0]
             provider = r.get("provider") or "anthropic"
-            key = (r.get("api_key") or "").strip() or None
+            # Stored encrypted at rest — decrypt before use (legacy plaintext
+            # rows pass through unchanged). See crypto.py.
+            from crypto import decrypt_secret
+            key = (decrypt_secret(r.get("api_key")) or "").strip() or None
             model = (r.get("model") or "").strip() or None
     except Exception:
         pass

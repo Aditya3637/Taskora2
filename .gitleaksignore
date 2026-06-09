@@ -1,0 +1,12 @@
+# gitleaks false positives (fingerprint = commit:file:rule:line). Each verified
+# to be a placeholder / dummy, not a live secret. Surgical by fingerprint so a
+# real future leak in these files is still caught.
+
+# Dummy test fixture key ("sk-abcdEFGH3456") in an AI-settings unit test.
+5f9ebfc24e48cbd4c292816b5d481e4e3ef1032e:taskora/apps/backend/tests/test_ai_settings.py:generic-api-key:73
+
+# FREE_HOSTING_GUIDE.md (deleted; historical only) — illustrative env-var
+# examples: the universal JWT header `eyJhbGci...` truncated with `...`, and a
+# `<your-stripe-test-secret-key>` placeholder. No real secrets.
+2405a2d6084e3a7fa06583a131069b561060af2a:FREE_HOSTING_GUIDE.md:generic-api-key:203
+2405a2d6084e3a7fa06583a131069b561060af2a:FREE_HOSTING_GUIDE.md:generic-api-key:224

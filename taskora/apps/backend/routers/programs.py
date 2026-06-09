@@ -1,7 +1,8 @@
 from typing import Optional
 from datetime import date, datetime, timezone, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from rate_limit import limiter
 from supabase import Client
 from pydantic import BaseModel, field_validator
 
@@ -1595,7 +1596,9 @@ def get_program_ai_summary(
 
 
 @router.post("/{program_id}/ai-summary", status_code=201)
+@limiter.limit("20/minute")  # LLM call — cost + abuse guard
 def regenerate_program_ai_summary(
+    request: Request,
     program_id: str,
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
