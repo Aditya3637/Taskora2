@@ -1,11 +1,13 @@
 name: Security Audit
 
-# Weekly security scan. Three layers, each blocking:
-#   - dependency vulnerabilities  → scripts/security-audit.sh (pip-audit + npm audit)
-#   - secret leaks                → gitleaks (full git history)
-#   - static analysis / SAST      → bandit (backend Python)
-# All run via `if: always()` so one failure doesn't mask the others. A failed
-# *scheduled* run opens a tracking issue so a regression isn't missed.
+# Two scan layers on different cadences:
+#   - code-scan (gitleaks + bandit): runs on EVERY PR + weekly. Fast, low
+#     false-positive — gates merges so no new secret or high-severity SAST
+#     finding lands on main.
+#   - dependency-audit (pip-audit + npm audit): WEEKLY only. Dependency CVEs are
+#     a baseline/backlog concern (fixes often need coordinated framework
+#     upgrades, e.g. starlette<->fastapi), so they're tracked on a schedule and
+#     open an issue on failure rather than blocking unrelated feature PRs.
 
 on:
   schedule:
@@ -15,8 +17,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  audit:
-    name: dependency + secret + SAST scan
+  code-scan:
+    name: secret + SAST scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,9 +27,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
       - name: Secret scan (gitleaks)
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
@@ -40,11 +39,23 @@ jobs:
           bandit -r taskora/apps/backend \
             -x taskora/apps/backend/tests,taskora/apps/backend/.venv,taskora/apps/backend/venv \
             --severity-level high --confidence-level medium
+
+  dependency-audit:
+    name: dependency audit
+    # Weekly / manual only — not a per-PR gate (see header).
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
       - name: Install pip-audit
-        if: always()
         run: python -m pip install pip-audit
       - name: Run dependency audit
-        if: always()
         run: bash taskora/scripts/security-audit.sh
       - name: Open issue on scheduled failure
         if: failure() && github.event_name == 'schedule'
