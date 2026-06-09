@@ -5,6 +5,9 @@ supabase==2.10.0
 # python-jose removed 2026-06-09 — dead since auth moved to Supabase /auth/v1/user
 # (0 imports); cleared 5 CVEs (PYSEC-2024-232/233, PYSEC-2025-185).
 python-multipart==0.0.27  # CVE fixes (DoS on untrusted multipart input)
+# fastapi 0.111 bundled these as core deps; 0.112+ moved them to the [standard]
+# extra, so pin explicitly now that we're on 0.136. EmailStr needs email-validator.
+email-validator==2.3.0
 httpx==0.27.0
 pydantic==2.13.4       # bumped with fastapi 0.136.3 (0.111 was pinned to 2.7)
 pydantic-settings==2.2.1
