@@ -311,7 +311,9 @@ def get_invite(
 
 
 @router.post("/{token}/accept")
+@limiter.limit("20/minute")  # slow token-guessing on accept
 def accept_invite(
+    request: Request,
     token: str,
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
@@ -421,7 +423,9 @@ def accept_invite(
 
 
 @router.post("/{token}/decline")
+@limiter.limit("20/minute")  # slow token-guessing on decline
 def decline_invite(
+    request: Request,
     token: str,
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),

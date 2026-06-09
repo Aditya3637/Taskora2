@@ -231,6 +231,44 @@ def test_done_with_task_approver_enters_pending(_wire):
     assert t["approval_state"] == "pending"
 
 
+# ════════════════════ C2. Bulk-update can't bypass approval (N5) ═════════════
+
+def test_bulk_done_routes_through_approval(_wire):
+    """N5: bulk-setting an approver-gated task to done must enter pending, not
+    silently close — same routing as the single-task PATCH /status."""
+    _as(U_OWNER)
+    add_watcher("task", "approver", U_APP)        # T1 now needs approval
+    r = client.post("/api/v1/tasks/bulk-update",
+                    json={"task_ids": ["T1"], "status": "done"})
+    assert r.status_code == 200 and r.json()["updated_count"] == 1
+    sb = app.dependency_overrides[get_supabase]()
+    t1 = row(sb, "tasks", id="T1")
+    assert t1["status"] == "done"
+    assert t1["closed_at"] is not None             # TAT anchored
+    assert t1["approval_state"] == "pending"       # NOT bypassed
+
+
+def test_bulk_done_without_approver_just_closes(_wire):
+    _as(U_OWNER)                                    # T2 has no approver
+    r = client.post("/api/v1/tasks/bulk-update",
+                    json={"task_ids": ["T2"], "status": "done"})
+    assert r.status_code == 200 and r.json()["updated_count"] == 1
+    sb = app.dependency_overrides[get_supabase]()
+    t2 = row(sb, "tasks", id="T2")
+    assert t2["status"] == "done" and t2["approval_state"] == "none"
+    assert t2["closed_at"] is not None
+
+
+def test_bulk_reopen_clears_closure(_wire):
+    _as(U_OWNER)
+    client.post("/api/v1/tasks/bulk-update", json={"task_ids": ["T2"], "status": "done"})
+    client.post("/api/v1/tasks/bulk-update", json={"task_ids": ["T2"], "status": "in_progress"})
+    sb = app.dependency_overrides[get_supabase]()
+    t2 = row(sb, "tasks", id="T2")
+    assert t2["status"] == "in_progress"
+    assert t2["closed_at"] is None and t2["approval_state"] == "none"
+
+
 def test_status_endpoint_task_level_pending(_wire):
     _as(U_OWNER)
     add_watcher("task", "approver", U_APP)

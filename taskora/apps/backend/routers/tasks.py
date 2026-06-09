@@ -1304,14 +1304,43 @@ def bulk_update_tasks(
     if not allowed_ids:
         return {"updated_count": 0}
 
-    payload: dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
-    if body.status is not None:
-        payload["status"] = body.status
-    if body.priority is not None:
-        payload["priority"] = body.priority
+    now = datetime.now(timezone.utc).isoformat()
 
-    result = sb.table("tasks").update(payload).in_("id", allowed_ids).execute()
-    return {"updated_count": len(result.data) if result.data else 0}
+    # Priority-only changes don't touch the lifecycle, so a single blanket
+    # update is fine.
+    if body.status is None:
+        result = (
+            sb.table("tasks")
+            .update({"priority": body.priority, "updated_at": now})
+            .in_("id", allowed_ids)
+            .execute()
+        )
+        return {"updated_count": len(result.data) if result.data else 0}
+
+    # N5: a status change — especially to "done" — must go through the SAME
+    # approval/closure routing as the single-task PATCH /status. The old blanket
+    # update let a stakeholder bulk-set "done" and silently close tasks that
+    # have an approver, bypassing the approval workflow entirely. Route each
+    # task individually so a "done" on an approver-gated task lands in
+    # approval_state="pending" instead of closed, and closed_at is anchored
+    # (and cleared on reopen) exactly like the single endpoint.
+    updated = 0
+    for tid in allowed_ids:
+        payload: dict = {"status": body.status, "updated_at": now}
+        if body.priority is not None:
+            payload["priority"] = body.priority
+        if body.status == "done":
+            payload["closed_at"] = now
+            payload["approval_state"] = (
+                "pending" if _scope_has_approver(sb, tid, "task") else "none"
+            )
+        else:
+            payload["closed_at"] = None
+            payload["approval_state"] = "none"
+        result = sb.table("tasks").update(payload).eq("id", tid).execute()
+        if result.data:
+            updated += 1
+    return {"updated_count": updated}
 
 
 # ---------------------------------------------------------------------------

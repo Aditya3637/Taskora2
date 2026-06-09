@@ -648,7 +648,9 @@ def _ai_settings_view(sb: Client, business_id: str) -> dict:
         .eq("business_id", business_id).execute().data
     )
     r = rows[0] if rows else {}
-    key = r.get("api_key") or ""
+    # Decrypt before masking so key_last4 reflects the real key, not ciphertext.
+    from crypto import decrypt_secret
+    key = decrypt_secret(r.get("api_key")) or ""
     return {
         "provider": r.get("provider") or "anthropic",
         "model": r.get("model"),
@@ -692,10 +694,14 @@ def put_ai_settings(
     )
     existing = rows[0] if rows else None
 
+    # api_key is stored encrypted at rest. None → keep the existing (already
+    # encrypted) value untouched; a new value is encrypted before storage.
+    # encrypt_secret is idempotent, so re-storing the existing value is a no-op.
+    from crypto import encrypt_secret
     if body.api_key is None:
         new_key = existing.get("api_key") if existing else None
     else:
-        new_key = body.api_key.strip() or None
+        new_key = encrypt_secret(body.api_key.strip() or None)
 
     payload = {
         "business_id": business_id,

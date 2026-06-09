@@ -7,6 +7,7 @@ from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
 from deps import get_supabase, require_member
+from rate_limit import limiter
 from config import get_settings, Settings
 from automation import events as ev
 
@@ -27,7 +28,9 @@ class CreateSubscription(BaseModel):
 
 
 @router.post("/subscribe", status_code=201)
+@limiter.limit("10/minute")  # payment-provider calls — abuse guard
 def create_subscription(
+    request: Request,
     body: CreateSubscription,
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
