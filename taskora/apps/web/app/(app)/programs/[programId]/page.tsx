@@ -867,14 +867,24 @@ export default function ProgramDetailPage() {
             </p>
           </div>
         </div>
-        {canEdit && (
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {/* This program's Gantt timeline across the year. */}
           <button
-            onClick={() => setShowAdd(true)}
-            className="flex items-center gap-2 px-4 py-2.5 bg-taskora-red text-white rounded-lg text-sm font-semibold hover:opacity-90 flex-shrink-0"
+            onClick={() => router.push(`/gantt?program=${programId}`)}
+            title="Open this program's timeline"
+            className="flex items-center gap-2 px-4 py-2.5 border border-pebble text-steel rounded-lg text-sm font-semibold hover:border-ocean hover:text-ocean transition-colors"
           >
-            <Plus className="w-4 h-4" /> Add Initiative
+            <GanttChartSquare className="w-4 h-4" /> Timeline
           </button>
-        )}
+          {canEdit && (
+            <button
+              onClick={() => setShowAdd(true)}
+              className="flex items-center gap-2 px-4 py-2.5 bg-taskora-red text-white rounded-lg text-sm font-semibold hover:opacity-90"
+            >
+              <Plus className="w-4 h-4" /> Add Initiative
+            </button>
+          )}
+        </div>
       </div>
 
       {/* P1 + P2: measurable outcomes, status updates, trend */}

@@ -107,12 +107,23 @@ function GanttPageInner() {
     if (qp) setDrill({ id: qp, name: "" });
   }, [searchParams]);
 
+  // ?program=<id> scopes the view to a single program (opened from the
+  // Programs section); absent → the whole workspace.
+  const programScope = searchParams.get("program");
+  const scopedLane = useMemo(
+    () => (programScope && data
+      ? data.programs.find((l) => String(l.id) === programScope) ?? null
+      : null),
+    [programScope, data],
+  );
+
   // Flatten the lanes into program-header + initiative rows, honouring the
-  // primary-user filter (hide lanes that end up empty under a filter).
+  // program scope and the primary-user filter (hide lanes that end up empty).
   const rows = useMemo<GanttRow[]>(() => {
     if (!data) return [];
     const out: GanttRow[] = [];
     for (const lane of data.programs) {
+      if (programScope && String(lane.id) !== programScope) continue;
       const inits = userFilter
         ? lane.initiatives.filter((i) => i.primary_stakeholder_id === userFilter)
         : lane.initiatives;
@@ -148,7 +159,7 @@ function GanttPageInner() {
       }
     }
     return out;
-  }, [data, userFilter]);
+  }, [data, userFilter, programScope]);
 
   const { start, end } = useMemo(() => ganttRangeMonths(anchorYear, years), [anchorYear, years]);
 
@@ -179,17 +190,29 @@ function GanttPageInner() {
   );
 
   const totalInitiatives = useMemo(
-    () => (data?.programs ?? []).reduce((n, l) => n + l.initiatives.length, 0),
-    [data],
+    () => (data?.programs ?? [])
+      .filter((l) => !programScope || String(l.id) === programScope)
+      .reduce((n, l) => n + l.initiatives.length, 0),
+    [data, programScope],
   );
 
   return (
     <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6 sm:py-8">
       <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-midnight">Program Timeline</h1>
+          {programScope && (
+            <a href="/gantt"
+              className="inline-flex items-center gap-1 text-xs text-steel hover:text-midnight mb-1 transition-colors">
+              ← All programs
+            </a>
+          )}
+          <h1 className="text-2xl font-bold text-midnight">
+            {scopedLane ? `${scopedLane.name} — Timeline` : "Program Timeline"}
+          </h1>
           <p className="text-steel text-sm mt-1">
-            Plan the year across every program — one bar per initiative.
+            {scopedLane
+              ? "This program's initiatives across the year — one bar each."
+              : "Plan the year across every program — one bar per initiative."}
             {isAdmin && " Drag a bar to reschedule."}
           </p>
         </div>
@@ -253,7 +276,11 @@ function GanttPageInner() {
             {totalInitiatives === 0 ? (
               <div className="flex flex-col items-center justify-center py-24 text-steel">
                 <Layers className="w-12 h-12 opacity-20 mb-4" />
-                <p className="text-sm">No initiatives to plan yet — create one under a program.</p>
+                <p className="text-sm">
+                  {scopedLane
+                    ? "This program has no initiatives yet."
+                    : "No initiatives to plan yet — create one under a program."}
+                </p>
               </div>
             ) : rows.length === 0 ? (
               <p className="text-center text-steel py-12 text-sm">

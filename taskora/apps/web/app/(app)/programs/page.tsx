@@ -615,6 +615,16 @@ function ProgramRow({
           </span>
         </button>
 
+        {/* This program's Gantt timeline (initiatives across the year). */}
+        <button
+          onClick={() => router.push(`/gantt?program=${program.id}`)}
+          title="Open this program's timeline"
+          aria-label="Open this program's Gantt timeline"
+          className="flex items-center justify-center w-7 h-7 rounded-full border border-pebble text-steel hover:border-ocean hover:text-ocean transition-colors flex-shrink-0"
+        >
+          <BarChart3 className="w-3.5 h-3.5" />
+        </button>
+
         {/* Open the full program page (AI summary, milestones, deps, docs…) */}
         <button
           onClick={() => router.push(`/programs/${program.id}`)}
@@ -852,6 +862,7 @@ function readExpandedFromStorage(): Set<string> {
 }
 
 export default function ProgramsPage() {
+  const router = useRouter();
   const [programs, setPrograms] = useState<Program[]>([]);
   const [businessId, setBusinessId] = useState<string | null>(null);
   const [canEdit, setCanEdit] = useState(false);
@@ -996,15 +1007,26 @@ export default function ProgramsPage() {
             Organise initiatives into strategic programs.
           </p>
         </div>
-        {canEdit && (
+        <div className="flex items-center gap-2">
+          {/* Overall timeline across every program. */}
           <button
-            onClick={() => setShowNew(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-taskora-red text-white rounded-lg text-sm font-semibold hover:opacity-90"
+            onClick={() => router.push("/gantt")}
+            title="Open the workspace program timeline"
+            className="flex items-center gap-2 px-4 py-2 border border-pebble text-steel rounded-lg text-sm font-semibold hover:border-ocean hover:text-ocean transition-colors"
           >
-            <Plus className="w-4 h-4" />
-            New Program
+            <BarChart3 className="w-4 h-4" />
+            Timeline
           </button>
-        )}
+          {canEdit && (
+            <button
+              onClick={() => setShowNew(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-taskora-red text-white rounded-lg text-sm font-semibold hover:opacity-90"
+            >
+              <Plus className="w-4 h-4" />
+              New Program
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Programs accordion list */}
