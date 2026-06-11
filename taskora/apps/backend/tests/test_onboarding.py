@@ -90,7 +90,8 @@ def test_create_initiative_under_business(sb):
     biz = client.post("/api/v1/businesses/",
                        json={"name": "Acme", "type": "building"}).json()
     r = client.post("/api/v1/initiatives/",
-                    json={"name": "Q3 Audit", "business_id": biz["id"]})
+                    json={"name": "Q3 Audit", "business_id": biz["id"],
+                          "start_date": "2026-01-01", "target_end_date": "2026-03-31"})
     assert r.status_code == 201, r.text
     init = r.json()
     assert init["id"] and init["business_id"] == biz["id"]
@@ -102,5 +103,6 @@ def test_create_initiative_requires_membership(sb):
     sb.store["businesses"].append({"id": "b-x", "name": "Other",
                                    "type": "building", "owner_id": "someone"})
     r = client.post("/api/v1/initiatives/",
-                    json={"name": "X", "business_id": "b-x"})
+                    json={"name": "X", "business_id": "b-x",
+                          "start_date": "2026-01-01", "target_end_date": "2026-03-31"})
     assert r.status_code == 403

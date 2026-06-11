@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from rate_limit import limiter
 from supabase import Client
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from auth import get_current_user
 from deps import (
@@ -122,7 +122,24 @@ class InitiativeCreate(BaseModel):
     impact_category: Optional[str] = "other"
     impact: Optional[str] = None
     impact_metric: Optional[str] = None
-    target_end_date: Optional[str] = None
+    # Mandatory (056): both required, target_end_date must not precede start.
+    start_date: str
+    target_end_date: str
+
+    @field_validator("start_date", "target_end_date")
+    @classmethod
+    def valid_date(cls, v: str) -> str:
+        try:
+            date.fromisoformat(v)
+        except (TypeError, ValueError):
+            raise ValueError("must be an ISO date (YYYY-MM-DD)")
+        return v
+
+    @model_validator(mode="after")
+    def end_after_start(self):
+        if self.target_end_date < self.start_date:
+            raise ValueError("target_end_date cannot be before start_date")
+        return self
 
     @field_validator("name")
     @classmethod
@@ -514,6 +531,139 @@ def list_programs(
     return programs
 
 
+@router.get("/workspace-gantt")
+def workspace_gantt(
+    business_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Workspace-wide program timeline: every visible program as a swimlane
+    with one bar per child initiative (start_date → target_end_date). Powers
+    the yearly / multi-year planning Gantt.
+
+    Visibility mirrors list_programs: admins/owners see all; members see
+    programs they're aligned to or follow, and only their visible initiatives.
+    Initiatives with no program are grouped under a synthetic 'Unlinked' lane.
+    Also returns the roster of primary stakeholders present, for the
+    'everyone → one person' filter.
+    """
+    require_member(sb, business_id, user["id"])
+    today = date.today()
+
+    programs = (
+        sb.table("programs")
+        .select("id, name, color, start_date, target_end_date, created_at")
+        .eq("business_id", business_id)
+        .order("created_at")
+        .execute()
+        .data
+    )
+
+    is_priv = is_admin_or_owner(sb, business_id, user["id"])
+    follower_progs: set[str] = set()
+    visible_inits: set[str] | None = None
+    if not is_priv:
+        prog_id_set = visible_program_ids(sb, business_id, user["id"])
+        programs = [p for p in programs if p["id"] in prog_id_set]
+        follower_progs = program_follower_ids(sb, business_id, user["id"])
+        visible_inits = visible_initiative_ids(sb, business_id, user["id"])
+
+    initiatives = (
+        sb.table("initiatives")
+        .select(
+            "id, name, status, start_date, target_end_date, program_id, "
+            "primary_stakeholder_id, impact_category, depends_on"
+        )
+        .eq("business_id", business_id)
+        .neq("status", "cancelled")
+        .order("start_date")
+        .execute()
+        .data
+    )
+    if not is_priv:
+        initiatives = [
+            i for i in initiatives
+            if (visible_inits is not None and i["id"] in visible_inits)
+            or (i.get("program_id") in follower_progs)
+        ]
+
+    # Resolve stakeholder names in one round-trip.
+    sh_ids = list({i["primary_stakeholder_id"] for i in initiatives if i.get("primary_stakeholder_id")})
+    name_map: dict = {}
+    if sh_ids:
+        for r in sb.table("users").select("id, name").in_("id", sh_ids).execute().data:
+            name_map[r["id"]] = r.get("name") or ""
+
+    present_ids = {i["id"] for i in initiatives}
+    inits_by_program: dict = {}
+    for i in initiatives:
+        # Only keep dependency edges that point at an initiative also present
+        # in this response, so the frontend never draws a dangling arrow.
+        deps = [d for d in (i.get("depends_on") or []) if d in present_ids]
+        row = {
+            "id": i["id"],
+            "title": i["name"],
+            "status": i.get("status"),
+            "start_date": i.get("start_date"),
+            "end_date": i.get("target_end_date"),
+            "primary_stakeholder_id": i.get("primary_stakeholder_id"),
+            "primary_stakeholder_name": name_map.get(i.get("primary_stakeholder_id") or "", ""),
+            "impact_category": i.get("impact_category"),
+            "health": _derive_initiative_health(i, today),
+            "depends_on": deps,
+        }
+        inits_by_program.setdefault(i.get("program_id"), []).append(row)
+
+    # Program milestones (mig 050) overlaid as diamonds on each lane.
+    prog_ids = [p["id"] for p in programs]
+    ms_by_program: dict = {}
+    if prog_ids:
+        ms_rows = (
+            sb.table("milestones")
+            .select("id, name, uniform_date, completed_at, parent_id")
+            .eq("parent_type", "program")
+            .in_("parent_id", prog_ids)
+            .execute()
+            .data
+        )
+        for m in ms_rows:
+            ms_by_program.setdefault(m["parent_id"], []).append({
+                "id": m["id"],
+                "name": m["name"],
+                "date": m.get("uniform_date"),
+                "completed": bool(m.get("completed_at")),
+            })
+
+    lanes = []
+    for p in programs:
+        lanes.append({
+            "id": p["id"],
+            "name": p["name"],
+            "color": p.get("color"),
+            "start_date": p.get("start_date"),
+            "end_date": p.get("target_end_date"),
+            "initiatives": inits_by_program.get(p["id"], []),
+            "milestones": ms_by_program.get(p["id"], []),
+        })
+    # Synthetic lane for initiatives with no program (admins/aligned members).
+    unlinked = inits_by_program.get(None, [])
+    if unlinked:
+        lanes.append({
+            "id": None,
+            "name": "Unlinked",
+            "color": None,
+            "start_date": None,
+            "end_date": None,
+            "initiatives": unlinked,
+            "milestones": [],
+        })
+
+    members = [{"id": uid, "name": name_map.get(uid, "")} for uid in sh_ids]
+    members.sort(key=lambda m: (m["name"] or "").lower())
+
+    return {"programs": lanes, "members": members}
+
+
 @router.post("", status_code=201)
 def create_program(
     body: ProgramCreate,
@@ -610,6 +760,8 @@ def add_initiative(
     """Add an initiative directly to a program."""
     program = _get_program_or_404(sb, program_id)
     require_member(sb, program["business_id"], user["id"])
+    # start_date + target_end_date are mandatory and ordered (056) — enforced
+    # by InitiativeCreate's validators.
 
     result = sb.table("initiatives").insert({
         "business_id": program["business_id"],
@@ -621,7 +773,8 @@ def add_initiative(
         "impact_category": body.impact_category,
         "impact": body.impact or None,
         "impact_metric": body.impact_metric or None,
-        "target_end_date": body.target_end_date or None,
+        "start_date": body.start_date,
+        "target_end_date": body.target_end_date,
     }).execute()
 
     if not result.data:

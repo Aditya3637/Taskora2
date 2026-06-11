@@ -18,7 +18,7 @@ each table (see "first introduced" column).
 | `themes` | 8 | Initiative impact themes. | 005 |
 | `programs` | 13 | Top of the work hierarchy. | 006 |
 | `program_followers` | 4 | Read-only program-scope followers (apex of the visibility pyramid). | **038** |
-| `initiatives` | 17 | Programs contain initiatives. `primary_stakeholder_id` for ownership. | 002 |
+| `initiatives` | 17 | Programs contain initiatives. `primary_stakeholder_id` for ownership. `start_date`+`target_end_date` are NOT NULL and ordered (056) — mandatory span for program-level Gantt. | 002 |
 | `initiative_entities` | 4 | Initiative ↔ building/client M:N. | 002 |
 | `initiative_followers` | 4 | Initiative-scope explicit followers (read-only). | 033 |
 | `tasks` | 22 | Initiative contains tasks. `created_by` (032) for the visibility cascade. `archived_at` (055) for admin archive/restore. | 002 |

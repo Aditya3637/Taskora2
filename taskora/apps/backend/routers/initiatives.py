@@ -30,10 +30,26 @@ class InitiativeCreate(BaseModel):
     impact: Optional[str] = None
     impact_metric: Optional[str] = None
     impact_category: Optional[str] = "other"
-    start_date: Optional[date] = None
-    target_end_date: Optional[date] = None
+    # Mandatory (056): every initiative occupies a real span on the program
+    # timeline, and target_end_date bounds its tasks/subtasks.
+    start_date: date
+    target_end_date: date
     date_mode: Literal["uniform", "per_entity"] = "uniform"
     entities: List[EntityAssignment] = []
+
+
+def _validate_initiative_dates(start: date, end: date) -> None:
+    """Both dates are mandatory and end must not precede start."""
+    if start is None or end is None:
+        raise HTTPException(
+            status_code=422,
+            detail="start_date and target_end_date are required",
+        )
+    if end < start:
+        raise HTTPException(
+            status_code=422,
+            detail="target_end_date cannot be before start_date",
+        )
 
 
 @router.get("/my")
@@ -104,6 +120,7 @@ def create_initiative(
     sb: Client = Depends(get_supabase),
 ):
     require_member(sb, body.business_id, user["id"])
+    _validate_initiative_dates(body.start_date, body.target_end_date)
 
     primary_stakeholder_id = body.primary_stakeholder_id or user["id"]
 
@@ -657,6 +674,17 @@ def update_initiative(
         if k in payload and payload[k] is not None and hasattr(payload[k], "isoformat"):
             payload[k] = payload[k].isoformat()
 
+    # Keep the start ≤ end invariant when either date is being changed —
+    # compare the effective values (new where provided, else current).
+    if "start_date" in payload or "target_end_date" in payload:
+        eff_start = payload.get("start_date", current.get("start_date"))
+        eff_end = payload.get("target_end_date", current.get("target_end_date"))
+        if eff_start and eff_end and str(eff_end) < str(eff_start):
+            raise HTTPException(
+                status_code=422,
+                detail="target_end_date cannot be before start_date",
+            )
+
     # Compute the actual diff (skip writes that don't change anything so the
     # activity feed isn't polluted by no-op PATCHes).
     diff: dict[str, tuple] = {}
@@ -854,12 +882,18 @@ def get_initiative_gantt(
     require_member(sb, initiative["business_id"], user["id"])
 
     init_start = initiative.get("start_date")
+    init_end = initiative.get("target_end_date")
 
     def _derive_start(end):
         """Initiative start, but never after the row's end. None if no end."""
         if not end or not init_start:
             return None
         return init_start if init_start <= end else None
+
+    def _over(end):
+        """True when a row's end date overruns the initiative's target end —
+        the frontend flags these so an out-of-bounds plan is visible."""
+        return bool(end and init_end and str(end) > str(init_end))
 
     tasks = (
         sb.table("tasks")
@@ -952,6 +986,7 @@ def get_initiative_gantt(
             "start_date": _derive_start(row_end),
             "end_date": row_end,
             "is_milestone": False,
+            "over_end": _over(row_end),
             "depends_on": holder.get("depends_on") or [],
             "entities": ents,
         })
@@ -970,6 +1005,7 @@ def get_initiative_gantt(
                     "start_date": _derive_start(e["end_date"]),
                     "end_date": e["end_date"],
                     "is_milestone": False,
+                    "over_end": _over(e["end_date"]),
                     "depends_on": [],
                     "entities": [e],
                 })
