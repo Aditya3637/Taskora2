@@ -21,11 +21,11 @@ each table (see "first introduced" column).
 | `initiatives` | 17 | Programs contain initiatives. `primary_stakeholder_id` for ownership. | 002 |
 | `initiative_entities` | 4 | Initiative ↔ building/client M:N. | 002 |
 | `initiative_followers` | 4 | Initiative-scope explicit followers (read-only). | 033 |
-| `tasks` | 21 | Initiative contains tasks. `created_by` (032) for the visibility cascade. | 002 |
+| `tasks` | 22 | Initiative contains tasks. `created_by` (032) for the visibility cascade. `archived_at` (055) for admin archive/restore. | 002 |
 | `task_entities` | 8 | Task ↔ entity M:N, per-entity status + closed_at + approval. | 002 |
 | `task_stakeholders` | 4 | Task ↔ user M:N (primary/secondary/follower). | 002 |
 | `task_date_change_log` | 10 | Append-only diff of every due-date change. | 020 |
-| `subtasks` | 17 | Two-level nesting via `parent_subtask_id` (016). description/due/priority added in 039. | 002 |
+| `subtasks` | 18 | Two-level nesting via `parent_subtask_id` (016). description/due/priority added in 039. `archived_at` (055) for admin archive/restore (cascades with parent). | 002 |
 | `subtask_entities` | 5 | Subtask ↔ entity M:N. | 002 |
 | `item_watchers` | 9 | Polymorphic watchers/approvers at task, subtask, or entity scope. | 021 |
 | `approval_log` | 9 | Append-only record of approve/reject events. | 022 |
