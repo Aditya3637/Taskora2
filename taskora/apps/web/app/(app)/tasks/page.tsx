@@ -53,6 +53,7 @@ type MyInitiative = {
   primary_stakeholder_id?: string;
   primary_stakeholder_name?: string;
   programs?: { id: string; name: string; color: string } | null;
+  start_date?: string;
   target_end_date?: string;
 };
 
@@ -97,6 +98,7 @@ type Task = {
   title: string;
   status: string;
   priority: string;
+  start_date?: string;
   due_date?: string;
   initiative_id?: string;
   task_entities?: TaskEntity[];
@@ -130,6 +132,7 @@ type Subtask = {
   latest_comment?: LatestComment;
   // P2 field parity with tasks (migration 039).
   description?: string | null;
+  start_date?: string | null;
   due_date?: string | null;
   priority?: "low" | "medium" | "high" | "urgent" | null;
   // Set when this attribute has been archived (admin action).
@@ -3210,7 +3213,10 @@ function BreakdownModal({
   const [title, setTitle] = useState("");
   const [secondaryStakeholderId, setSecondaryStakeholderId] = useState("");
   const [priority, setPriority] = useState("medium");
-  const [dueDate, setDueDate] = useState("");
+  // Mandatory task span (057) — prefill from the initiative so the common case
+  // is one click.
+  const [startDate, setStartDate] = useState(initiative.start_date ?? "");
+  const [dueDate, setDueDate] = useState(initiative.target_end_date ?? "");
   const [members, setMembers] = useState<Member[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -3247,6 +3253,14 @@ function BreakdownModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!title.trim()) return;
+    if (!startDate || !dueDate) {
+      setError("Start date and end date are required.");
+      return;
+    }
+    if (dueDate < startDate) {
+      setError("End date can't be before the start date.");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -3258,7 +3272,8 @@ function BreakdownModal({
           status: "todo",
           primary_stakeholder_id: currentUserId,
           initiative_id: initiative.id,
-          ...(dueDate && { due_date: dueDate }),
+          start_date: startDate,
+          due_date: dueDate,
           entities: taskType !== "general"
             ? selectedEntities.map((id) => ({ entity_type: taskType, entity_id: id }))
             : [],
@@ -3377,8 +3392,8 @@ function BreakdownModal({
             </select>
           </div>
 
-          {/* 5. Priority + Due Date */}
-          <div className="grid grid-cols-2 gap-3">
+          {/* 5. Priority + Start + End */}
+          <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1">
                 Priority
@@ -3395,12 +3410,26 @@ function BreakdownModal({
             </div>
             <div>
               <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1">
-                Due Date
+                Start Date *
+              </label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                required
+                className="w-full border border-pebble rounded-lg px-3 py-2 text-sm focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1">
+                End Date *
               </label>
               <input
                 type="date"
                 value={dueDate}
+                min={startDate || undefined}
                 onChange={(e) => setDueDate(e.target.value)}
+                required
                 className="w-full border border-pebble rounded-lg px-3 py-2 text-sm focus:outline-none"
               />
             </div>
@@ -3447,6 +3476,7 @@ function NewTaskModal({
 }) {
   const [title, setTitle] = useState("");
   const [priority, setPriority] = useState("medium");
+  const [startDate, setStartDate] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [initiativeId, setInitiativeId] = useState("");
   const [taskType, setTaskType] = useState<"general" | "building" | "client">("general");
@@ -3486,9 +3516,27 @@ function NewTaskModal({
       .finally(() => setLoadingEntities(false));
   }, [taskType, businessId]);
 
+  // Prefill the mandatory span from the chosen initiative (only while still
+  // blank, so the user's own edits stick).
+  useEffect(() => {
+    if (!initiativeId) return;
+    const init = initiatives.find((i) => i.id === initiativeId);
+    if (!init) return;
+    setStartDate((s) => s || init.start_date || "");
+    setDueDate((d) => d || init.target_end_date || "");
+  }, [initiativeId, initiatives]);
+
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!title.trim()) return;
+    if (!startDate || !dueDate) {
+      setError("Start date and end date are required.");
+      return;
+    }
+    if (dueDate < startDate) {
+      setError("End date can't be before the start date.");
+      return;
+    }
     setCreating(true);
     setError("");
     try {
@@ -3499,7 +3547,8 @@ function NewTaskModal({
           priority,
           primary_stakeholder_id: currentUserId,
           ...(initiativeId && { initiative_id: initiativeId }),
-          ...(dueDate && { due_date: dueDate }),
+          start_date: startDate,
+          due_date: dueDate,
           entities: taskType !== "general"
             ? selectedEntities.map((id) => ({ entity_type: taskType, entity_id: id }))
             : [],
@@ -3579,7 +3628,7 @@ function NewTaskModal({
             autoFocus
             className="w-full h-10 px-3 border border-pebble rounded-lg text-sm focus:outline-none focus:border-ocean"
           />
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="text-xs text-steel font-medium mb-1 block">
                 Priority
@@ -3598,12 +3647,26 @@ function NewTaskModal({
             </div>
             <div>
               <label className="text-xs text-steel font-medium mb-1 block">
-                Due date
+                Start date *
+              </label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                required
+                className="w-full h-10 px-3 border border-pebble rounded-lg text-sm focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-steel font-medium mb-1 block">
+                End date *
               </label>
               <input
                 type="date"
                 value={dueDate}
+                min={startDate || undefined}
                 onChange={(e) => setDueDate(e.target.value)}
+                required
                 className="w-full h-10 px-3 border border-pebble rounded-lg text-sm focus:outline-none"
               />
             </div>
@@ -4842,6 +4905,7 @@ function TaskDetailSheet({
   const [description, setDescription] = useState("");
   const [statusVal, setStatusVal] = useState("");
   const [priority, setPriority] = useState("medium");
+  const [startDate, setStartDate] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [assigneeId, setAssigneeId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -4878,6 +4942,7 @@ function TaskDetailSheet({
       setTitle(scope.task.title);
       setStatusVal(scope.task.status);
       setPriority(scope.task.priority || "medium");
+      setStartDate(scope.task.start_date ?? "");
       setDueDate(scope.task.due_date ?? "");
       setDescription("");
       setAssigneeId(scope.task.primary_stakeholder_id ?? null);
@@ -4886,6 +4951,7 @@ function TaskDetailSheet({
       setTitle(scope.subtask.title);
       setStatusVal(scope.subtask.status);
       setPriority((scope.subtask.priority ?? "medium") as string);
+      setStartDate(scope.subtask.start_date ?? "");
       setDueDate(scope.subtask.due_date ?? "");
       setDescription(scope.subtask.description ?? "");
       setAssigneeId(scope.subtask.assignee_id ?? null);
@@ -4992,23 +5058,37 @@ function TaskDetailSheet({
       setErr("Title required");
       return;
     }
+    // Task dates are mandatory (057); subtask dates are optional.
+    if (isTask && (!startDate || !dueDate)) {
+      setErr("Start date and end date are required.");
+      return;
+    }
+    if (startDate && dueDate && dueDate < startDate) {
+      setErr("End date can't be before the start date.");
+      return;
+    }
     setSaving(true);
     setErr("");
     try {
-      // Backend now respects explicit null (model_fields_set), so sending
-      // null actually clears the field. Single PATCH for both tasks and
-      // subtasks — update_task already handles closure + approval transitions
-      // on status change, so no second /status call is needed.
+      // Backend respects explicit null (model_fields_set). Single PATCH for
+      // both tasks and subtasks — update_task handles closure + approval
+      // transitions on status change, so no second /status call is needed.
       const payload: Record<string, any> = {
         title: title.trim(),
         priority,
-        // Empty input → null clears the column. Backend distinguishes
-        // "field absent" (no change) from "field explicitly null" (clear).
-        due_date: dueDate || null,
         description: description || null,
         status: statusVal,
       };
-      if (!isTask) payload.assignee_id = assigneeId;
+      if (isTask) {
+        // Mandatory + ordered — always send concrete values.
+        payload.start_date = startDate;
+        payload.due_date = dueDate;
+      } else {
+        // Optional — empty clears.
+        payload.start_date = startDate || null;
+        payload.due_date = dueDate || null;
+        payload.assignee_id = assigneeId;
+      }
       await apiFetch(apiPath, {
         method: "PATCH",
         body: JSON.stringify(payload),
@@ -5111,10 +5191,26 @@ function TaskDetailSheet({
             </div>
 
             <div>
-              <label className="block text-[11px] font-medium text-steel mb-1">Due date</label>
+              <label className="block text-[11px] font-medium text-steel mb-1">
+                Start date{isTask ? " *" : ""}
+              </label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                disabled={!canEdit || saving}
+                className="w-full border border-pebble rounded px-2 py-1.5 text-sm focus:outline-none focus:border-ocean disabled:bg-mist/40"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-medium text-steel mb-1">
+                End date{isTask ? " *" : ""}
+              </label>
               <input
                 type="date"
                 value={dueDate}
+                min={startDate || undefined}
                 onChange={(e) => setDueDate(e.target.value)}
                 disabled={!canEdit || saving}
                 className="w-full border border-pebble rounded px-2 py-1.5 text-sm focus:outline-none focus:border-ocean disabled:bg-mist/40"
