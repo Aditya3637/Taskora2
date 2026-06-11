@@ -165,6 +165,15 @@ export function EditInitiativeModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
+    // Dates are mandatory and ordered (056).
+    if (!startDate || !targetDate) {
+      setError("Start date and target end date are required.");
+      return;
+    }
+    if (targetDate < startDate) {
+      setError("Target end date can't be before the start date.");
+      return;
+    }
     setSaving(true);
     setError("");
 
@@ -172,8 +181,8 @@ export function EditInitiativeModal({
     if (name.trim() !== initiative.name) payload.name = name.trim();
     if ((description || null) !== (initiative.description ?? null)) payload.description = description || null;
     if (status !== initiative.status) payload.status = status;
-    if ((startDate || null) !== (initiative.start_date ?? null)) payload.start_date = startDate || null;
-    if ((targetDate || null) !== (initiative.target_end_date ?? null)) payload.target_end_date = targetDate || null;
+    if ((startDate || null) !== (initiative.start_date ?? null)) payload.start_date = startDate;
+    if ((targetDate || null) !== (initiative.target_end_date ?? null)) payload.target_end_date = targetDate;
     if ((primaryStakeholderId || null) !== (initiative.primary_stakeholder_id ?? null)) payload.primary_stakeholder_id = primaryStakeholderId || null;
     if ((ownerId || null) !== (initiative.owner_id ?? null)) payload.owner_id = ownerId || null;
     if (impactCategory !== (initiative.impact_category ?? "other")) payload.impact_category = impactCategory;
@@ -249,13 +258,13 @@ export function EditInitiativeModal({
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1.5">Start Date</label>
-              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)}
+              <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1.5">Start Date *</label>
+              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} required
                 className="w-full border border-pebble rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-taskora-red" />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1.5">Target End Date</label>
-              <input type="date" value={targetDate} onChange={(e) => setTargetDate(e.target.value)}
+              <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1.5">Target End Date *</label>
+              <input type="date" value={targetDate} min={startDate || undefined} onChange={(e) => setTargetDate(e.target.value)} required
                 className="w-full border border-pebble rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-taskora-red" />
             </div>
           </div>

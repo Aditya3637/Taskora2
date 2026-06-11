@@ -37,6 +37,9 @@ export type GanttRow = {
   start_date?: string | null;
   end_date?: string | null;
   is_milestone?: boolean;
+  // True when this row's end date overruns its initiative's target end —
+  // rendered with a red warning outline so out-of-bounds plans are visible.
+  over_end?: boolean;
   depends_on?: string[];
   entities?: GanttEntity[];
 };
@@ -78,6 +81,29 @@ function startOfDay(d: Date) {
   x.setHours(0, 0, 0, 0);
   return x;
 }
+
+function daysInMonth(year: number, month: number) {
+  return new Date(year, month + 1, 0).getDate();
+}
+
+/** Inclusive list of {year, month} columns spanning [start, end]. */
+function monthsBetween(start: Date, end: Date) {
+  const out: { year: number; month: number }[] = [];
+  let y = start.getFullYear();
+  let m = start.getMonth();
+  const ey = end.getFullYear();
+  const em = end.getMonth();
+  // Guard against pathological ranges (cap at 5 years of columns).
+  for (let i = 0; i < 64; i++) {
+    out.push({ year: y, month: m });
+    if (y === ey && m === em) break;
+    m += 1;
+    if (m > 11) { m = 0; y += 1; }
+  }
+  return out;
+}
+
+const QUARTER_LABEL = ["Q1", "Q2", "Q3", "Q4"];
 
 const KIND_ICON: Record<string, string> = {
   task: "▸",
@@ -127,7 +153,20 @@ export function ganttRange(rows: GanttRow[], baseStart?: string | null, baseEnd?
   return { start: startOfDay(start), end: startOfDay(end) };
 }
 
-export function GanttSVG({ rows, ganttStart, ganttEnd }: { rows: GanttRow[]; ganttStart: Date; ganttEnd: Date }) {
+export function GanttSVG({
+  rows, ganttStart, ganttEnd, scale = "day", onBarChange, canDragRow, onRowClick,
+}: {
+  rows: GanttRow[];
+  ganttStart: Date;
+  ganttEnd: Date;
+  scale?: "day" | "month";
+  // When provided with canDragRow, draggable bars call this on drop with the
+  // new ISO start/end. Wired by the program planner for inline rescheduling.
+  onBarChange?: (rowId: string, startISO: string, endISO: string) => void;
+  canDragRow?: (row: GanttRow) => boolean;
+  // Clicking a row label fires this (drill-down). Only used in month scale.
+  onRowClick?: (row: GanttRow) => void;
+}) {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const [containerW, setContainerW] = useState(0);
@@ -142,6 +181,17 @@ export function GanttSVG({ rows, ganttStart, ganttEnd }: { rows: GanttRow[]; gan
     window.addEventListener("resize", update);
     return () => { ro.disconnect(); window.removeEventListener("resize", update); };
   }, []);
+
+  // Month/quarter scale (years-long horizons) renders in a dedicated path so
+  // the day-based chart above stays untouched.
+  if (scale === "month") {
+    return (
+      <MonthScaleChart
+        rows={rows} ganttStart={ganttStart} ganttEnd={ganttEnd}
+        onBarChange={onBarChange} canDragRow={canDragRow} onRowClick={onRowClick}
+      />
+    );
+  }
 
   const s0 = startOfDay(ganttStart);
   const e0 = startOfDay(ganttEnd);
@@ -287,6 +337,7 @@ export function GanttSVG({ rows, ganttStart, ganttEnd }: { rows: GanttRow[]; gan
             barEl = (
               <rect x={bx} y={y + 4} width={Math.max(dayW, days2 * dayW)} height={ROW_H - 8} rx={3}
                 fill={rowColor(row)} opacity={row.kind === "subtask" || row.kind === "entity" ? 0.6 : 0.9}
+                stroke={row.over_end ? "#E53E3E" : "none"} strokeWidth={row.over_end ? 1.75 : 0}
                 onMouseMove={(e) => setTooltip({ x: e.clientX, y: e.clientY, row })}
                 className="cursor-pointer" />
             );
@@ -355,6 +406,9 @@ export function GanttSVG({ rows, ganttStart, ganttEnd }: { rows: GanttRow[]; gan
           {tooltip.row.status && <p className="text-white/70 mt-0.5">Status: {tooltip.row.status}</p>}
           {tooltip.row.start_date && <p className="text-white/70">Start: {tooltip.row.start_date}</p>}
           {tooltip.row.end_date && <p className="text-white/70">End: {tooltip.row.end_date}</p>}
+          {tooltip.row.over_end && (
+            <p className="text-red-300 mt-0.5">⚠ Ends after the initiative target end</p>
+          )}
           {(tooltip.row.entities ?? []).length > 0 && (
             <p className="text-white/70 mt-0.5">
               {(tooltip.row.entities ?? []).map((e) => `${e.type === "building" ? "🏢" : "👤"}${e.name}`).join(", ")}
@@ -362,6 +416,321 @@ export function GanttSVG({ rows, ganttStart, ganttEnd }: { rows: GanttRow[]; gan
           )}
           {!tooltip.row.start_date && !tooltip.row.end_date && (
             <p className="text-white/50 italic mt-0.5">No date scheduled</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function toISO(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** Fixed planning window: Jan 1 of `anchorYear` → Dec 31 of the last year. */
+export function ganttRangeMonths(anchorYear: number, years: number) {
+  return {
+    start: new Date(anchorYear, 0, 1),
+    end: new Date(anchorYear + Math.max(1, years) - 1, 11, 31),
+  };
+}
+
+const MS_PER_DAY = 86400000;
+const AVG_DAYS_PER_MONTH = 30.437;
+
+interface DragState {
+  rowId: string;
+  mode: "move" | "resize-l" | "resize-r";
+  startX: number;          // pointer x at mousedown
+  origStart: Date;
+  origEnd: Date;
+  pxPerDay: number;
+  curStart: Date;
+  curEnd: Date;
+}
+
+/** Month/quarter-scale Gantt for multi-year horizons. Bars are positioned by a
+ *  continuous date→x mapping (fractional within each month column) so a 1–3
+ *  year plan reads cleanly. Optionally supports drag-move / edge-resize that
+ *  reports new ISO dates via onBarChange. */
+function MonthScaleChart({
+  rows, ganttStart, ganttEnd, onBarChange, canDragRow, onRowClick,
+}: {
+  rows: GanttRow[];
+  ganttStart: Date;
+  ganttEnd: Date;
+  onBarChange?: (rowId: string, startISO: string, endISO: string) => void;
+  canDragRow?: (row: GanttRow) => boolean;
+  onRowClick?: (row: GanttRow) => void;
+}) {
+  const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [containerW, setContainerW] = useState(0);
+  const [drag, setDrag] = useState<DragState | null>(null);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const update = () => setContainerW(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    window.addEventListener("resize", update);
+    return () => { ro.disconnect(); window.removeEventListener("resize", update); };
+  }, []);
+
+  const s0 = startOfDay(ganttStart);
+  const e0 = startOfDay(ganttEnd);
+  const months = monthsBetween(s0, e0);
+  const firstYear = months[0].year;
+  const firstMonth = months[0].month;
+
+  const avail = Math.max(360, (containerW || 1100) - LABEL_W - 6);
+  const monthW = Math.min(120, Math.max(26, Math.floor(avail / months.length)));
+  const svgW = LABEL_W + months.length * monthW;
+  const svgH = HEADER_H + rows.length * (ROW_H + ROW_GAP) + 10;
+  const pxPerDay = monthW / AVG_DAYS_PER_MONTH;
+
+  function monthIdx(d: Date) {
+    return (d.getFullYear() - firstYear) * 12 + (d.getMonth() - firstMonth);
+  }
+  // Continuous x for the *start* of a date (00:00).
+  function colX(date: Date) {
+    if (date <= s0) return LABEL_W;
+    const idx = monthIdx(date);
+    const frac = (date.getDate() - 1) / daysInMonth(date.getFullYear(), date.getMonth());
+    return Math.min(svgW, LABEL_W + (idx + frac) * monthW);
+  }
+  // x for the *end* of a date (inclusive — covers that whole day).
+  function xEnd(date: Date) {
+    if (date >= e0) return svgW;
+    const idx = monthIdx(date);
+    const frac = date.getDate() / daysInMonth(date.getFullYear(), date.getMonth());
+    return Math.min(svgW, LABEL_W + (idx + frac) * monthW);
+  }
+  function rowY(i: number) { return HEADER_H + i * (ROW_H + ROW_GAP); }
+
+  const today = startOfDay(new Date());
+  const todayIn = today >= s0 && today <= e0;
+  const todayX = colX(today);
+
+  // ── Drag handling ──────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!drag) return;
+    function onMove(e: MouseEvent) {
+      setDrag((d) => {
+        if (!d) return d;
+        const dayDelta = Math.round((e.clientX - d.startX) / d.pxPerDay);
+        let ns = d.origStart, ne = d.origEnd;
+        if (d.mode === "move") { ns = addDays(d.origStart, dayDelta); ne = addDays(d.origEnd, dayDelta); }
+        else if (d.mode === "resize-l") { ns = addDays(d.origStart, dayDelta); if (ns > d.origEnd) ns = d.origEnd; }
+        else { ne = addDays(d.origEnd, dayDelta); if (ne < d.origStart) ne = d.origStart; }
+        return { ...d, curStart: ns, curEnd: ne };
+      });
+    }
+    function onUp() {
+      setDrag((d) => {
+        if (d && onBarChange &&
+            (toISO(d.curStart) !== toISO(d.origStart) || toISO(d.curEnd) !== toISO(d.origEnd))) {
+          onBarChange(d.rowId, toISO(d.curStart), toISO(d.curEnd));
+        }
+        return null;
+      });
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, [drag, onBarChange]);
+
+  function beginDrag(e: React.MouseEvent, row: GanttRow, mode: DragState["mode"]) {
+    const sd = parseDate(row.start_date), ed = parseDate(row.end_date);
+    if (!sd || !ed) return;
+    e.stopPropagation();
+    e.preventDefault();
+    setDrag({
+      rowId: row.id, mode, startX: e.clientX,
+      origStart: startOfDay(sd), origEnd: startOfDay(ed), pxPerDay,
+      curStart: startOfDay(sd), curEnd: startOfDay(ed),
+    });
+  }
+
+  return (
+    <div ref={wrapRef} className="overflow-x-auto w-full">
+      <svg width={svgW} height={svgH} className="font-sans select-none"
+        onMouseLeave={() => setTooltip(null)}>
+        {/* Zebra rows */}
+        {rows.map((_, i) => (
+          <rect key={`r${i}`} x={LABEL_W} y={rowY(i)} width={svgW - LABEL_W} height={ROW_H}
+            fill={i % 2 === 0 ? "#FAFBFC" : "#FFFFFF"} />
+        ))}
+
+        {/* Month / quarter / year gridlines */}
+        {months.map((m, i) => {
+          const x = LABEL_W + i * monthW;
+          const isYear = m.month === 0;
+          const isQuarter = m.month % 3 === 0;
+          return (
+            <line key={`g${i}`} x1={x} y1={HEADER_H} x2={x} y2={svgH}
+              stroke={isYear ? "#9AA5B1" : isQuarter ? "#CBD5E0" : "#EDEFF3"}
+              strokeWidth={isYear ? 1.25 : isQuarter ? 1 : 0.5} />
+          );
+        })}
+
+        {/* Today */}
+        {todayIn && (
+          <>
+            <line x1={todayX} y1={HEADER_H} x2={todayX} y2={svgH} stroke="#E53E3E" strokeWidth={1.5} strokeDasharray="3 3" />
+            <circle cx={todayX} cy={HEADER_H} r={3} fill="#E53E3E" />
+          </>
+        )}
+
+        {/* Header — top band: years; second band: months (Q-marked) */}
+        <rect x={LABEL_W} y={0} width={svgW - LABEL_W} height={MONTH_H} fill="#1a1a2e" />
+        <rect x={LABEL_W} y={MONTH_H} width={svgW - LABEL_W} height={DAY_H} fill="#2d2d44" />
+        {/* Year segments */}
+        {(() => {
+          const segs: { x0: number; x1: number; label: string }[] = [];
+          months.forEach((m, i) => {
+            const x0 = LABEL_W + i * monthW;
+            const last = segs[segs.length - 1];
+            if (!last || last.label !== String(m.year)) {
+              segs.push({ x0, x1: x0 + monthW, label: String(m.year) });
+            } else last.x1 = x0 + monthW;
+          });
+          return segs.map((s, i) => (
+            <g key={`y${i}`}>
+              {i > 0 && <line x1={s.x0} y1={0} x2={s.x0} y2={svgH} stroke="#9AA5B1" strokeWidth={1.25} />}
+              <text x={(Math.max(s.x0, LABEL_W) + s.x1) / 2} y={MONTH_H / 2 + 4}
+                fill="#FFFFFF" fontSize={10} fontWeight={700} textAnchor="middle">{s.label}</text>
+            </g>
+          ));
+        })()}
+        {/* Month labels — abbreviation when wide, quarter marker when narrow */}
+        {months.map((m, i) => {
+          const xc = LABEL_W + i * monthW + monthW / 2;
+          const wide = monthW >= 40;
+          const label = wide
+            ? new Date(m.year, m.month, 1).toLocaleDateString(undefined, { month: "short" })
+            : (m.month % 3 === 0 ? QUARTER_LABEL[m.month / 3] : "");
+          if (!label) return null;
+          return (
+            <text key={`ml${i}`} x={xc} y={MONTH_H + DAY_H / 2 + 3.5}
+              fill="#C7CBD9" fontSize={9} fontWeight={wide ? 400 : 600} textAnchor="middle">{label}</text>
+          );
+        })}
+
+        {/* Left label header */}
+        <rect x={0} y={0} width={LABEL_W} height={HEADER_H} fill="#1a1a2e" />
+        <text x={10} y={HEADER_H / 2 + 4} fill="#FFFFFF" fontSize={10} fontWeight={700}>PROGRAM / INITIATIVE</text>
+        <rect x={0} y={HEADER_H} width={LABEL_W} height={svgH - HEADER_H} fill="#FFFFFF" />
+        <line x1={LABEL_W} y1={0} x2={LABEL_W} y2={svgH} stroke="#CBD5E0" strokeWidth={1} />
+
+        {/* Rows */}
+        {rows.map((row, i) => {
+          const y = rowY(i);
+          const cy = y + ROW_H / 2;
+          const indent = 8 + row.depth * 13;
+          const dragging = drag?.rowId === row.id;
+          const sd = dragging ? drag!.curStart : parseDate(row.start_date);
+          const ed = dragging ? drag!.curEnd : parseDate(row.end_date);
+          const draggable = !!onBarChange && !!canDragRow?.(row) && !!sd && !!ed && !row.is_milestone;
+
+          let barEl: React.ReactNode = null;
+          if (row.is_milestone && ed) {
+            const mx = colX(ed);
+            const sz = 6;
+            barEl = (
+              <polygon points={`${mx},${cy - sz} ${mx + sz},${cy} ${mx},${cy + sz} ${mx - sz},${cy}`}
+                fill={rowColor(row)} className="cursor-pointer"
+                onMouseMove={(e) => setTooltip({ x: e.clientX, y: e.clientY, row })} />
+            );
+          } else if (sd && ed) {
+            const bx = colX(sd);
+            const bw = Math.max(4, xEnd(ed) - bx);
+            barEl = (
+              <g>
+                <rect x={bx} y={y + 4} width={bw} height={ROW_H - 8} rx={3}
+                  fill={rowColor(row)} opacity={row.depth === 0 ? 0.95 : 0.8}
+                  stroke={row.over_end ? "#E53E3E" : "none"} strokeWidth={row.over_end ? 1.75 : 0}
+                  onMouseMove={(e) => setTooltip({ x: e.clientX, y: e.clientY, row })}
+                  onMouseDown={draggable ? (e) => beginDrag(e, row, "move") : undefined}
+                  className={draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"} />
+                {draggable && (
+                  <>
+                    <rect x={bx - 2} y={y + 4} width={6} height={ROW_H - 8} fill="transparent"
+                      onMouseDown={(e) => beginDrag(e, row, "resize-l")} className="cursor-ew-resize" />
+                    <rect x={bx + bw - 4} y={y + 4} width={6} height={ROW_H - 8} fill="transparent"
+                      onMouseDown={(e) => beginDrag(e, row, "resize-r")} className="cursor-ew-resize" />
+                  </>
+                )}
+              </g>
+            );
+          }
+
+          let label = `${KIND_ICON[row.kind]} ${row.title}`;
+          const budget = Math.max(6, Math.floor((LABEL_W - indent - 6) / 6));
+          if (label.length > budget) label = label.slice(0, budget - 1) + "…";
+
+          const clickable = !!onRowClick && row.depth > 0;
+          return (
+            <g key={row.id}>
+              <text x={indent} y={cy + 3.5}
+                fill={row.kind === "milestone" ? MILESTONE_COLOR : "#1a1a2e"}
+                fontSize={row.depth === 0 ? 10.5 : 9.5}
+                fontWeight={row.depth === 0 ? 700 : 400}
+                onClick={clickable ? () => onRowClick!(row) : undefined}
+                className={clickable ? "cursor-pointer hover:fill-[#3182CE]" : undefined}>
+                {label}
+              </text>
+              {barEl}
+            </g>
+          );
+        })}
+
+        {/* Dependency arrows between initiative bars (depends_on). */}
+        {(() => {
+          const idToIdx: Record<string, number> = {};
+          rows.forEach((r, i) => { idToIdx[r.id] = i; });
+          return rows.flatMap((row) =>
+            (row.depends_on ?? []).map((depId) => {
+              const fromIdx = idToIdx[depId];
+              const toIdx = idToIdx[row.id];
+              if (fromIdx === undefined || toIdx === undefined) return null;
+              const fromEnd = parseDate(rows[fromIdx].end_date);
+              const toStart = parseDate(row.start_date) ?? parseDate(row.end_date);
+              if (!fromEnd || !toStart) return null;
+              const x1 = xEnd(fromEnd);
+              const y1 = rowY(fromIdx) + ROW_H / 2;
+              const x2 = colX(toStart);
+              const y2 = rowY(toIdx) + ROW_H / 2;
+              return (
+                <path key={`${depId}->${row.id}`}
+                  d={`M ${x1} ${y1} C ${x1 + 18} ${y1}, ${x2 - 18} ${y2}, ${x2} ${y2}`}
+                  fill="none" stroke="#A0AEC0" strokeWidth={1.25} markerEnd="url(#arrow-m)" />
+              );
+            })
+          );
+        })()}
+
+        <defs>
+          <marker id="arrow-m" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#A0AEC0" />
+          </marker>
+        </defs>
+      </svg>
+
+      {tooltip && (
+        <div className="fixed z-[60] bg-midnight text-white text-xs rounded-lg px-3 py-2 shadow-xl pointer-events-none max-w-[240px]"
+          style={{ left: tooltip.x + 12, top: tooltip.y - 40 }}>
+          <p className="font-semibold">{tooltip.row.title}</p>
+          {tooltip.row.status && <p className="text-white/70 mt-0.5">Status: {tooltip.row.status}</p>}
+          {tooltip.row.start_date && <p className="text-white/70">Start: {tooltip.row.start_date}</p>}
+          {tooltip.row.end_date && <p className="text-white/70">End: {tooltip.row.end_date}</p>}
+          {tooltip.row.over_end && (
+            <p className="text-red-300 mt-0.5">⚠ Ends after the initiative target end</p>
           )}
         </div>
       )}

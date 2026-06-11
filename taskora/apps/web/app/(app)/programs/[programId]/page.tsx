@@ -150,6 +150,7 @@ function AddInitiativeModal({
   const [impact, setImpact] = useState("");
   const [impactMetric, setImpactMetric] = useState("");
   const { currencySymbol: sym } = useWorkspaceFormat();
+  const [startDate, setStartDate] = useState("");
   const [targetDate, setTargetDate] = useState("");
   const [members, setMembers] = useState<Member[]>([]);
   const [saving, setSaving] = useState(false);
@@ -164,6 +165,14 @@ function AddInitiativeModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
+    if (!startDate || !targetDate) {
+      setError("Start date and target end date are required.");
+      return;
+    }
+    if (targetDate < startDate) {
+      setError("Target end date can't be before the start date.");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -176,7 +185,8 @@ function AddInitiativeModal({
           impact_category: impactCategory,
           impact: impact.trim() || null,
           impact_metric: impactMetric.trim() || null,
-          target_end_date: targetDate || null,
+          start_date: startDate,
+          target_end_date: targetDate,
         }),
       });
       onCreated();
@@ -303,16 +313,32 @@ function AddInitiativeModal({
             />
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1.5">
-              Target End Date
-            </label>
-            <input
-              type="date"
-              value={targetDate}
-              onChange={(e) => setTargetDate(e.target.value)}
-              className="w-full border border-pebble rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-taskora-red"
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1.5">
+                Start Date *
+              </label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                required
+                className="w-full border border-pebble rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-taskora-red"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1.5">
+                Target End Date *
+              </label>
+              <input
+                type="date"
+                value={targetDate}
+                min={startDate || undefined}
+                onChange={(e) => setTargetDate(e.target.value)}
+                required
+                className="w-full border border-pebble rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-taskora-red"
+              />
+            </div>
           </div>
 
           {error && <p className="text-xs text-red-600">{error}</p>}
@@ -327,7 +353,7 @@ function AddInitiativeModal({
             </button>
             <button
               type="submit"
-              disabled={saving || !name.trim()}
+              disabled={saving || !name.trim() || !startDate || !targetDate}
               className="flex-1 px-4 py-2.5 rounded-lg bg-taskora-red text-white text-sm font-semibold hover:opacity-90 disabled:opacity-50"
             >
               {saving ? "Adding…" : "Add Initiative"}
