@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck, GanttChartSquare, MoreHorizontal, Search, Trash2, Inbox, Filter, ChevronsUpDown } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck, GanttChartSquare, MoreHorizontal, Search, Trash2, Inbox, Filter, ChevronsUpDown, Archive, ArchiveRestore } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { GanttModal } from "../gantt/GanttChart";
 import { Button, Badge, Skeleton, EmptyState, PageHeader, cn } from "@/components/ui";
@@ -108,6 +108,8 @@ type Task = {
   watchers?: Watcher[];
   date_change_count?: number;
   latest_comment?: LatestComment;
+  // Set when the task has been archived out of the active list (admin action).
+  archived_at?: string | null;
   // Resolved client-side from the task's initiative, so a due date beyond
   // the initiative's target end can be flagged (#6).
   initiative_target_end_date?: string;
@@ -130,6 +132,8 @@ type Subtask = {
   description?: string | null;
   due_date?: string | null;
   priority?: "low" | "medium" | "high" | "urgent" | null;
+  // Set when this attribute has been archived (admin action).
+  archived_at?: string | null;
 };
 
 type DateChange = {
@@ -375,6 +379,7 @@ function SubtaskRow({
   members,
   currentUserId,
   canManage,
+  isAdmin,
   onChanged,
   parentTask,
   programName,
@@ -390,6 +395,9 @@ function SubtaskRow({
   members: Member[];
   currentUserId: string;
   canManage: boolean;
+  // Workspace owner/admin — gates structural actions: add/delete attribute,
+  // archive/restore. canManage (stakeholders) still covers status/title edits.
+  isAdmin: boolean;
   onChanged: () => void;
   // P3: breadcrumb + sheet handoff. Optional so the deep-link / War Room
   // callers that don't render via TaskCard still work.
@@ -431,6 +439,9 @@ function SubtaskRow({
   );
   const isRejected =
     subtask.approval_state === "rejected" || subtask.status === "reopened";
+  const isArchived = !!subtask.archived_at;
+  // Only a *done*, not-yet-archived attribute can be archived (admin only).
+  const canArchive = isAdmin && !isArchived && subtask.status === "done";
 
   // Close popovers on outside click — shared pattern with InitiativeGroup.
   useEffect(() => {
@@ -527,6 +538,36 @@ function SubtaskRow({
     }
   }
 
+  async function handleArchive() {
+    setUpdating(true);
+    try {
+      await apiFetch(`/api/v1/tasks/${taskId}/subtasks/${subtask.id}/archive`, {
+        method: "POST",
+      });
+      setMenuOpen(false);
+      onChanged();
+    } catch (e: any) {
+      alert("Failed to archive: " + (e?.message ?? "Unknown error"));
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  async function handleRestore() {
+    setUpdating(true);
+    try {
+      await apiFetch(`/api/v1/tasks/${taskId}/subtasks/${subtask.id}/restore`, {
+        method: "POST",
+      });
+      setMenuOpen(false);
+      onChanged();
+    } catch (e: any) {
+      alert("Failed to restore: " + (e?.message ?? "Unknown error"));
+    } finally {
+      setUpdating(false);
+    }
+  }
+
   // First letter of up to the first two words — "Aditya Singh" → "AS".
   function initials(name: string): string {
     if (!name) return "?";
@@ -549,7 +590,9 @@ function SubtaskRow({
     <div>
       <div
         className={`flex items-center gap-2 py-1.5 px-2 rounded group ${
-          isRejected
+          isArchived
+            ? "opacity-60 bg-mist/20"
+            : isRejected
             ? "bg-red-50 border border-red-200 hover:bg-red-100/60"
             : "hover:bg-mist/30"
         }`}
@@ -780,8 +823,14 @@ function SubtaskRow({
           onClick={() => setShowComments(true)}
         />
 
-        {/* Add-child button — only on parent rows */}
-        {canAddChild && (
+        {isArchived && (
+          <span className="text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-steel/10 text-steel flex-shrink-0">
+            Archived
+          </span>
+        )}
+
+        {/* Add-child button — only on parent rows, admin-only, not on archived */}
+        {canAddChild && isAdmin && !isArchived && (
           <button
             type="button"
             onClick={() => {
@@ -795,9 +844,9 @@ function SubtaskRow({
           </button>
         )}
 
-        {/* Overflow menu — Delete and (future) other actions. Hidden until
-            hover/focus so the row stays clean by default. */}
-        {canManage && (
+        {/* Overflow menu — admin-only structural actions: archive/restore and
+            delete. Hidden until hover/focus so the row stays clean. */}
+        {isAdmin && (
           <div ref={menuRef} className="relative flex-shrink-0">
             <button
               type="button"
@@ -814,11 +863,34 @@ function SubtaskRow({
               <MoreHorizontal className="w-3.5 h-3.5" />
             </button>
             {menuOpen && (
-              <div className="absolute right-0 top-full mt-1 w-36 bg-white border border-pebble rounded-lg shadow-lg z-30 py-1 text-sm">
+              <div className="absolute right-0 top-full mt-1 w-44 bg-white border border-pebble rounded-lg shadow-lg z-30 py-1 text-sm">
+                {isArchived ? (
+                  <button
+                    type="button"
+                    onClick={handleRestore}
+                    disabled={updating}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-midnight hover:bg-mist disabled:opacity-50"
+                  >
+                    <ArchiveRestore className="w-3.5 h-3.5" />
+                    Restore
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleArchive}
+                    disabled={updating || !canArchive}
+                    title={canArchive ? "Archive this attribute" : "Only a completed attribute can be archived"}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-midnight hover:bg-mist disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <Archive className="w-3.5 h-3.5" />
+                    Archive
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleDelete}
-                  className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-red-600 hover:bg-red-50"
+                  disabled={updating}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-red-600 hover:bg-red-50 disabled:opacity-50"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                   Delete subtask
@@ -841,6 +913,7 @@ function SubtaskRow({
               members={members}
               currentUserId={currentUserId}
               canManage={canManage}
+              isAdmin={isAdmin}
               onChanged={onChanged}
               parentTask={parentTask}
               programName={programName}
@@ -973,6 +1046,33 @@ function fmtClosure(ts?: string | null): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+// Inline "show archived" toggle — reveals archived rows in place so the
+// archive lives within the list it belongs to (no separate page).
+function ShowArchivedToggle({
+  on,
+  count,
+  onToggle,
+  label,
+}: {
+  on: boolean;
+  count: number;
+  onToggle: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="mt-1 inline-flex items-center gap-1 text-[11px] text-steel/60 hover:text-midnight font-medium py-0.5"
+    >
+      <Archive className="w-3 h-3" />
+      {on
+        ? "Hide archived"
+        : `Show ${count > 0 ? count + " " : ""}${label}`}
+    </button>
+  );
 }
 
 // Small green closure stamp shown after a due date once an item is done.
@@ -1668,6 +1768,7 @@ function EntitySubtaskRow({
   members,
   currentUserId,
   canManage,
+  isAdmin,
   subtasks,
   subtasksLoading,
   onEntityUpdate,
@@ -1683,6 +1784,7 @@ function EntitySubtaskRow({
   members: Member[];
   currentUserId: string;
   canManage: boolean;
+  isAdmin: boolean;
   // B4: subtasks now come from a single parent-level fetch instead of one
   // request per entity. Empty array = no subtasks (not "not loaded yet").
   subtasks: Subtask[];
@@ -1768,8 +1870,11 @@ function EntitySubtaskRow({
 
   // Count is over parent rows only — children are a UI detail and shouldn't
   // double-count toward the "X/Y done" indicator.
-  const doneCount = parentSubtasks.filter((s) => s.status === "done").length;
-  const totalCount = parentSubtasks.length;
+  // Counts exclude archived attributes (those only show when "show archived"
+  // is on, which is controlled at the parent task level).
+  const activeParents = parentSubtasks.filter((s) => !s.archived_at);
+  const doneCount = activeParents.filter((s) => s.status === "done").length;
+  const totalCount = activeParents.length;
   const colorCls =
     entity.entity_type === "building"
       ? "bg-amber-50 text-amber-700 border-amber-200"
@@ -1919,6 +2024,7 @@ function EntitySubtaskRow({
               members={members}
               currentUserId={currentUserId}
               canManage={canManage}
+              isAdmin={isAdmin}
               onChanged={onSubtasksChanged}
               parentTask={parentTask}
               programName={programName}
@@ -1932,7 +2038,8 @@ function EntitySubtaskRow({
               No sub-tasks yet.
             </p>
           )}
-          {showAdd ? (
+          {/* Adding attributes is admin/owner only. */}
+          {isAdmin && (showAdd ? (
             <AddSubtaskInline
               taskId={taskId}
               members={members}
@@ -1951,7 +2058,7 @@ function EntitySubtaskRow({
             >
               <Plus className="w-3 h-3" /> Add sub-task
             </button>
-          )}
+          ))}
         </div>
       )}
 
@@ -2042,6 +2149,8 @@ function TaskCard({
   myRole,
   onStatusChange,
   onDelete,
+  onArchived,
+  onRestored,
   focusTaskId,
   focusSubtaskId,
   programName,
@@ -2055,6 +2164,10 @@ function TaskCard({
   myRole: string;
   onStatusChange: (taskId: string, newStatus: string) => void;
   onDelete: (taskId: string) => void;
+  // Admin archive/restore. Archiving an active card removes it from the
+  // active list; restoring an archived card removes it from the archived list.
+  onArchived?: (taskId: string) => void;
+  onRestored?: (taskId: string) => void;
   focusTaskId?: string | null;
   focusSubtaskId?: string | null;
   // P3: breadcrumb context for the detail sheet — supplied by InitiativeGroup.
@@ -2088,6 +2201,11 @@ function TaskCard({
   const [loadingSubtasks, setLoadingSubtasks] = useState(false);
   const [showAddSubtask, setShowAddSubtask] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  // When on, the grouped fetch also returns archived attributes so they can
+  // be revealed inline (admin "show archived" toggle within the task). An
+  // archived task's children are all archived too, so default it on there.
+  const [showArchivedSubs, setShowArchivedSubs] = useState(!!task.archived_at);
   const [cardMenuOpen, setCardMenuOpen] = useState(false);
   const cardMenuRef = useRef<HTMLDivElement>(null);
   const [editDueDate, setEditDueDate] = useState(task.due_date ?? "");
@@ -2115,6 +2233,8 @@ function TaskCard({
     setTaskWatchers((task.watchers ?? []).filter((w) => w.scope_type === "task"));
     setTaskApproval(task.approval_state);
   }, [task.id]);
+
+  const isAdmin = myRole === "owner" || myRole === "admin";
 
   const canManageWatchers =
     task.primary_stakeholder_id === currentUserId ||
@@ -2192,10 +2312,41 @@ function TaskCard({
     }
   }
 
-  async function loadSubtasksGrouped() {
+  const isArchived = !!task.archived_at;
+  // Only a *done*, not-yet-archived task can be archived (admin only).
+  const canArchiveTask = isAdmin && !isArchived && task.status === "done";
+
+  async function handleArchive(e: React.MouseEvent) {
+    e.stopPropagation();
+    setArchiving(true);
+    setCardMenuOpen(false);
+    try {
+      await apiFetch(`/api/v1/tasks/${task.id}/archive`, { method: "POST" });
+      onArchived?.(task.id);
+    } catch (err: any) {
+      alert("Failed to archive: " + (err?.message ?? "Unknown error"));
+      setArchiving(false);
+    }
+  }
+
+  async function handleRestore(e: React.MouseEvent) {
+    e.stopPropagation();
+    setArchiving(true);
+    setCardMenuOpen(false);
+    try {
+      await apiFetch(`/api/v1/tasks/${task.id}/restore`, { method: "POST" });
+      onRestored?.(task.id);
+    } catch (err: any) {
+      alert("Failed to restore: " + (err?.message ?? "Unknown error"));
+      setArchiving(false);
+    }
+  }
+
+  const loadSubtasksGrouped = useCallback(async () => {
     setLoadingSubtasks(true);
     try {
-      const data = await apiFetch(`/api/v1/tasks/${task.id}/subtasks-grouped`);
+      const qs = showArchivedSubs ? "?include_archived=true" : "";
+      const data = await apiFetch(`/api/v1/tasks/${task.id}/subtasks-grouped${qs}`);
       setGrouped({
         by_entity: data?.by_entity ?? {},
         task_flat: data?.task_flat ?? [],
@@ -2206,7 +2357,13 @@ function TaskCard({
     } finally {
       setLoadingSubtasks(false);
     }
-  }
+  }, [task.id, showArchivedSubs]);
+
+  // Refetch when the archived toggle flips (after the first load).
+  useEffect(() => {
+    if (groupedLoaded) loadSubtasksGrouped();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showArchivedSubs]);
 
   async function loadStakeholders() {
     try {
@@ -2296,9 +2453,12 @@ function TaskCard({
   }
 
   // doneCount only meaningful for the flat (no-entity) view; entity-scoped
-  // tasks display their own X/Y counts per building.
-  const doneCount = grouped.task_flat.filter((s) => s.status === "done").length;
-  const flatTotal = grouped.task_flat.length;
+  // tasks display their own X/Y counts per building. Counts exclude archived
+  // attributes (those only appear when "show archived" is on).
+  const activeFlat = grouped.task_flat.filter((s) => !s.archived_at);
+  const doneCount = activeFlat.filter((s) => s.status === "done").length;
+  const flatTotal = activeFlat.length;
+  const archivedSubCount = grouped.task_flat.filter((s) => !!s.archived_at).length;
   const flatParents = grouped.task_flat.filter((s) => !s.parent_subtask_id);
   const flatChildrenByParent: Record<string, Subtask[]> = {};
   for (const s of grouped.task_flat) {
@@ -2313,7 +2473,9 @@ function TaskCard({
       className={`rounded-xl border border-l-4 shadow-sm hover:shadow-md transition-shadow scroll-mt-20 ${
         PRIORITY_BORDER[task.priority] ?? "border-l-gray-300"
       } ${
-        taskRejected
+        isArchived
+          ? "bg-mist/20 border-pebble opacity-70"
+          : taskRejected
           ? "bg-red-50 border-red-200"
           : "bg-white border-pebble"
       } ${isFocused ? "ring-2 ring-ocean ring-offset-2" : ""}`}
@@ -2369,6 +2531,11 @@ function TaskCard({
                   title={`Priority: ${PRIORITY_CHIP[task.priority].label}`}
                 >
                   {PRIORITY_CHIP[task.priority].label}
+                </span>
+              )}
+              {isArchived && (
+                <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-steel/10 text-steel flex-shrink-0 inline-flex items-center gap-1">
+                  <Archive className="w-2.5 h-2.5" /> Archived
                 </span>
               )}
             </div>
@@ -2552,9 +2719,9 @@ function TaskCard({
                   <ChevronRight className="w-3.5 h-3.5" />
                 )}
               </button>
-              {/* Overflow menu — Delete lives behind the kebab so the bar
-                  stays calm. */}
-              {canDelete && (
+              {/* Overflow menu — Archive / Restore / Delete behind the kebab
+                  so the bar stays calm. */}
+              {(canDelete || isAdmin) && (
                 <div ref={cardMenuRef} className="relative">
                 <button
                   type="button"
@@ -2562,7 +2729,7 @@ function TaskCard({
                     e.stopPropagation();
                     setCardMenuOpen((v) => !v);
                   }}
-                  disabled={deleting}
+                  disabled={deleting || archiving}
                   title="More actions"
                   aria-label="More actions"
                   aria-expanded={cardMenuOpen}
@@ -2571,19 +2738,44 @@ function TaskCard({
                   <MoreHorizontal className="w-4 h-4" />
                 </button>
                 {cardMenuOpen && (
-                  <div className="absolute right-0 top-full mt-1 w-40 bg-white border border-pebble rounded-lg shadow-lg z-30 py-1 text-sm">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        setCardMenuOpen(false);
-                        handleDelete(e);
-                      }}
-                      disabled={deleting}
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-red-600 hover:bg-red-50 disabled:opacity-50"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      {deleting ? "Deleting…" : "Delete task"}
-                    </button>
+                  <div className="absolute right-0 top-full mt-1 w-44 bg-white border border-pebble rounded-lg shadow-lg z-30 py-1 text-sm">
+                    {isAdmin && isArchived && (
+                      <button
+                        type="button"
+                        onClick={handleRestore}
+                        disabled={archiving}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-midnight hover:bg-mist disabled:opacity-50"
+                      >
+                        <ArchiveRestore className="w-3.5 h-3.5" />
+                        {archiving ? "Restoring…" : "Restore task"}
+                      </button>
+                    )}
+                    {isAdmin && !isArchived && (
+                      <button
+                        type="button"
+                        onClick={handleArchive}
+                        disabled={archiving || !canArchiveTask}
+                        title={canArchiveTask ? "Archive this task" : "Only a completed (done) task can be archived"}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-midnight hover:bg-mist disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <Archive className="w-3.5 h-3.5" />
+                        {archiving ? "Archiving…" : "Archive task"}
+                      </button>
+                    )}
+                    {canDelete && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          setCardMenuOpen(false);
+                          handleDelete(e);
+                        }}
+                        disabled={deleting}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-red-600 hover:bg-red-50 disabled:opacity-50"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        {deleting ? "Deleting…" : "Delete task"}
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -2678,6 +2870,7 @@ function TaskCard({
                   members={members}
                   currentUserId={currentUserId}
                   canManage={canManageWatchers}
+                  isAdmin={isAdmin}
                   subtasks={grouped.by_entity[e.entity_id] ?? []}
                   subtasksLoading={loadingSubtasks}
                   onEntityUpdate={handleEntityUpdate}
@@ -2689,6 +2882,14 @@ function TaskCard({
                   onOpenSheet={onOpenSheet}
                 />
               ))}
+              {(archivedSubCount > 0 || showArchivedSubs) && (
+                <ShowArchivedToggle
+                  on={showArchivedSubs}
+                  count={archivedSubCount}
+                  onToggle={() => setShowArchivedSubs((v) => !v)}
+                  label="archived attributes"
+                />
+              )}
             </>
           ) : (
             /* General tasks: flat subtask list, recursive SubtaskRow handles nesting */
@@ -2705,6 +2906,7 @@ function TaskCard({
                   members={members}
                   currentUserId={currentUserId}
                   canManage={canManageWatchers}
+                  isAdmin={isAdmin}
                   onChanged={loadSubtasksGrouped}
                   parentTask={task}
                   programName={programName}
@@ -2718,7 +2920,16 @@ function TaskCard({
                   No subtasks yet.
                 </p>
               )}
-              {showAddSubtask ? (
+              {(archivedSubCount > 0 || showArchivedSubs) && (
+                <ShowArchivedToggle
+                  on={showArchivedSubs}
+                  count={archivedSubCount}
+                  onToggle={() => setShowArchivedSubs((v) => !v)}
+                  label="archived attributes"
+                />
+              )}
+              {/* Adding attributes is admin/owner only. */}
+              {isAdmin && (showAddSubtask ? (
                 <AddSubtaskInline
                   taskId={task.id}
                   members={members}
@@ -2735,7 +2946,7 @@ function TaskCard({
                 >
                   <Plus className="w-3 h-3" /> Add subtask
                 </button>
-              )}
+              ))}
             </>
           )}
         </div>
@@ -3461,6 +3672,7 @@ function NewTaskModal({
 function InitiativeGroup({
   initiative,
   tasks,
+  archivedTasks,
   members,
   currentUserId,
   myRole,
@@ -3469,6 +3681,8 @@ function InitiativeGroup({
   onSetCollapsed,
   onStatusChange,
   onTaskDeleted,
+  onTaskArchived,
+  onTaskRestored,
   onBreakdown,
   onGantt,
   onDelete,
@@ -3478,6 +3692,9 @@ function InitiativeGroup({
 }: {
   initiative: MyInitiative | null; // null = "Unlinked"
   tasks: Task[];
+  // Archived tasks for this initiative — revealed behind the group's
+  // "show archived" toggle.
+  archivedTasks: Task[];
   members: Member[];
   currentUserId: string;
   myRole: string;
@@ -3488,6 +3705,8 @@ function InitiativeGroup({
   onSetCollapsed: (next: boolean) => void;
   onStatusChange: (taskId: string, newStatus: string) => void;
   onTaskDeleted: (taskId: string) => void;
+  onTaskArchived: (taskId: string) => void;
+  onTaskRestored: (taskId: string) => void;
   // Per-initiative actions, hoisted from the page so a single BreakdownModal/
   // GanttModal lives at page level. Null `initiative` means the "Unlinked"
   // group, where these callbacks aren't passed.
@@ -3502,6 +3721,7 @@ function InitiativeGroup({
   const groupRef = useRef<HTMLDivElement>(null);
   const containsFocus = !!focusTaskId && tasks.some((t) => t.id === focusTaskId);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Close the overflow menu when the user clicks outside of it.
@@ -3711,6 +3931,8 @@ function InitiativeGroup({
                 myRole={myRole}
                 onStatusChange={onStatusChange}
                 onDelete={onTaskDeleted}
+                onArchived={onTaskArchived}
+                onRestored={onTaskRestored}
                 focusTaskId={focusTaskId}
                 focusSubtaskId={focusSubtaskId}
                 programName={initiative?.programs?.name}
@@ -3719,6 +3941,47 @@ function InitiativeGroup({
                 onOpenSheet={onOpenSheet}
               />
             ))
+          )}
+
+          {/* Archived tasks — revealed inline behind a toggle, each restorable. */}
+          {(archivedTasks.length > 0 || showArchived) && (
+            <div className="pt-1">
+              <ShowArchivedToggle
+                on={showArchived}
+                count={archivedTasks.length}
+                onToggle={() => setShowArchived((v) => !v)}
+                label="archived tasks"
+              />
+              {showArchived && (
+                <div className="mt-2 space-y-2.5">
+                  {archivedTasks.length === 0 ? (
+                    <p className="text-xs text-steel/50 italic py-1">
+                      No archived tasks.
+                    </p>
+                  ) : (
+                    archivedTasks.map((task) => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        members={members}
+                        currentUserId={currentUserId}
+                        myRole={myRole}
+                        onStatusChange={onStatusChange}
+                        onDelete={onTaskDeleted}
+                        onArchived={onTaskArchived}
+                        onRestored={onTaskRestored}
+                        focusTaskId={focusTaskId}
+                        focusSubtaskId={focusSubtaskId}
+                        programName={initiative?.programs?.name}
+                        programColor={initiative?.programs?.color}
+                        initiativeName={initiative?.name}
+                        onOpenSheet={onOpenSheet}
+                      />
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -3738,6 +4001,9 @@ function TasksPageInner() {
   const PAGE_SIZE = 20;
 
   const [tasks, setTasks] = useState<Task[]>([]);
+  // Archived tasks across the workspace — loaded once and grouped per
+  // initiative so each group's "show archived" toggle reveals its own.
+  const [archivedTasks, setArchivedTasks] = useState<Task[]>([]);
   const [initiatives, setInitiatives] = useState<MyInitiative[]>([]);
   const [businessId, setBusinessId] = useState("");
   const [currentUserId, setCurrentUserId] = useState("");
@@ -3802,6 +4068,35 @@ function TasksPageInner() {
     []
   );
 
+  // Load every archived task in the workspace (cursor-walked). Archived
+  // volume is small, so a full walk is cheap and lets each initiative group
+  // reveal its own archived tasks instantly when toggled.
+  const loadArchivedTasks = useCallback(async () => {
+    const bid =
+      typeof window !== "undefined" ? localStorage.getItem("business_id") : null;
+    const all: Task[] = [];
+    let cursor: string | null = null;
+    try {
+      // Guard the loop so a bad cursor can never spin forever.
+      for (let i = 0; i < 50; i++) {
+        const params = new URLSearchParams({
+          limit: "100",
+          archived_only: "true",
+        });
+        if (bid) params.set("business_id", bid);
+        if (cursor) params.set("cursor", cursor);
+        const page = await apiFetch(`/api/v1/tasks/my/page?${params.toString()}`);
+        const items: Task[] = Array.isArray(page?.items) ? page.items : [];
+        all.push(...items);
+        cursor = page?.next_cursor ?? null;
+        if (!cursor) break;
+      }
+      setArchivedTasks(all);
+    } catch {
+      /* non-blocking — archived view just stays empty */
+    }
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -3833,6 +4128,9 @@ function TasksPageInner() {
       ]);
 
       setInitiatives(Array.isArray(initData) ? initData : []);
+      // Archived tasks load in the background — they only render behind the
+      // per-initiative "show archived" toggle, so they never block the page.
+      loadArchivedTasks();
       if (biz?.id) {
         setBusinessId(biz.id);
         // Members and role are non-blocking
@@ -3863,7 +4161,7 @@ function TasksPageInner() {
     } finally {
       setLoading(false);
     }
-  }, [filter, fetchTaskPage, router]);
+  }, [filter, fetchTaskPage, loadArchivedTasks, router]);
 
   // Hydrate filter state from localStorage on mount, then mark hydrated.
   // After this, every filter change is persisted.
@@ -3986,6 +4284,21 @@ function TasksPageInner() {
   // Optimistic delete
   function handleTaskDelete(taskId: string) {
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    setArchivedTasks((prev) => prev.filter((t) => t.id !== taskId));
+  }
+
+  // Archived: drop from the active list and refresh the archived set so the
+  // task reappears under its initiative's "show archived" view.
+  function handleTaskArchived(taskId: string) {
+    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    loadArchivedTasks();
+  }
+
+  // Restored: drop from the archived set and refetch the active page so it
+  // reappears in the live list.
+  function handleTaskRestored(taskId: string) {
+    setArchivedTasks((prev) => prev.filter((t) => t.id !== taskId));
+    fetchTaskPage(filter, null, false);
   }
 
   function handleInitiativeDelete(initiativeId: string) {
@@ -4084,6 +4397,19 @@ function TasksPageInner() {
       tasksByInitiative[task.initiative_id].push(task);
     } else {
       unlinkedTasks.push(task);
+    }
+  }
+
+  // Archived tasks grouped the same way — revealed per initiative behind the
+  // group's "show archived" toggle. Not subject to the active-list status
+  // filter (they're all done) but mirror it for unlinked.
+  const archivedByInitiative: Record<string, Task[]> = {};
+  const unlinkedArchived: Task[] = [];
+  for (const task of archivedTasks) {
+    if (task.initiative_id) {
+      (archivedByInitiative[task.initiative_id] ??= []).push(task);
+    } else {
+      unlinkedArchived.push(task);
     }
   }
 
@@ -4354,6 +4680,7 @@ function TasksPageInner() {
                   key={initId}
                   initiative={init}
                   tasks={tasksByInitiative[initId] ?? []}
+                  archivedTasks={archivedByInitiative[initId] ?? []}
                   members={members}
                   currentUserId={currentUserId}
                   myRole={myRole}
@@ -4362,6 +4689,8 @@ function TasksPageInner() {
                   onSetCollapsed={(next) => setGroupCollapsed(initId, next)}
                   onStatusChange={handleStatusChange}
                   onTaskDeleted={handleTaskDelete}
+                  onTaskArchived={handleTaskArchived}
+                  onTaskRestored={handleTaskRestored}
                   onBreakdown={init ? () => setBreakdownFor(init) : undefined}
                   onGantt={init ? () => setGanttFor(init) : undefined}
                   onDelete={
@@ -4380,6 +4709,7 @@ function TasksPageInner() {
                 key="unlinked"
                 initiative={null}
                 tasks={unlinkedTasks}
+                archivedTasks={unlinkedArchived}
                 members={members}
                 currentUserId={currentUserId}
                 myRole={myRole}
@@ -4388,6 +4718,8 @@ function TasksPageInner() {
                 onSetCollapsed={(next) => setGroupCollapsed("__unlinked__", next)}
                 onStatusChange={handleStatusChange}
                 onTaskDeleted={handleTaskDelete}
+                onTaskArchived={handleTaskArchived}
+                onTaskRestored={handleTaskRestored}
                 focusTaskId={focusTaskId}
                 focusSubtaskId={focusSubtaskId}
                 onOpenSheet={setSheetScope}
@@ -4901,7 +5233,8 @@ function TaskDetailSheet({
                   {isTask ? "Subtasks" : "Sub-subtasks"}
                   <span className="text-steel/50 ml-1.5">({children.length})</span>
                 </label>
-                {canEdit && !showAddChild && (isTask || !scope.subtask.parent_subtask_id) && (
+                {/* Adding attributes is admin/owner only. */}
+                {isPrivileged && !showAddChild && (isTask || !scope.subtask.parent_subtask_id) && (
                   <button
                     type="button"
                     onClick={() => setShowAddChild(true)}
