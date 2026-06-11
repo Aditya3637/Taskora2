@@ -93,10 +93,21 @@ class TaskCreate(BaseModel):
     #   entity_inheritance IN (inherited, overridden)
     priority: Literal["low", "medium", "high", "urgent"] = "medium"
     status: _TASK_STATUSES = "backlog"
-    due_date: Optional[date] = None
+    # Mandatory span (057): start_date + due_date (= end), ordered. Real bars
+    # on the Gantt; enforced at create.
+    start_date: date
+    due_date: date
     date_mode: Literal["uniform", "per_entity"] = "uniform"
     entity_inheritance: Literal["inherited", "overridden"] = "inherited"
     entities: List[TaskEntityCreate] = []
+
+
+def _validate_task_dates(start: date, end: date) -> None:
+    """start_date + due_date are mandatory and due must not precede start."""
+    if start is None or end is None:
+        raise HTTPException(status_code=422, detail="start_date and due_date are required")
+    if end < start:
+        raise HTTPException(status_code=422, detail="due_date cannot be before start_date")
 
 
 class TaskStatusUpdate(BaseModel):
@@ -109,6 +120,7 @@ class TaskUpdate(BaseModel):
     title: Optional[str] = None
     status: Optional[str] = None
     priority: Optional[str] = None
+    start_date: Optional[date] = None
     due_date: Optional[date] = None
     description: Optional[str] = None
 
@@ -596,6 +608,8 @@ def create_task(
             detail="primary_stakeholder_id must be a member of this workspace",
         )
 
+    _validate_task_dates(body.start_date, body.due_date)
+
     result = sb.table("tasks").insert({
         "title": body.title,
         "description": body.description,
@@ -604,7 +618,8 @@ def create_task(
         "created_by": uid,
         "priority": body.priority,
         "status": body.status,
-        "due_date": body.due_date.isoformat() if body.due_date else None,
+        "start_date": body.start_date.isoformat(),
+        "due_date": body.due_date.isoformat(),
         "date_mode": body.date_mode,
         "entity_inheritance": body.entity_inheritance,
     }).execute()
@@ -795,13 +810,14 @@ def update_task(
     # dates on tasks they didn't personally own.
     _assert_task_write(sb, task_id, user["id"])
     # Snapshot current state BEFORE the update so we can detect transitions.
-    prior = sb.table("tasks").select("due_date, status, closed_at").eq("id", task_id).execute().data
+    prior = sb.table("tasks").select("start_date, due_date, status, closed_at").eq("id", task_id).execute().data
     prior_due_str = prior[0].get("due_date") if prior else None
+    prior_start_str = prior[0].get("start_date") if prior else None
     prior_status = prior[0].get("status") if prior else None
 
     # Distinguish "field absent" from "field explicitly null" so the sheet
-    # can clear due_date / description. model_fields_set is the only way to
-    # tell `{title: 'x'}` apart from `{title: 'x', due_date: null}`.
+    # can clear description. model_fields_set is the only way to tell
+    # `{title: 'x'}` apart from `{title: 'x', description: null}`.
     set_fields = body.model_fields_set
     payload: dict = {}
     if "title" in set_fields and body.title is not None:
@@ -810,12 +826,26 @@ def update_task(
         payload["status"] = body.status
     if "priority" in set_fields and body.priority is not None:
         payload["priority"] = body.priority
+    # start_date / due_date are mandatory (057) — reject clearing them.
+    if "start_date" in set_fields:
+        if body.start_date is None:
+            raise HTTPException(status_code=422, detail="start_date cannot be cleared")
+        payload["start_date"] = body.start_date.isoformat()
     if "due_date" in set_fields:
-        payload["due_date"] = body.due_date.isoformat() if body.due_date else None
+        if body.due_date is None:
+            raise HTTPException(status_code=422, detail="due_date cannot be cleared")
+        payload["due_date"] = body.due_date.isoformat()
     if "description" in set_fields:
         payload["description"] = body.description
     if not payload:
         raise HTTPException(status_code=422, detail="No fields to update")
+
+    # Keep start <= due when either date changes (compare effective values).
+    if "start_date" in payload or "due_date" in payload:
+        eff_start = payload.get("start_date", prior_start_str)
+        eff_due = payload.get("due_date", prior_due_str)
+        if eff_start and eff_due and str(eff_due) < str(eff_start):
+            raise HTTPException(status_code=422, detail="due_date cannot be before start_date")
 
     now_iso = datetime.now(timezone.utc).isoformat()
     payload["updated_at"] = now_iso
@@ -1456,6 +1486,8 @@ class SubtaskCreate(BaseModel):
     parent_subtask_id: Optional[str] = None  # B1: enables Task → Subtask → Sub-subtask
     # P2 field parity with tasks (migration 039). All optional / defaulted.
     description: Optional[str] = None
+    # Optional span (057): a subtask shows a Gantt bar when both are set.
+    start_date: Optional[date] = None
     due_date: Optional[date] = None
     priority: Literal["low", "medium", "high", "urgent"] = "medium"
 
@@ -1466,6 +1498,7 @@ class SubtaskUpdate(BaseModel):
     assignee_id: Optional[str] = None
     parent_subtask_id: Optional[str] = None
     description: Optional[str] = None
+    start_date: Optional[date] = None
     due_date: Optional[date] = None
     priority: Optional[Literal["low", "medium", "high", "urgent"]] = None
 
@@ -1673,6 +1706,7 @@ def create_subtask(
         "status": "todo",
         "assignee_id": body.assignee_id or user["id"],
         "description": body.description,
+        "start_date": body.start_date.isoformat() if body.start_date else None,
         "due_date": body.due_date.isoformat() if body.due_date else None,
         "priority": body.priority,
         "created_at": now,

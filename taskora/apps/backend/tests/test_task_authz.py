@@ -61,7 +61,8 @@ def test_member_can_create_task(sb):
     _CUR["u"] = MEMBER
     r = client.post("/api/v1/tasks/", json={
         "title": "Audit", "initiative_id": "INIT1",
-        "primary_stakeholder_id": MEMBER})
+        "primary_stakeholder_id": MEMBER,
+        "start_date": "2026-01-01", "due_date": "2026-12-31"})
     assert r.status_code == 201, r.text
     assert len(sb.store["tasks"]) == 1
     assert sb.store["task_stakeholders"][0]["user_id"] == MEMBER
@@ -73,7 +74,8 @@ def test_non_member_cannot_create_task_cross_tenant(sb):
     _CUR["u"] = OTHER
     r = client.post("/api/v1/tasks/", json={
         "title": "Sneaky", "initiative_id": "INIT1",
-        "primary_stakeholder_id": OTHER})
+        "primary_stakeholder_id": OTHER,
+        "start_date": "2026-01-01", "due_date": "2026-12-31"})
     assert r.status_code == 403, r.text
     assert sb.store["tasks"] == []
 
@@ -91,7 +93,8 @@ def test_unknown_initiative_id_is_404_not_500(sb):
     r = client.post("/api/v1/tasks/", json={
         "title": "Ghost init",
         "initiative_id": "00000000-0000-0000-0000-000000000000",
-        "primary_stakeholder_id": MEMBER})
+        "primary_stakeholder_id": MEMBER,
+        "start_date": "2026-01-01", "due_date": "2026-12-31"})
     assert r.status_code == 404, r.text
 
 
@@ -100,7 +103,8 @@ def test_ghost_primary_stakeholder_is_400_not_500(sb):
     _CUR["u"] = MEMBER
     r = client.post("/api/v1/tasks/", json={
         "title": "Ghost SH", "initiative_id": "INIT1",
-        "primary_stakeholder_id": "00000000-0000-0000-0000-000000000000"})
+        "primary_stakeholder_id": "00000000-0000-0000-0000-000000000000",
+        "start_date": "2026-01-01", "due_date": "2026-12-31"})
     assert r.status_code == 400, r.text
     assert sb.store["tasks"] == []
 
@@ -110,7 +114,8 @@ def test_can_assign_task_to_a_teammate(sb):
     _CUR["u"] = MEMBER
     r = client.post("/api/v1/tasks/", json={
         "title": "Delegate", "initiative_id": "INIT1",
-        "primary_stakeholder_id": MATE})
+        "primary_stakeholder_id": MATE,
+        "start_date": "2026-01-01", "due_date": "2026-12-31"})
     assert r.status_code == 201, r.text
 
 

@@ -897,7 +897,7 @@ def get_initiative_gantt(
 
     tasks = (
         sb.table("tasks")
-        .select("id, title, due_date, status, priority, depends_on, date_mode, "
+        .select("id, title, start_date, due_date, status, priority, depends_on, date_mode, "
                 "created_at, task_entities(entity_type, entity_id, per_entity_end_date)")
         .eq("initiative_id", initiative_id)
         .execute()
@@ -911,6 +911,7 @@ def get_initiative_gantt(
         subtasks = (
             sb.table("subtasks")
             .select("id, title, status, task_id, parent_subtask_id, date_mode, "
+                    "start_date, due_date, "
                     "created_at, subtask_entities(entity_type, entity_id, per_entity_end_date)")
             .in_("task_id", task_ids)
             .execute()
@@ -963,11 +964,15 @@ def get_initiative_gantt(
     def _emit(holder, *, kind, parent_id, depth, inherited_end):
         """Append a node's row (+ per-entity child rows) and return its end."""
         ents = _entities(holder)
+        # Both tasks and subtasks now carry their own dates (057). Tasks have a
+        # mandatory start+due; subtasks have optional start/due (fall back to
+        # per-entity max / inherited task end / derived initiative start).
+        own_start = holder.get("start_date")
         if kind == "task":
             own_end = holder.get("due_date")
-        else:  # subtask: no date column — use per-entity max, else inherit task
+        else:  # subtask
             per = [e["end_date"] for e in ents if e.get("end_date")]
-            own_end = max(per) if per else inherited_end
+            own_end = holder.get("due_date") or (max(per) if per else inherited_end)
 
         per_entity = holder.get("date_mode") == "per_entity" and any(
             e.get("end_date") for e in ents
@@ -975,6 +980,13 @@ def get_initiative_gantt(
         # In per-entity mode the parent itself spans nothing; entity rows carry
         # the dates. Otherwise the parent row holds the bar.
         row_end = None if per_entity else own_end
+        # Real start when set; else derive from the initiative (clamped to end).
+        if per_entity:
+            row_start = None
+        elif own_start:
+            row_start = own_start if (not row_end or own_start <= row_end) else row_end
+        else:
+            row_start = _derive_start(row_end)
         rows.append({
             "id": holder["id"],
             "kind": kind,
@@ -983,7 +995,7 @@ def get_initiative_gantt(
             "title": holder["title"],
             "status": holder.get("status"),
             "priority": holder.get("priority"),
-            "start_date": _derive_start(row_end),
+            "start_date": row_start,
             "end_date": row_end,
             "is_milestone": False,
             "over_end": _over(row_end),
