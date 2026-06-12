@@ -36,6 +36,8 @@ def test_create_initiative_returns_201():
             "name": "Pest Control Q2",
             "business_id": "biz-456",
             "date_mode": "uniform",
+            "start_date": "2026-01-01",
+            "target_end_date": "2026-03-31",
         })
         assert r.status_code == 201
         assert r.json()["name"] == "Pest Control Q2"
@@ -55,8 +57,29 @@ def test_create_initiative_non_member_returns_403():
             "name": "X",
             "business_id": "other-biz",
             "date_mode": "uniform",
+            "start_date": "2026-01-01",
+            "target_end_date": "2026-03-31",
         })
         assert r.status_code == 403
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_create_initiative_requires_dates():
+    """start_date + target_end_date are mandatory (056) — omitting either is a
+    422 at validation time, before any DB work."""
+    app.dependency_overrides[get_current_user] = override_auth
+    app.dependency_overrides[get_supabase] = lambda: MagicMock()
+    try:
+        r = client.post("/api/v1/initiatives/", json={
+            "name": "No dates", "business_id": "biz-456",
+        })
+        assert r.status_code == 422, r.text
+        r = client.post("/api/v1/initiatives/", json={
+            "name": "Only start", "business_id": "biz-456",
+            "start_date": "2026-01-01",
+        })
+        assert r.status_code == 422, r.text
     finally:
         app.dependency_overrides.clear()
 

@@ -200,5 +200,6 @@ def test_program_follower_cannot_create_task(fake):
         "title": "Should fail",
         "initiative_id": "INIT-A",
         "primary_stakeholder_id": U_FOLLOWER,
+        "start_date": "2026-01-01", "due_date": "2026-12-31",
     })
     assert r.status_code == 403

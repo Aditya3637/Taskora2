@@ -298,6 +298,7 @@ function AddInitiativeModal({
   const [impact, setImpact] = useState("");
   const [impactMetric, setImpactMetric] = useState("");
   const { currencySymbol: sym } = useWorkspaceFormat();
+  const [startDate, setStartDate] = useState("");
   const [targetDate, setTargetDate] = useState("");
   const [members, setMembers] = useState<Member[]>([]);
   const [saving, setSaving] = useState(false);
@@ -312,6 +313,14 @@ function AddInitiativeModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
+    if (!startDate || !targetDate) {
+      setError("Start date and target end date are required.");
+      return;
+    }
+    if (targetDate < startDate) {
+      setError("Target end date can't be before the start date.");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -324,7 +333,8 @@ function AddInitiativeModal({
           impact_category: impactCategory,
           impact: impact.trim() || null,
           impact_metric: impactMetric.trim() || null,
-          target_end_date: targetDate || null,
+          start_date: startDate,
+          target_end_date: targetDate,
         }),
       });
       onCreated();
@@ -451,16 +461,32 @@ function AddInitiativeModal({
             />
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1.5">
-              Target End Date
-            </label>
-            <input
-              type="date"
-              value={targetDate}
-              onChange={(e) => setTargetDate(e.target.value)}
-              className="w-full border border-pebble rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-taskora-red"
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1.5">
+                Start Date *
+              </label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                required
+                className="w-full border border-pebble rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-taskora-red"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1.5">
+                Target End Date *
+              </label>
+              <input
+                type="date"
+                value={targetDate}
+                min={startDate || undefined}
+                onChange={(e) => setTargetDate(e.target.value)}
+                required
+                className="w-full border border-pebble rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-taskora-red"
+              />
+            </div>
           </div>
 
           {error && <p className="text-xs text-red-600">{error}</p>}
@@ -475,7 +501,7 @@ function AddInitiativeModal({
             </button>
             <button
               type="submit"
-              disabled={saving || !name.trim()}
+              disabled={saving || !name.trim() || !startDate || !targetDate}
               className="flex-1 px-4 py-2.5 rounded-lg bg-taskora-red text-white text-sm font-semibold hover:opacity-90 disabled:opacity-50"
             >
               {saving ? "Adding…" : "Add Initiative"}
@@ -587,6 +613,16 @@ function ProgramRow({
           <span className="text-xs text-steel/60 flex-shrink-0 ml-1">
             {count} initiative{count !== 1 ? "s" : ""}
           </span>
+        </button>
+
+        {/* This program's Gantt timeline (initiatives across the year). */}
+        <button
+          onClick={() => router.push(`/gantt?program=${program.id}`)}
+          title="Open this program's timeline"
+          aria-label="Open this program's Gantt timeline"
+          className="flex items-center justify-center w-7 h-7 rounded-full border border-pebble text-steel hover:border-ocean hover:text-ocean transition-colors flex-shrink-0"
+        >
+          <BarChart3 className="w-3.5 h-3.5" />
         </button>
 
         {/* Open the full program page (AI summary, milestones, deps, docs…) */}
@@ -826,6 +862,7 @@ function readExpandedFromStorage(): Set<string> {
 }
 
 export default function ProgramsPage() {
+  const router = useRouter();
   const [programs, setPrograms] = useState<Program[]>([]);
   const [businessId, setBusinessId] = useState<string | null>(null);
   const [canEdit, setCanEdit] = useState(false);
@@ -970,15 +1007,26 @@ export default function ProgramsPage() {
             Organise initiatives into strategic programs.
           </p>
         </div>
-        {canEdit && (
+        <div className="flex items-center gap-2">
+          {/* Overall timeline across every program. */}
           <button
-            onClick={() => setShowNew(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-taskora-red text-white rounded-lg text-sm font-semibold hover:opacity-90"
+            onClick={() => router.push("/gantt")}
+            title="Open the workspace program timeline"
+            className="flex items-center gap-2 px-4 py-2 border border-pebble text-steel rounded-lg text-sm font-semibold hover:border-ocean hover:text-ocean transition-colors"
           >
-            <Plus className="w-4 h-4" />
-            New Program
+            <BarChart3 className="w-4 h-4" />
+            Timeline
           </button>
-        )}
+          {canEdit && (
+            <button
+              onClick={() => setShowNew(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-taskora-red text-white rounded-lg text-sm font-semibold hover:opacity-90"
+            >
+              <Plus className="w-4 h-4" />
+              New Program
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Programs accordion list */}

@@ -5,6 +5,7 @@ import { ArrowLeft, Plus, User, X, ChevronDown, ChevronRight, GanttChartSquare, 
 import { supabase } from "@/lib/supabase";
 import { useWorkspaceFormat } from "@/lib/use-workspace-format";
 import { GanttModal } from "../../gantt/GanttChart";
+import ProgramTimeline from "../../gantt/ProgramTimeline";
 import { EditInitiativeModal } from "../EditInitiativeModal";
 import { WorkDocPanel } from "../_components/WorkDocPanel";
 import { ProgramAiSummary } from "../_components/ProgramAiSummary";
@@ -150,6 +151,7 @@ function AddInitiativeModal({
   const [impact, setImpact] = useState("");
   const [impactMetric, setImpactMetric] = useState("");
   const { currencySymbol: sym } = useWorkspaceFormat();
+  const [startDate, setStartDate] = useState("");
   const [targetDate, setTargetDate] = useState("");
   const [members, setMembers] = useState<Member[]>([]);
   const [saving, setSaving] = useState(false);
@@ -164,6 +166,14 @@ function AddInitiativeModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
+    if (!startDate || !targetDate) {
+      setError("Start date and target end date are required.");
+      return;
+    }
+    if (targetDate < startDate) {
+      setError("Target end date can't be before the start date.");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
@@ -176,7 +186,8 @@ function AddInitiativeModal({
           impact_category: impactCategory,
           impact: impact.trim() || null,
           impact_metric: impactMetric.trim() || null,
-          target_end_date: targetDate || null,
+          start_date: startDate,
+          target_end_date: targetDate,
         }),
       });
       onCreated();
@@ -303,16 +314,32 @@ function AddInitiativeModal({
             />
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1.5">
-              Target End Date
-            </label>
-            <input
-              type="date"
-              value={targetDate}
-              onChange={(e) => setTargetDate(e.target.value)}
-              className="w-full border border-pebble rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-taskora-red"
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1.5">
+                Start Date *
+              </label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                required
+                className="w-full border border-pebble rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-taskora-red"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-steel uppercase tracking-wider mb-1.5">
+                Target End Date *
+              </label>
+              <input
+                type="date"
+                value={targetDate}
+                min={startDate || undefined}
+                onChange={(e) => setTargetDate(e.target.value)}
+                required
+                className="w-full border border-pebble rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-taskora-red"
+              />
+            </div>
           </div>
 
           {error && <p className="text-xs text-red-600">{error}</p>}
@@ -327,7 +354,7 @@ function AddInitiativeModal({
             </button>
             <button
               type="submit"
-              disabled={saving || !name.trim()}
+              disabled={saving || !name.trim() || !startDate || !targetDate}
               className="flex-1 px-4 py-2.5 rounded-lg bg-taskora-red text-white text-sm font-semibold hover:opacity-90 disabled:opacity-50"
             >
               {saving ? "Adding…" : "Add Initiative"}
@@ -733,6 +760,7 @@ export default function ProgramDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [timelineOpen, setTimelineOpen] = useState(true);
   const [editInit, setEditInit] = useState<Initiative | null>(null);
   const [docInit, setDocInit] = useState<Initiative | null>(null);
   const [statsById, setStatsById] = useState<Record<string, InitiativeStats>>({});
@@ -841,15 +869,39 @@ export default function ProgramDetailPage() {
             </p>
           </div>
         </div>
-        {canEdit && (
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {/* This program's Gantt timeline across the year. */}
           <button
-            onClick={() => setShowAdd(true)}
-            className="flex items-center gap-2 px-4 py-2.5 bg-taskora-red text-white rounded-lg text-sm font-semibold hover:opacity-90 flex-shrink-0"
+            onClick={() => router.push(`/gantt?program=${programId}`)}
+            title="Open this program's timeline"
+            className="flex items-center gap-2 px-4 py-2.5 border border-pebble text-steel rounded-lg text-sm font-semibold hover:border-ocean hover:text-ocean transition-colors"
           >
-            <Plus className="w-4 h-4" /> Add Initiative
+            <GanttChartSquare className="w-4 h-4" /> Timeline
           </button>
-        )}
+          {canEdit && (
+            <button
+              onClick={() => setShowAdd(true)}
+              className="flex items-center gap-2 px-4 py-2.5 bg-taskora-red text-white rounded-lg text-sm font-semibold hover:opacity-90"
+            >
+              <Plus className="w-4 h-4" /> Add Initiative
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Program-level Gantt: initiatives across the year, expandable to tasks. */}
+      <section className="mb-8">
+        <button
+          type="button"
+          onClick={() => setTimelineOpen((v) => !v)}
+          className="flex items-center gap-2 mb-3 text-sm font-semibold text-midnight"
+        >
+          {timelineOpen ? <ChevronDown className="w-4 h-4 text-steel" /> : <ChevronRight className="w-4 h-4 text-steel" />}
+          <GanttChartSquare className="w-4 h-4 text-steel" />
+          Timeline
+        </button>
+        {timelineOpen && <ProgramTimeline programScope={programId} embedded />}
+      </section>
 
       {/* P1 + P2: measurable outcomes, status updates, trend */}
       <ProgramOutcomes programId={programId} canEdit={canEdit} />

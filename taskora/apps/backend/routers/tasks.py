@@ -93,10 +93,21 @@ class TaskCreate(BaseModel):
     #   entity_inheritance IN (inherited, overridden)
     priority: Literal["low", "medium", "high", "urgent"] = "medium"
     status: _TASK_STATUSES = "backlog"
-    due_date: Optional[date] = None
+    # Mandatory span (057): start_date + due_date (= end), ordered. Real bars
+    # on the Gantt; enforced at create.
+    start_date: date
+    due_date: date
     date_mode: Literal["uniform", "per_entity"] = "uniform"
     entity_inheritance: Literal["inherited", "overridden"] = "inherited"
     entities: List[TaskEntityCreate] = []
+
+
+def _validate_task_dates(start: date, end: date) -> None:
+    """start_date + due_date are mandatory and due must not precede start."""
+    if start is None or end is None:
+        raise HTTPException(status_code=422, detail="start_date and due_date are required")
+    if end < start:
+        raise HTTPException(status_code=422, detail="due_date cannot be before start_date")
 
 
 class TaskStatusUpdate(BaseModel):
@@ -109,6 +120,7 @@ class TaskUpdate(BaseModel):
     title: Optional[str] = None
     status: Optional[str] = None
     priority: Optional[str] = None
+    start_date: Optional[date] = None
     due_date: Optional[date] = None
     description: Optional[str] = None
 
@@ -458,6 +470,11 @@ def get_my_tasks_page(
     ),
     status: Optional[str] = Query(default=None, description="Filter by exact task status"),
     business_id: Optional[str] = Query(default=None, description="Scope to a specific workspace."),
+    archived_only: bool = Query(
+        default=False,
+        description="Return ONLY archived tasks (the inline 'show archived' view). "
+        "When false (default) archived tasks are excluded entirely.",
+    ),
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
@@ -507,6 +524,12 @@ def get_my_tasks_page(
             .limit(limit + 1)
         )
 
+    # Archive is orthogonal to status: by default the active list hides
+    # archived tasks; the 'show archived' toggle asks for them explicitly.
+    if archived_only:
+        q = q.not_.is_("archived_at", "null")
+    else:
+        q = q.is_("archived_at", "null")
     if cursor:
         q = q.lt("created_at", cursor)
     if status:
@@ -585,6 +608,8 @@ def create_task(
             detail="primary_stakeholder_id must be a member of this workspace",
         )
 
+    _validate_task_dates(body.start_date, body.due_date)
+
     result = sb.table("tasks").insert({
         "title": body.title,
         "description": body.description,
@@ -593,7 +618,8 @@ def create_task(
         "created_by": uid,
         "priority": body.priority,
         "status": body.status,
-        "due_date": body.due_date.isoformat() if body.due_date else None,
+        "start_date": body.start_date.isoformat(),
+        "due_date": body.due_date.isoformat(),
         "date_mode": body.date_mode,
         "entity_inheritance": body.entity_inheritance,
     }).execute()
@@ -716,6 +742,60 @@ def delete_task(
     sb.table("tasks").delete().eq("id", task_id).execute()
 
 
+@router.post("/{task_id}/archive", status_code=200)
+def archive_task(
+    task_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Archive a *done* task out of the active list. Admin/owner only.
+
+    Cascades: every subtask (and sub-subtask) under the task is archived too,
+    so a restored task brings its whole attribute subtree back intact.
+    """
+    _assert_admin_or_owner(sb, task_id, user["id"])
+    rows = sb.table("tasks").select("status, archived_at").eq("id", task_id).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if rows[0].get("archived_at"):
+        raise HTTPException(status_code=400, detail="Task is already archived")
+    if rows[0].get("status") != "done":
+        raise HTTPException(status_code=400, detail="Only a completed (done) task can be archived")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    sb.table("tasks").update({"archived_at": now_iso, "updated_at": now_iso}).eq("id", task_id).execute()
+    # Cascade to the whole subtask subtree (one level of nesting, but archive
+    # everything keyed to this task regardless of depth).
+    sb.table("subtasks").update({"archived_at": now_iso, "updated_at": now_iso}).eq(
+        "task_id", task_id
+    ).is_("archived_at", "null").execute()
+    return {"id": task_id, "archived_at": now_iso}
+
+
+@router.post("/{task_id}/restore", status_code=200)
+def restore_task(
+    task_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Restore an archived task (and its whole subtask subtree) back to the
+    active list. Admin/owner only. Workflow status is untouched — it returns
+    with the status it had when archived (always 'done')."""
+    _assert_admin_or_owner(sb, task_id, user["id"])
+    rows = sb.table("tasks").select("archived_at").eq("id", task_id).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if not rows[0].get("archived_at"):
+        raise HTTPException(status_code=400, detail="Task is not archived")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    sb.table("tasks").update({"archived_at": None, "updated_at": now_iso}).eq("id", task_id).execute()
+    sb.table("subtasks").update({"archived_at": None, "updated_at": now_iso}).eq(
+        "task_id", task_id
+    ).not_.is_("archived_at", "null").execute()
+    return {"id": task_id, "archived_at": None}
+
+
 @router.patch("/{task_id}")
 def update_task(
     task_id: str,
@@ -730,13 +810,14 @@ def update_task(
     # dates on tasks they didn't personally own.
     _assert_task_write(sb, task_id, user["id"])
     # Snapshot current state BEFORE the update so we can detect transitions.
-    prior = sb.table("tasks").select("due_date, status, closed_at").eq("id", task_id).execute().data
+    prior = sb.table("tasks").select("start_date, due_date, status, closed_at").eq("id", task_id).execute().data
     prior_due_str = prior[0].get("due_date") if prior else None
+    prior_start_str = prior[0].get("start_date") if prior else None
     prior_status = prior[0].get("status") if prior else None
 
     # Distinguish "field absent" from "field explicitly null" so the sheet
-    # can clear due_date / description. model_fields_set is the only way to
-    # tell `{title: 'x'}` apart from `{title: 'x', due_date: null}`.
+    # can clear description. model_fields_set is the only way to tell
+    # `{title: 'x'}` apart from `{title: 'x', description: null}`.
     set_fields = body.model_fields_set
     payload: dict = {}
     if "title" in set_fields and body.title is not None:
@@ -745,12 +826,26 @@ def update_task(
         payload["status"] = body.status
     if "priority" in set_fields and body.priority is not None:
         payload["priority"] = body.priority
+    # start_date / due_date are mandatory (057) — reject clearing them.
+    if "start_date" in set_fields:
+        if body.start_date is None:
+            raise HTTPException(status_code=422, detail="start_date cannot be cleared")
+        payload["start_date"] = body.start_date.isoformat()
     if "due_date" in set_fields:
-        payload["due_date"] = body.due_date.isoformat() if body.due_date else None
+        if body.due_date is None:
+            raise HTTPException(status_code=422, detail="due_date cannot be cleared")
+        payload["due_date"] = body.due_date.isoformat()
     if "description" in set_fields:
         payload["description"] = body.description
     if not payload:
         raise HTTPException(status_code=422, detail="No fields to update")
+
+    # Keep start <= due when either date changes (compare effective values).
+    if "start_date" in payload or "due_date" in payload:
+        eff_start = payload.get("start_date", prior_start_str)
+        eff_due = payload.get("due_date", prior_due_str)
+        if eff_start and eff_due and str(eff_due) < str(eff_start):
+            raise HTTPException(status_code=422, detail="due_date cannot be before start_date")
 
     now_iso = datetime.now(timezone.utc).isoformat()
     payload["updated_at"] = now_iso
@@ -969,6 +1064,42 @@ def _assert_can_manage_stakeholders(sb: Client, task_id: str, user_id: str):
     raise HTTPException(
         status_code=403,
         detail="Only the primary stakeholder or a workspace admin can manage stakeholders",
+    )
+
+
+def _assert_admin_or_owner(sb: Client, task_id: str, user_id: str):
+    """Stricter gate than _assert_task_write: ONLY workspace owners/admins.
+
+    Used for structural changes the product reserves for admins — adding or
+    deleting attributes (subtasks), and archiving/restoring tasks or subtasks.
+    Stakeholders can still edit a subtask's status/title/assignee via PATCH,
+    but they can't reshape the attribute set or archive things.
+    """
+    rows = (
+        sb.table("tasks")
+        .select("initiative_id")
+        .eq("id", task_id)
+        .execute()
+        .data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Task not found")
+    init_id = rows[0].get("initiative_id")
+    if init_id:
+        init_row = (
+            sb.table("initiatives")
+            .select("business_id")
+            .eq("id", init_id)
+            .execute()
+            .data
+        )
+        if init_row and get_member_role(
+            sb, init_row[0]["business_id"], user_id
+        ) in ("owner", "admin"):
+            return
+    raise HTTPException(
+        status_code=403,
+        detail="Only a workspace owner or admin can perform this action",
     )
 
 
@@ -1355,6 +1486,8 @@ class SubtaskCreate(BaseModel):
     parent_subtask_id: Optional[str] = None  # B1: enables Task → Subtask → Sub-subtask
     # P2 field parity with tasks (migration 039). All optional / defaulted.
     description: Optional[str] = None
+    # Optional span (057): a subtask shows a Gantt bar when both are set.
+    start_date: Optional[date] = None
     due_date: Optional[date] = None
     priority: Literal["low", "medium", "high", "urgent"] = "medium"
 
@@ -1365,6 +1498,7 @@ class SubtaskUpdate(BaseModel):
     assignee_id: Optional[str] = None
     parent_subtask_id: Optional[str] = None
     description: Optional[str] = None
+    start_date: Optional[date] = None
     due_date: Optional[date] = None
     priority: Optional[Literal["low", "medium", "high", "urgent"]] = None
 
@@ -1430,6 +1564,7 @@ def _assert_task_access(sb: Client, task_id: str, user_id: str):
 def list_subtasks(
     task_id: str,
     for_entity: Optional[str] = Query(default=None, description="entity_id to scope subtasks to"),
+    include_archived: bool = Query(default=False, description="Include archived subtasks"),
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
@@ -1439,11 +1574,13 @@ def list_subtasks(
         .select(
             "id, title, status, approval_state, assignee_id, created_at, closed_at, "
             "scoped_entity_id, scoped_entity_type, parent_subtask_id, "
-            "description, due_date, priority"
+            "description, due_date, priority, archived_at"
         )
         .eq("task_id", task_id)
         .order("created_at")
     )
+    if not include_archived:
+        query = query.is_("archived_at", "null")
     if for_entity is not None:
         query = query.eq("scoped_entity_id", for_entity)
     else:
@@ -1468,6 +1605,7 @@ def list_subtasks(
 @router.get("/{task_id}/subtasks-grouped")
 def list_subtasks_grouped(
     task_id: str,
+    include_archived: bool = Query(default=False, description="Include archived subtasks"),
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
@@ -1478,20 +1616,25 @@ def list_subtasks_grouped(
     Replaces the per-entity N+1 pattern where each building row separately
     called /subtasks?for_entity=<id>. With 50 buildings, that was 50 trips;
     now it's one query that benefits from the (task_id, scoped_entity_id) index.
+
+    Archived subtasks are excluded unless include_archived=true (the inline
+    "show archived" toggle); each row carries archived_at so the client can
+    separate the active set from the archived one.
     """
     _assert_task_access(sb, task_id, user["id"])
-    rows = (
+    q = (
         sb.table("subtasks")
         .select(
             "id, title, status, approval_state, assignee_id, created_at, closed_at, "
             "scoped_entity_id, scoped_entity_type, parent_subtask_id, "
-            "description, due_date, priority"
+            "description, due_date, priority, archived_at"
         )
         .eq("task_id", task_id)
         .order("created_at")
-        .execute()
-        .data
     )
+    if not include_archived:
+        q = q.is_("archived_at", "null")
+    rows = q.execute().data
 
     # Resolve assignee names in one batch
     assignee_ids = list({s["assignee_id"] for s in rows if s.get("assignee_id")})
@@ -1554,7 +1697,8 @@ def create_subtask(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    _assert_task_write(sb, task_id, user["id"])
+    # Adding attributes is an admin/owner-only structural change.
+    _assert_admin_or_owner(sb, task_id, user["id"])
     now = datetime.now(timezone.utc).isoformat()
     row: dict = {
         "task_id": task_id,
@@ -1562,6 +1706,7 @@ def create_subtask(
         "status": "todo",
         "assignee_id": body.assignee_id or user["id"],
         "description": body.description,
+        "start_date": body.start_date.isoformat() if body.start_date else None,
         "due_date": body.due_date.isoformat() if body.due_date else None,
         "priority": body.priority,
         "created_at": now,
@@ -1745,10 +1890,10 @@ def delete_subtask(
     """Delete a subtask. Cascade-deletes any nested sub-subtasks (parent_subtask_id
     children) to avoid orphans, since the schema allows one level of nesting.
 
-    Write-gated the same way as PATCH — caller must be task primary/stakeholder
-    or a workspace owner/admin. Followers/approvers cannot delete.
+    Deleting an attribute is an admin/owner-only structural change — stricter
+    than PATCH (which stakeholders may use to move a subtask's status).
     """
-    _assert_task_write(sb, task_id, user["id"])
+    _assert_admin_or_owner(sb, task_id, user["id"])
     existing = (
         sb.table("subtasks")
         .select("id")
@@ -1762,6 +1907,76 @@ def delete_subtask(
     # Cascade: drop child sub-subtasks first so we don't leave orphans.
     sb.table("subtasks").delete().eq("parent_subtask_id", subtask_id).execute()
     sb.table("subtasks").delete().eq("id", subtask_id).eq("task_id", task_id).execute()
+
+
+@router.post("/{task_id}/subtasks/{subtask_id}/archive", status_code=200)
+def archive_subtask(
+    task_id: str,
+    subtask_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Archive a *done* subtask (attribute). Admin/owner only.
+
+    Cascades to its sub-subtasks so a restored parent brings its children back.
+    """
+    _assert_admin_or_owner(sb, task_id, user["id"])
+    rows = (
+        sb.table("subtasks")
+        .select("status, archived_at")
+        .eq("id", subtask_id)
+        .eq("task_id", task_id)
+        .execute()
+        .data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Subtask not found")
+    if rows[0].get("archived_at"):
+        raise HTTPException(status_code=400, detail="Subtask is already archived")
+    if rows[0].get("status") != "done":
+        raise HTTPException(status_code=400, detail="Only a completed (done) subtask can be archived")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    sb.table("subtasks").update({"archived_at": now_iso, "updated_at": now_iso}).eq(
+        "id", subtask_id
+    ).eq("task_id", task_id).execute()
+    # Cascade to nested sub-subtasks.
+    sb.table("subtasks").update({"archived_at": now_iso, "updated_at": now_iso}).eq(
+        "parent_subtask_id", subtask_id
+    ).is_("archived_at", "null").execute()
+    return {"id": subtask_id, "archived_at": now_iso}
+
+
+@router.post("/{task_id}/subtasks/{subtask_id}/restore", status_code=200)
+def restore_subtask(
+    task_id: str,
+    subtask_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Restore an archived subtask (and its sub-subtasks). Admin/owner only."""
+    _assert_admin_or_owner(sb, task_id, user["id"])
+    rows = (
+        sb.table("subtasks")
+        .select("archived_at")
+        .eq("id", subtask_id)
+        .eq("task_id", task_id)
+        .execute()
+        .data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Subtask not found")
+    if not rows[0].get("archived_at"):
+        raise HTTPException(status_code=400, detail="Subtask is not archived")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    sb.table("subtasks").update({"archived_at": None, "updated_at": now_iso}).eq(
+        "id", subtask_id
+    ).eq("task_id", task_id).execute()
+    sb.table("subtasks").update({"archived_at": None, "updated_at": now_iso}).eq(
+        "parent_subtask_id", subtask_id
+    ).not_.is_("archived_at", "null").execute()
+    return {"id": subtask_id, "archived_at": None}
 
 
 @router.get("/follow-up-today")

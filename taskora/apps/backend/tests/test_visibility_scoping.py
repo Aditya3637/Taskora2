@@ -224,6 +224,7 @@ def test_admin_can_create_task_anywhere(fake):
     r = client.post("/api/v1/tasks/", json={
         "title": "Admin new task", "initiative_id": "INIT-B",
         "primary_stakeholder_id": U_ADMIN,
+        "start_date": "2026-01-01", "due_date": "2026-12-31",
     })
     assert r.status_code == 201, r.text
 
@@ -233,6 +234,7 @@ def test_aligned_member_can_create_task_in_their_initiative(fake):
     r = client.post("/api/v1/tasks/", json={
         "title": "New A task", "initiative_id": "INIT-A",
         "primary_stakeholder_id": U_INIT_PRIMARY,
+        "start_date": "2026-01-01", "due_date": "2026-12-31",
     })
     assert r.status_code == 201, r.text
     assert r.json()["created_by"] == U_INIT_PRIMARY
@@ -380,6 +382,7 @@ def test_subtask_assignee_still_cannot_create_tasks(fake):
         "title": "Outsider tries",
         "initiative_id": "INIT-A",
         "primary_stakeholder_id": U_SUB_ASSIGNEE,
+        "start_date": "2026-01-01", "due_date": "2026-12-31",
     })
     assert r.status_code == 403
 
@@ -433,6 +436,7 @@ def test_unaligned_member_cannot_create_task_in_other_initiative(fake):
     r = client.post("/api/v1/tasks/", json={
         "title": "Sneaky", "initiative_id": "INIT-A",
         "primary_stakeholder_id": U_OUTSIDER,
+        "start_date": "2026-01-01", "due_date": "2026-12-31",
     })
     assert r.status_code == 403
 
@@ -523,5 +527,6 @@ def test_follower_cannot_create_task(fake):
         "title": "Should fail",
         "initiative_id": "INIT-A",
         "primary_stakeholder_id": U_OUTSIDER,
+        "start_date": "2026-01-01", "due_date": "2026-12-31",
     })
     assert r.status_code == 403

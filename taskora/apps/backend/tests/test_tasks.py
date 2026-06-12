@@ -52,11 +52,33 @@ def test_create_task_returns_201():
             "title": "Fix HVAC",
             "initiative_id": "init-789",
             "primary_stakeholder_id": "user-123",
+            "start_date": "2026-01-01", "due_date": "2026-12-31",
         })
         assert r.status_code == 201, r.text
         body = r.json()
         assert body["title"] == "Fix HVAC"
         assert body["created_by"] == "user-123"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_create_task_requires_dates():
+    """start_date + due_date are mandatory (057) — omitting either is 422 at
+    validation time, before any DB work."""
+    from unittest.mock import MagicMock
+    app.dependency_overrides[get_current_user] = override_auth
+    app.dependency_overrides[get_supabase] = lambda: MagicMock()
+    try:
+        r = client.post("/api/v1/tasks/", json={
+            "title": "No dates", "initiative_id": "init-789",
+            "primary_stakeholder_id": "user-123",
+        })
+        assert r.status_code == 422, r.text
+        r = client.post("/api/v1/tasks/", json={
+            "title": "Only start", "initiative_id": "init-789",
+            "primary_stakeholder_id": "user-123", "start_date": "2026-01-01",
+        })
+        assert r.status_code == 422, r.text
     finally:
         app.dependency_overrides.clear()
 
