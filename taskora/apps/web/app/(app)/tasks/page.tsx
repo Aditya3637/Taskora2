@@ -861,7 +861,7 @@ function SubtaskRow({
               title="More actions"
               aria-label="More actions"
               aria-expanded={menuOpen}
-              className="opacity-0 group-hover:opacity-100 focus:opacity-100 w-5 h-5 rounded text-steel/50 hover:bg-mist hover:text-midnight flex items-center justify-center transition-opacity"
+              className="opacity-60 hover:opacity-100 focus:opacity-100 w-5 h-5 rounded text-steel/50 hover:bg-mist hover:text-midnight flex items-center justify-center transition-opacity"
             >
               <MoreHorizontal className="w-3.5 h-3.5" />
             </button>
@@ -4196,19 +4196,20 @@ function TasksPageInner() {
       loadArchivedTasks();
       if (biz?.id) {
         setBusinessId(biz.id);
-        // Members and role are non-blocking
-        Promise.all([
-          apiFetch(`/api/v1/businesses/${biz.id}/members`),
-          apiFetch(`/api/v1/businesses/${biz.id}/my-role`),
-        ])
-          .then(([memberData, roleData]: any[]) => {
+        // Members and role are non-blocking — and INDEPENDENT: a failing
+        // /members request must not drop the role (which gates delete/archive
+        // affordances for owners/admins).
+        apiFetch(`/api/v1/businesses/${biz.id}/members`)
+          .then((memberData: any) =>
             setMembers(
               Array.isArray(memberData)
                 ? memberData.filter((m: Member) => m.user_id !== userId)
                 : []
-            );
-            if (roleData?.role) setMyRole(roleData.role);
-          })
+            )
+          )
+          .catch(() => {});
+        apiFetch(`/api/v1/businesses/${biz.id}/my-role`)
+          .then((roleData: any) => { if (roleData?.role) setMyRole(roleData.role); })
           .catch(() => {});
       }
     } catch (err: any) {

@@ -72,7 +72,9 @@ export default function ProgramTimeline({
   const [anchorYear, setAnchorYear] = useState(thisYear);
   const [years, setYears] = useState(1);
   const [ownerFilter, setOwnerFilter] = useState("");
-  const [programFilter, setProgramFilter] = useState("");
+  // Seed the program filter from the URL scope so /gantt?program=<id> opens
+  // pre-filtered but the dropdown still lets you switch programs.
+  const [programFilter, setProgramFilter] = useState(programScope ?? "");
   const [initiativeFilter, setInitiativeFilter] = useState("");
 
   // Collapsed program lanes (hide initiatives) + expanded initiatives (show
@@ -164,13 +166,13 @@ export default function ProgramTimeline({
     });
   }
 
-  // Visible lanes after the program scope + filter.
+  // Embedded views are hard-scoped to their program; full-page views are
+  // scoped by the program dropdown (seeded from the URL).
+  const effectiveProgram = embedded ? programScope : (programFilter || null);
   const lanes = useMemo(() => {
     const all = data?.programs ?? [];
-    return all
-      .filter((l) => !programScope || String(l.id) === programScope)
-      .filter((l) => !programFilter || String(l.id) === programFilter);
-  }, [data, programScope, programFilter]);
+    return all.filter((l) => !effectiveProgram || String(l.id) === effectiveProgram);
+  }, [data, effectiveProgram]);
 
   const rows = useMemo<GanttRow[]>(() => {
     const out: GanttRow[] = [];
@@ -310,7 +312,7 @@ export default function ProgramTimeline({
           ))}
         </div>
 
-        {!programScope && programOptions.length > 0 && (
+        {!embedded && programOptions.length > 0 && (
           <select value={programFilter} onChange={(e) => { setProgramFilter(e.target.value); setInitiativeFilter(""); }}
             className="bg-white border border-pebble text-midnight text-sm rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-taskora-red">
             <option value="">All programs</option>

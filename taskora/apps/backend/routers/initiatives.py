@@ -974,16 +974,11 @@ def get_initiative_gantt(
             per = [e["end_date"] for e in ents if e.get("end_date")]
             own_end = holder.get("due_date") or (max(per) if per else inherited_end)
 
-        per_entity = holder.get("date_mode") == "per_entity" and any(
-            e.get("end_date") for e in ents
-        )
-        # In per-entity mode the parent itself spans nothing; entity rows carry
-        # the dates. Otherwise the parent row holds the bar.
-        row_end = None if per_entity else own_end
-        # Real start when set; else derive from the initiative (clamped to end).
-        if per_entity:
-            row_start = None
-        elif own_start:
+        # Tasks now have mandatory dates (057), so the parent always holds its
+        # own bar (the overall task window). Start = real start when set, else
+        # derived from the initiative (clamped to the end).
+        row_end = own_end
+        if own_start:
             row_start = own_start if (not row_end or own_start <= row_end) else row_end
         else:
             row_start = _derive_start(row_end)
@@ -1002,25 +997,30 @@ def get_initiative_gantt(
             "depends_on": holder.get("depends_on") or [],
             "entities": ents,
         })
-        if per_entity:
-            for e in ents:
-                if not e.get("end_date"):
-                    continue
-                rows.append({
-                    "id": f"{holder['id']}::{e['type']}:{e['name']}",
-                    "kind": "entity",
-                    "parent_id": holder["id"],
-                    "depth": depth + 1,
-                    "title": e["name"],
-                    "status": holder.get("status"),
-                    "priority": holder.get("priority"),
-                    "start_date": _derive_start(e["end_date"]),
-                    "end_date": e["end_date"],
-                    "is_milestone": False,
-                    "over_end": _over(e["end_date"]),
-                    "depends_on": [],
-                    "entities": [e],
-                })
+        # Surface every building/client attached to the holder as a child row so
+        # its own timeline is visible on expand — per-entity deadline when set,
+        # otherwise inheriting the holder's span. (Previously only per_entity
+        # tasks did this, so uniform-mode tasks showed no building rows at all.)
+        for e in ents:
+            e_end = e.get("end_date") or own_end
+            if not e_end:
+                continue
+            e_start = row_start if (not e.get("end_date")) else _derive_start(e_end)
+            rows.append({
+                "id": f"{holder['id']}::{e['type']}:{e['name']}",
+                "kind": "entity",
+                "parent_id": holder["id"],
+                "depth": depth + 1,
+                "title": e["name"],
+                "status": holder.get("status"),
+                "priority": holder.get("priority"),
+                "start_date": e_start,
+                "end_date": e_end,
+                "is_milestone": False,
+                "over_end": _over(e_end),
+                "depends_on": [],
+                "entities": [e],
+            })
         return own_end
 
     # Index subtasks by their parent (task id or parent_subtask_id) for nesting.

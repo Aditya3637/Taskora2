@@ -100,6 +100,19 @@ def test_gantt_dateless_task_row_has_no_dates():
     assert t2["end_date"] is None
 
 
+def test_gantt_uniform_task_emits_building_rows():
+    """A uniform-mode task with entities now surfaces each building/client as a
+    child row (inheriting the task's span) so its timeline is visible."""
+    _setup(_store())
+    rows = client.get(f"/api/v1/initiatives/{INIT}/gantt").json()["rows"]
+    ent_rows = [r for r in rows if r["kind"] == "entity" and r["parent_id"] == "T1"]
+    names = sorted(r["title"] for r in ent_rows)
+    assert names == ["Acme", "Tower A"]
+    # No per-entity date → inherit the task's end (2026-05-20).
+    for r in ent_rows:
+        assert r["end_date"] == "2026-05-20"
+
+
 def test_gantt_subtask_nested_and_inherits_due():
     _setup(_store())
     rows = client.get(f"/api/v1/initiatives/{INIT}/gantt").json()["rows"]
