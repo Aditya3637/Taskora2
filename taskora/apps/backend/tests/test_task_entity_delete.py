@@ -85,3 +85,29 @@ def test_remove_unknown_building_404(sb):
     app.dependency_overrides[get_current_user] = _as(OWNER)
     r = client.delete(f"/api/v1/tasks/{TASK}/entities/nope")
     assert r.status_code == 404, r.text
+
+
+# ── add building/client ─────────────────────────────────────────────────────
+
+def test_member_cannot_add_building(sb):
+    app.dependency_overrides[get_current_user] = _as(MEMBER)
+    r = client.post(f"/api/v1/tasks/{TASK}/entities",
+                    json={"entity_type": "building", "entity_id": "bld-2"})
+    assert r.status_code == 403, r.text
+
+
+def test_owner_adds_building_with_name(sb):
+    sb.store.setdefault("buildings", []).append({"id": "bld-2", "name": "Tower B"})
+    app.dependency_overrides[get_current_user] = _as(OWNER)
+    r = client.post(f"/api/v1/tasks/{TASK}/entities",
+                    json={"entity_type": "building", "entity_id": "bld-2"})
+    assert r.status_code == 201, r.text
+    assert r.json()["entity_name"] == "Tower B"
+    assert any(e["entity_id"] == "bld-2" for e in sb.store["task_entities"])
+
+
+def test_add_duplicate_building_409(sb):
+    app.dependency_overrides[get_current_user] = _as(OWNER)
+    r = client.post(f"/api/v1/tasks/{TASK}/entities",
+                    json={"entity_type": "building", "entity_id": B1})
+    assert r.status_code == 409, r.text

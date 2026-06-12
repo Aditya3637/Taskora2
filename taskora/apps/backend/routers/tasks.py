@@ -1839,6 +1839,44 @@ def update_task_entity(
     return result.data[0] if result.data else {}
 
 
+@router.post("/{task_id}/entities", status_code=201)
+def add_task_entity(
+    task_id: str,
+    body: TaskEntityCreate,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Attach a building/client (attribute) to an existing task. Admin/owner
+    only. Returns the new row with its resolved name."""
+    _assert_admin_or_owner(sb, task_id, user["id"])
+    dup = (
+        sb.table("task_entities")
+        .select("entity_id")
+        .eq("task_id", task_id)
+        .eq("entity_id", body.entity_id)
+        .execute()
+        .data
+    )
+    if dup:
+        raise HTTPException(status_code=409, detail="Already on this task")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    row: dict = {
+        "task_id": task_id,
+        "entity_type": body.entity_type,
+        "entity_id": body.entity_id,
+        "per_entity_status": "backlog",
+        "per_entity_end_date": body.per_entity_end_date.isoformat() if body.per_entity_end_date else None,
+        "updated_at": now_iso,
+    }
+    result = sb.table("task_entities").insert(row).execute()
+    out = result.data[0] if result.data else row
+    tbl = "buildings" if body.entity_type == "building" else "clients"
+    nm = sb.table(tbl).select("name").eq("id", body.entity_id).execute().data
+    out["entity_name"] = nm[0]["name"] if nm else body.entity_id
+    return out
+
+
 @router.delete("/{task_id}/entities/{entity_id}", status_code=204)
 def delete_task_entity(
     task_id: str,

@@ -1765,6 +1765,102 @@ function CommentsPopup({
 
 // ── Entity Subtask Row (entity = first-level subtask, supports nested sub-subtasks) ──
 
+// Attach another building/client to a task (admin/owner). Lists the
+// workspace's entities of the task's type, minus the ones already attached.
+function AddEntityInline({
+  taskId,
+  entityType,
+  existingIds,
+  onAdded,
+}: {
+  taskId: string;
+  entityType: "building" | "client";
+  existingIds: Set<string>;
+  onAdded: (e: TaskEntity) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [options, setOptions] = useState<{ id: string; name: string }[]>([]);
+  const [sel, setSel] = useState("");
+  const [saving, setSaving] = useState(false);
+  const label = entityType === "building" ? "building" : "client";
+
+  useEffect(() => {
+    if (!open) return;
+    const bizId = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
+    if (!bizId) return;
+    const ep = entityType === "building" ? "buildings" : "clients";
+    apiFetch(`/api/v1/businesses/${bizId}/${ep}`)
+      .then((d: any) => setOptions(Array.isArray(d) ? d : []))
+      .catch(() => setOptions([]));
+  }, [open, entityType]);
+
+  const available = options.filter((o) => !existingIds.has(o.id));
+
+  async function add() {
+    if (!sel) return;
+    setSaving(true);
+    try {
+      const created = await apiFetch(`/api/v1/tasks/${taskId}/entities`, {
+        method: "POST",
+        body: JSON.stringify({ entity_type: entityType, entity_id: sel }),
+      });
+      onAdded({
+        entity_id: created.entity_id,
+        entity_type: created.entity_type,
+        entity_name: created.entity_name,
+        per_entity_status: created.per_entity_status ?? "backlog",
+      });
+      setSel("");
+      setOpen(false);
+    } catch (e: any) {
+      alert("Failed to add: " + (e?.message ?? "Unknown error"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="mt-1 text-xs text-taskora-red hover:underline font-medium flex items-center gap-1"
+      >
+        <Plus className="w-3 h-3" /> Add {label}
+      </button>
+    );
+  }
+  return (
+    <div className="mt-1 flex items-center gap-2">
+      <select
+        value={sel}
+        onChange={(e) => setSel(e.target.value)}
+        className="flex-1 text-xs border border-pebble rounded px-2 py-1.5 focus:outline-none focus:border-ocean max-w-[220px]"
+      >
+        <option value="">{available.length ? `Select a ${label}…` : `No more ${label}s`}</option>
+        {available.map((o) => (
+          <option key={o.id} value={o.id}>{o.name}</option>
+        ))}
+      </select>
+      <button
+        type="button"
+        onClick={add}
+        disabled={!sel || saving}
+        className="text-xs px-2.5 py-1.5 rounded bg-taskora-red text-white font-medium hover:opacity-90 disabled:opacity-40"
+      >
+        {saving ? "Adding…" : "Add"}
+      </button>
+      <button
+        type="button"
+        onClick={() => { setOpen(false); setSel(""); }}
+        className="text-xs px-2 py-1.5 rounded text-steel hover:bg-mist"
+      >
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 function EntitySubtaskRow({
   entity,
   taskId,
@@ -2922,6 +3018,15 @@ function TaskCard({
                   onOpenSheet={onOpenSheet}
                 />
               ))}
+              {/* Attach another building/client — admin/owner only. */}
+              {isAdmin && (
+                <AddEntityInline
+                  taskId={task.id}
+                  entityType={(localEnts[0]?.entity_type as "building" | "client") ?? "building"}
+                  existingIds={new Set(localEnts.map((e) => e.entity_id))}
+                  onAdded={(ne) => setLocalEnts((prev) => [...prev, ne])}
+                />
+              )}
               {(archivedSubCount > 0 || showArchivedSubs) && (
                 <ShowArchivedToggle
                   on={showArchivedSubs}
