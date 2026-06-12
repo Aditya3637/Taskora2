@@ -5,6 +5,7 @@ import { ArrowLeft, Plus, User, X, ChevronDown, ChevronRight, GanttChartSquare, 
 import { supabase } from "@/lib/supabase";
 import { useWorkspaceFormat } from "@/lib/use-workspace-format";
 import { GanttModal } from "../../gantt/GanttChart";
+import ProgramTimeline from "../../gantt/ProgramTimeline";
 import { EditInitiativeModal } from "../EditInitiativeModal";
 import { WorkDocPanel } from "../_components/WorkDocPanel";
 import { ProgramAiSummary } from "../_components/ProgramAiSummary";
@@ -759,6 +760,7 @@ export default function ProgramDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [timelineOpen, setTimelineOpen] = useState(true);
   const [editInit, setEditInit] = useState<Initiative | null>(null);
   const [docInit, setDocInit] = useState<Initiative | null>(null);
   const [statsById, setStatsById] = useState<Record<string, InitiativeStats>>({});
@@ -886,6 +888,20 @@ export default function ProgramDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Program-level Gantt: initiatives across the year, expandable to tasks. */}
+      <section className="mb-8">
+        <button
+          type="button"
+          onClick={() => setTimelineOpen((v) => !v)}
+          className="flex items-center gap-2 mb-3 text-sm font-semibold text-midnight"
+        >
+          {timelineOpen ? <ChevronDown className="w-4 h-4 text-steel" /> : <ChevronRight className="w-4 h-4 text-steel" />}
+          <GanttChartSquare className="w-4 h-4 text-steel" />
+          Timeline
+        </button>
+        {timelineOpen && <ProgramTimeline programScope={programId} embedded />}
+      </section>
 
       {/* P1 + P2: measurable outcomes, status updates, trend */}
       <ProgramOutcomes programId={programId} canEdit={canEdit} />

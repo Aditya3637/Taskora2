@@ -40,6 +40,12 @@ export type GanttRow = {
   // True when this row's end date overruns its initiative's target end —
   // rendered with a red warning outline so out-of-bounds plans are visible.
   over_end?: boolean;
+  // Collapsible/expandable rows (program lanes, initiatives) show a chevron;
+  // `open` picks its direction. Toggling fires onToggle(id) — the parent
+  // rebuilds the row list.
+  toggleable?: boolean;
+  open?: boolean;
+  loading?: boolean;
   depends_on?: string[];
   entities?: GanttEntity[];
 };
@@ -154,7 +160,7 @@ export function ganttRange(rows: GanttRow[], baseStart?: string | null, baseEnd?
 }
 
 export function GanttSVG({
-  rows, ganttStart, ganttEnd, scale = "day", onBarChange, canDragRow, onRowClick,
+  rows, ganttStart, ganttEnd, scale = "day", onBarChange, canDragRow, onRowClick, onToggle,
 }: {
   rows: GanttRow[];
   ganttStart: Date;
@@ -166,6 +172,8 @@ export function GanttSVG({
   canDragRow?: (row: GanttRow) => boolean;
   // Clicking a row label fires this (drill-down). Only used in month scale.
   onRowClick?: (row: GanttRow) => void;
+  // Toggling a collapsible row (program/initiative chevron). Month scale only.
+  onToggle?: (rowId: string) => void;
 }) {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -189,6 +197,7 @@ export function GanttSVG({
       <MonthScaleChart
         rows={rows} ganttStart={ganttStart} ganttEnd={ganttEnd}
         onBarChange={onBarChange} canDragRow={canDragRow} onRowClick={onRowClick}
+        onToggle={onToggle}
       />
     );
   }
@@ -457,7 +466,7 @@ interface DragState {
  *  year plan reads cleanly. Optionally supports drag-move / edge-resize that
  *  reports new ISO dates via onBarChange. */
 function MonthScaleChart({
-  rows, ganttStart, ganttEnd, onBarChange, canDragRow, onRowClick,
+  rows, ganttStart, ganttEnd, onBarChange, canDragRow, onRowClick, onToggle,
 }: {
   rows: GanttRow[];
   ganttStart: Date;
@@ -465,6 +474,7 @@ function MonthScaleChart({
   onBarChange?: (rowId: string, startISO: string, endISO: string) => void;
   canDragRow?: (row: GanttRow) => boolean;
   onRowClick?: (row: GanttRow) => void;
+  onToggle?: (rowId: string) => void;
 }) {
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -670,19 +680,29 @@ function MonthScaleChart({
             );
           }
 
+          const chevronW = row.toggleable ? 12 : 0;
+          const labelX = indent + chevronW;
           let label = `${KIND_ICON[row.kind]} ${row.title}`;
-          const budget = Math.max(6, Math.floor((LABEL_W - indent - 6) / 6));
+          const budget = Math.max(6, Math.floor((LABEL_W - labelX - 6) / 6));
           if (label.length > budget) label = label.slice(0, budget - 1) + "…";
 
-          const clickable = !!onRowClick && row.depth > 0;
+          // Clickable label = drill-down (leaf rows); chevron = expand/collapse.
+          const clickable = !!onRowClick && row.depth > 0 && !row.toggleable;
           return (
             <g key={row.id}>
-              <text x={indent} y={cy + 3.5}
+              {row.toggleable && (
+                <text x={indent} y={cy + 3.5} fontSize={9} fill="#64748B"
+                  onClick={onToggle ? () => onToggle(row.id) : undefined}
+                  className={onToggle ? "cursor-pointer" : undefined}>
+                  {row.loading ? "⋯" : row.open ? "▾" : "▸"}
+                </text>
+              )}
+              <text x={labelX} y={cy + 3.5}
                 fill={row.kind === "milestone" ? MILESTONE_COLOR : "#1a1a2e"}
                 fontSize={row.depth === 0 ? 10.5 : 9.5}
                 fontWeight={row.depth === 0 ? 700 : 400}
-                onClick={clickable ? () => onRowClick!(row) : undefined}
-                className={clickable ? "cursor-pointer hover:fill-[#3182CE]" : undefined}>
+                onClick={clickable ? () => onRowClick!(row) : (row.toggleable && onToggle ? () => onToggle(row.id) : undefined)}
+                className={(clickable || (row.toggleable && onToggle)) ? "cursor-pointer hover:fill-[#3182CE]" : undefined}>
                 {label}
               </text>
               {barEl}
