@@ -2824,6 +2824,7 @@ function TaskCard({
                 edge reads as a single control surface instead of three
                 detached pills. TatBadge floats outside since it's a status
                 indicator, not an action. */}
+            <div className="inline-flex items-stretch gap-1">
             <div className="inline-flex items-stretch rounded-md border border-pebble divide-x divide-pebble/60 bg-white overflow-hidden">
               {/* Comments / remarks — opens the rollup thread */}
               <div className="px-2 py-1 flex items-center">
@@ -2854,8 +2855,9 @@ function TaskCard({
                   <ChevronRight className="w-3.5 h-3.5" />
                 )}
               </button>
-              {/* Overflow menu — Archive / Restore / Delete behind the kebab
-                  so the bar stays calm. */}
+            </div>
+              {/* Overflow menu — Archive / Restore / Delete. Kept OUTSIDE the
+                  overflow-hidden group above so the dropdown isn't clipped. */}
               {(canDelete || isAdmin) && (
                 <div ref={cardMenuRef} className="relative">
                 <button
@@ -2868,7 +2870,7 @@ function TaskCard({
                   title="More actions"
                   aria-label="More actions"
                   aria-expanded={cardMenuOpen}
-                  className="h-full px-2 text-steel/60 hover:bg-mist hover:text-midnight flex items-center justify-center transition-colors disabled:opacity-50"
+                  className="h-full px-2 rounded-md border border-pebble bg-white text-steel/60 hover:bg-mist hover:text-midnight flex items-center justify-center transition-colors disabled:opacity-50"
                 >
                   <MoreHorizontal className="w-4 h-4" />
                 </button>
