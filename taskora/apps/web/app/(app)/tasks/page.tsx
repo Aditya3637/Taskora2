@@ -1775,6 +1775,7 @@ function EntitySubtaskRow({
   subtasks,
   subtasksLoading,
   onEntityUpdate,
+  onEntityRemoved,
   onSubtasksChanged,
   parentTask,
   programName,
@@ -1793,6 +1794,7 @@ function EntitySubtaskRow({
   subtasks: Subtask[];
   subtasksLoading: boolean;
   onEntityUpdate?: (entityId: string, updates: Partial<TaskEntity>) => void;
+  onEntityRemoved?: (entityId: string) => void;
   onSubtasksChanged: () => void;
   // P3: pass-through so the entity-scoped subtasks can also open the sheet.
   parentTask?: Task;
@@ -1806,7 +1808,22 @@ function EntitySubtaskRow({
   const [entityStatus, setEntityStatus] = useState(entity.per_entity_status ?? "backlog");
   const [entityEndDate, setEntityEndDate] = useState(entity.per_entity_end_date?.slice(0, 10) ?? "");
   const [updatingStatus, setUpdatingStatus] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [showComments, setShowComments] = useState(false);
+
+  // Remove this building/client (attribute) from the task — admin/owner only.
+  async function handleRemoveEntity() {
+    const label = entity.entity_name ?? "this building/client";
+    if (!confirm(`Remove "${label}" from this task? Its sub-tasks under this building are also removed. This cannot be undone.`)) return;
+    setRemoving(true);
+    try {
+      await apiFetch(`/api/v1/tasks/${taskId}/entities/${entity.entity_id}`, { method: "DELETE" });
+      onEntityRemoved?.(entity.entity_id);
+    } catch (e: any) {
+      alert("Failed to remove: " + (e?.message ?? "Unknown error"));
+      setRemoving(false);
+    }
+  }
   const [showDateLog, setShowDateLog] = useState(false);
 
   // Split parents from children for recursive rendering.
@@ -2011,6 +2028,20 @@ function EntitySubtaskRow({
             <ChevronRight className="w-3.5 h-3.5" />
           )}
         </button>
+
+        {/* Remove this building/client — admin/owner only. */}
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={handleRemoveEntity}
+            disabled={removing}
+            title="Remove this building/client from the task"
+            aria-label="Remove building/client"
+            className="opacity-60 hover:opacity-100 w-5 h-5 rounded text-steel/50 hover:bg-red-50 hover:text-red-600 flex items-center justify-center flex-shrink-0 transition-colors disabled:opacity-40"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
 
       {expanded && (
@@ -2295,6 +2326,11 @@ function TaskCard({
     setLocalEnts((prev) =>
       prev.map((e) => (e.entity_id === entityId ? { ...e, ...updates } : e))
     );
+  }
+
+  function handleEntityRemoved(entityId: string) {
+    setLocalEnts((prev) => prev.filter((e) => e.entity_id !== entityId));
+    loadSubtasksGrouped();
   }
 
   const canDelete =
@@ -2877,6 +2913,7 @@ function TaskCard({
                   subtasks={grouped.by_entity[e.entity_id] ?? []}
                   subtasksLoading={loadingSubtasks}
                   onEntityUpdate={handleEntityUpdate}
+                  onEntityRemoved={handleEntityRemoved}
                   onSubtasksChanged={loadSubtasksGrouped}
                   parentTask={task}
                   programName={programName}
