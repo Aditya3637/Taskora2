@@ -79,6 +79,8 @@ export default function ProgramTimeline({
   // tasks). Initiatives start collapsed; programs start expanded.
   const [collapsedPrograms, setCollapsedPrograms] = useState<Set<string>>(new Set());
   const [expandedInits, setExpandedInits] = useState<Set<string>>(new Set());
+  // Expanded task/subtask nodes WITHIN an initiative subtree (reveal children).
+  const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
   const [initRows, setInitRows] = useState<Record<string, GanttRow[]>>({});
   const [loadingInits, setLoadingInits] = useState<Set<string>>(new Set());
 
@@ -110,16 +112,16 @@ export default function ProgramTimeline({
 
   useEffect(() => { load(); }, [load]);
 
-  // Lazy-load an initiative's tasks → subtasks (one level) on first expand,
-  // remapping depth so they nest under the initiative row.
+  // Lazy-load an initiative's FULL subtree on first expand — task → attribute
+  // (subtask) → sub-subtask. Kept raw (original depth + parent_id) so the
+  // render can reveal it level-by-level.
   const loadInitiative = useCallback(async (initId: string) => {
     setLoadingInits((s) => new Set(s).add(initId));
     try {
       const g = await ganttApiFetch(`/api/v1/initiatives/${initId}/gantt`);
       const rows: GanttRow[] = (g?.rows ?? [])
         .filter((r: GanttRow) =>
-          (r.kind === "task" || r.kind === "subtask" || r.kind === "entity") && (r.depth ?? 0) <= 1)
-        .map((r: GanttRow) => ({ ...r, depth: (r.depth ?? 0) + 2 }));
+          r.kind === "task" || r.kind === "subtask" || r.kind === "entity");
       setInitRows((m) => ({ ...m, [initId]: rows }));
     } catch {
       setInitRows((m) => ({ ...m, [initId]: [] }));
@@ -128,21 +130,36 @@ export default function ProgramTimeline({
     }
   }, []);
 
+  const initIdSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const l of data?.programs ?? []) for (const i of l.initiatives) s.add(i.id);
+    return s;
+  }, [data]);
+
   function toggleRow(rowId: string) {
     if (rowId.startsWith(LANE_PREFIX)) {
       const pid = rowId.slice(LANE_PREFIX.length);
       setCollapsedPrograms((s) => {
         const n = new Set(s);
-        n.has(pid) ? n.delete(pid) : n.add(pid);
+        if (n.has(pid)) n.delete(pid); else n.add(pid);
         return n;
       });
       return;
     }
-    // Initiative row.
-    setExpandedInits((s) => {
+    if (initIdSet.has(rowId)) {
+      // Initiative row → load + reveal its subtree.
+      setExpandedInits((s) => {
+        const n = new Set(s);
+        if (n.has(rowId)) { n.delete(rowId); }
+        else { n.add(rowId); if (!initRows[rowId]) loadInitiative(rowId); }
+        return n;
+      });
+      return;
+    }
+    // Inner task/subtask node → reveal its children.
+    setExpandedNodes((s) => {
       const n = new Set(s);
-      if (n.has(rowId)) { n.delete(rowId); }
-      else { n.add(rowId); if (!initRows[rowId]) loadInitiative(rowId); }
+      if (n.has(rowId)) n.delete(rowId); else n.add(rowId);
       return n;
     });
   }
@@ -192,15 +209,32 @@ export default function ProgramTimeline({
           toggleable: true, open: expanded, loading: loadingInits.has(it.id),
         });
         if (expanded) {
-          const kids = initRows[it.id];
-          if (kids && kids.length) out.push(...kids);
-          else if (!loadingInits.has(it.id) && kids)
-            out.push({ id: `${it.id}:empty`, kind: "task", depth: 2, title: "No dated tasks yet", entities: [] });
+          const subtree = initRows[it.id];
+          if (subtree && subtree.length) {
+            // Group the initiative's rows by parent so we can reveal the tree
+            // one level at a time. Top-level tasks have no parent_id.
+            const byParent: Record<string, GanttRow[]> = {};
+            for (const r of subtree) {
+              const key = r.parent_id ?? "__root__";
+              (byParent[key] ??= []).push(r);
+            }
+            const emit = (parentKey: string, depth: number) => {
+              for (const child of byParent[parentKey] ?? []) {
+                const hasKids = (byParent[child.id]?.length ?? 0) > 0;
+                const open = expandedNodes.has(child.id);
+                out.push({ ...child, depth, toggleable: hasKids, open });
+                if (hasKids && open) emit(child.id, depth + 1);
+              }
+            };
+            emit("__root__", 2);
+          } else if (!loadingInits.has(it.id) && subtree) {
+            out.push({ id: `${it.id}:empty`, kind: "task", depth: 2, title: "No tasks yet", entities: [] });
+          }
         }
       }
     }
     return out;
-  }, [lanes, ownerFilter, initiativeFilter, collapsedPrograms, expandedInits, initRows, loadingInits]);
+  }, [lanes, ownerFilter, initiativeFilter, collapsedPrograms, expandedInits, expandedNodes, initRows, loadingInits]);
 
   const { start, end } = useMemo(() => ganttRangeMonths(anchorYear, years), [anchorYear, years]);
 
