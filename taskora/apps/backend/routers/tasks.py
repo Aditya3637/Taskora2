@@ -1839,6 +1839,44 @@ def update_task_entity(
     return result.data[0] if result.data else {}
 
 
+@router.delete("/{task_id}/entities/{entity_id}", status_code=204)
+def delete_task_entity(
+    task_id: str,
+    entity_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Remove a building/client (attribute) from a task. Admin/owner only.
+
+    Cascade-deletes the entity-scoped subtasks under this task (and their
+    nested children, which inherit the scope) plus any watchers scoped to the
+    entity, so nothing is orphaned.
+    """
+    _assert_admin_or_owner(sb, task_id, user["id"])
+    existing = (
+        sb.table("task_entities")
+        .select("entity_id")
+        .eq("task_id", task_id)
+        .eq("entity_id", entity_id)
+        .execute()
+        .data
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Building/client not on this task")
+
+    # Entity-scoped subtasks (and their inherited-scope children) go with it.
+    sb.table("subtasks").delete().eq("task_id", task_id).eq(
+        "scoped_entity_id", entity_id
+    ).execute()
+    # Watchers/approvers scoped to this entity row.
+    sb.table("item_watchers").delete().eq("task_id", task_id).eq(
+        "entity_id", entity_id
+    ).execute()
+    sb.table("task_entities").delete().eq("task_id", task_id).eq(
+        "entity_id", entity_id
+    ).execute()
+
+
 @router.patch("/{task_id}/subtasks/{subtask_id}")
 def update_subtask(
     task_id: str,
