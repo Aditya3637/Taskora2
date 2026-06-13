@@ -174,8 +174,11 @@ export default function ProgramTimeline({
     return all.filter((l) => !effectiveProgram || String(l.id) === effectiveProgram);
   }, [data, effectiveProgram]);
 
-  const rows = useMemo<GanttRow[]>(() => {
+  // rowMeta lets onBarChange route a drag to the right entity + endpoint.
+  type RowMeta = { kind: "initiative" | "task" | "subtask" | "entity"; initiativeId: string; taskId?: string; entityId?: string };
+  const { rows, rowMeta } = useMemo<{ rows: GanttRow[]; rowMeta: Map<string, RowMeta> }>(() => {
     const out: GanttRow[] = [];
+    const meta = new Map<string, RowMeta>();
     for (const lane of lanes) {
       const laneId = String(lane.id ?? "none");
       let inits = lane.initiatives;
@@ -202,6 +205,7 @@ export default function ProgramTimeline({
       }
       for (const it of inits) {
         const expanded = expandedInits.has(it.id);
+        meta.set(it.id, { kind: "initiative", initiativeId: it.id });
         out.push({
           id: it.id, kind: "task", depth: 1,
           title: it.primary_stakeholder_name ? `${it.title}  ·  ${it.primary_stakeholder_name}` : it.title,
@@ -225,6 +229,10 @@ export default function ProgramTimeline({
                 const hasKids = (byParent[child.id]?.length ?? 0) > 0;
                 const open = expandedNodes.has(child.id);
                 out.push({ ...child, depth, toggleable: hasKids, open });
+                meta.set(child.id,
+                  child.kind === "entity"
+                    ? { kind: "entity", initiativeId: it.id, taskId: child.parent_id ?? undefined, entityId: child.entity_id ?? undefined }
+                    : { kind: child.kind === "subtask" ? "subtask" : "task", initiativeId: it.id, taskId: child.id });
                 if (hasKids && open) emit(child.id, depth + 1);
               }
             };
@@ -235,35 +243,72 @@ export default function ProgramTimeline({
         }
       }
     }
-    return out;
+    return { rows: out, rowMeta: meta };
   }, [lanes, ownerFilter, initiativeFilter, collapsedPrograms, expandedInits, expandedNodes, initRows, loadingInits]);
 
   const { start, end } = useMemo(() => ganttRangeMonths(anchorYear, years), [anchorYear, years]);
 
+  // Drag-reschedule any bar → persist its real dates and log the change as
+  // "via timeline" (who is captured server-side). Routes by row kind.
+  const REASON = "Rescheduled from the timeline";
   const onBarChange = useCallback(async (id: string, startISO: string, endISO: string) => {
-    // Only initiative bars are draggable; optimistic update then PATCH.
-    setData((prev) => prev && ({
-      ...prev,
-      programs: prev.programs.map((l) => ({
-        ...l,
-        initiatives: l.initiatives.map((it) =>
-          it.id === id ? { ...it, start_date: startISO, end_date: endISO } : it),
-      })),
-    }));
+    const m = rowMeta.get(id);
+    if (!m) return;
+
+    if (m.kind === "initiative") {
+      setData((prev) => prev && ({
+        ...prev,
+        programs: prev.programs.map((l) => ({
+          ...l,
+          initiatives: l.initiatives.map((it) =>
+            it.id === id ? { ...it, start_date: startISO, end_date: endISO } : it),
+        })),
+      }));
+      try {
+        await ganttApiFetch(`/api/v1/initiatives/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ start_date: startISO, target_end_date: endISO }),
+        });
+      } catch { setError("Couldn't save the new dates — reverting."); load(); }
+      return;
+    }
+
+    // Task / building bar — optimistically move it within its initiative's
+    // loaded subtree, then PATCH the real dates.
+    setInitRows((prev) => {
+      const list = prev[m.initiativeId];
+      if (!list) return prev;
+      return {
+        ...prev,
+        [m.initiativeId]: list.map((r) =>
+          r.id === id ? { ...r, start_date: startISO, end_date: endISO } : r),
+      };
+    });
     try {
-      await ganttApiFetch(`/api/v1/initiatives/${id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ start_date: startISO, target_end_date: endISO }),
-      });
+      if (m.kind === "task" && m.taskId) {
+        await ganttApiFetch(`/api/v1/tasks/${m.taskId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ start_date: startISO, due_date: endISO, change_reason: REASON }),
+        });
+      } else if (m.kind === "entity" && m.taskId && m.entityId) {
+        await ganttApiFetch(`/api/v1/tasks/${m.taskId}/entities/${m.entityId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ per_entity_start_date: startISO, per_entity_end_date: endISO, change_reason: REASON }),
+        });
+      }
     } catch {
       setError("Couldn't save the new dates — reverting.");
-      load();
+      loadInitiative(m.initiativeId);
     }
-  }, [load]);
+  }, [rowMeta, load, loadInitiative]);
 
   const canDragRow = useCallback(
-    (row: GanttRow) => isAdmin && row.depth === 1 && !row.is_milestone && !row.id.startsWith(LANE_PREFIX),
-    [isAdmin],
+    (row: GanttRow) => {
+      if (!isAdmin || row.is_milestone || !row.start_date || !row.end_date) return false;
+      const m = rowMeta.get(row.id);
+      return !!m && (m.kind === "initiative" || m.kind === "task" || m.kind === "entity");
+    },
+    [isAdmin, rowMeta],
   );
 
   // Filter dropdown options.

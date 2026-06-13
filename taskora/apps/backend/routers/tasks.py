@@ -124,6 +124,8 @@ class TaskUpdate(BaseModel):
     start_date: Optional[date] = None
     due_date: Optional[date] = None
     description: Optional[str] = None
+    # Optional note stored on the due-date change log (e.g. "via timeline").
+    change_reason: Optional[str] = None
 
 
 class StakeholderAdd(BaseModel):
@@ -879,6 +881,7 @@ def update_task(
                 "old_date": old_date.isoformat() if old_date else None,
                 "new_date": body.due_date.isoformat() if body.due_date else None,
                 "delay_days": (body.due_date - old_date).days if old_date and body.due_date else None,
+                "reason": body.change_reason,
             }).execute()
 
     return updated
@@ -1771,6 +1774,7 @@ class TaskEntityUpdate(BaseModel):
     per_entity_status: Optional[str] = None
     per_entity_start_date: Optional[date] = None
     per_entity_end_date: Optional[date] = None
+    change_reason: Optional[str] = None
 
 
 @router.patch("/{task_id}/entities/{entity_id}")
@@ -1844,6 +1848,7 @@ def update_task_entity(
                 "old_date": old_date.isoformat() if old_date else None,
                 "new_date": body.per_entity_end_date.isoformat(),
                 "delay_days": (body.per_entity_end_date - old_date).days if old_date else None,
+                "reason": body.change_reason,
             }).execute()
 
     return result.data[0] if result.data else {}
