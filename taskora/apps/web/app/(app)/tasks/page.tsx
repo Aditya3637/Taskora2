@@ -78,6 +78,7 @@ type TaskEntity = {
   entity_name?: string;
   entity_type?: string;
   per_entity_status?: string;
+  per_entity_start_date?: string;
   per_entity_end_date?: string;
   closed_at?: string | null;
   approval_state?: string;
@@ -1902,6 +1903,7 @@ function EntitySubtaskRow({
   const [expanded, setExpanded] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [entityStatus, setEntityStatus] = useState(entity.per_entity_status ?? "backlog");
+  const [entityStartDate, setEntityStartDate] = useState(entity.per_entity_start_date?.slice(0, 10) ?? "");
   const [entityEndDate, setEntityEndDate] = useState(entity.per_entity_end_date?.slice(0, 10) ?? "");
   const [updatingStatus, setUpdatingStatus] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -1961,6 +1963,19 @@ function EntitySubtaskRow({
     } finally {
       setUpdatingStatus(false);
     }
+  }
+
+  async function handleEntityStartChange(e: React.ChangeEvent<HTMLInputElement>) {
+    e.stopPropagation();
+    const newDate = e.target.value;
+    setEntityStartDate(newDate);
+    try {
+      await apiFetch(`/api/v1/tasks/${taskId}/entities/${entity.entity_id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ per_entity_start_date: newDate || null }),
+      });
+      onEntityUpdate?.(entity.entity_id, { per_entity_start_date: newDate });
+    } catch { /* silent */ }
   }
 
   async function handleEntityDateChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -2062,10 +2077,22 @@ function EntitySubtaskRow({
           ))}
         </select>
 
+        {/* Per-entity planned start date — needed for a real Gantt bar */}
+        <input
+          type="date"
+          value={entityStartDate}
+          onChange={handleEntityStartChange}
+          onClick={(e) => e.stopPropagation()}
+          title="Planned start date"
+          className="text-xs border border-pebble rounded px-1.5 py-0.5 text-midnight focus:outline-none focus:border-ocean flex-shrink-0"
+        />
+        <span className="text-steel/40 text-xs flex-shrink-0">→</span>
+
         {/* Per-entity planned end date */}
         <input
           type="date"
           value={entityEndDate}
+          min={entityStartDate || undefined}
           onChange={handleEntityDateChange}
           onClick={(e) => e.stopPropagation()}
           title="Planned end date"
@@ -5262,7 +5289,7 @@ function TaskDetailSheet({
       <aside
         role="dialog"
         aria-label="Task details"
-        className="fixed right-0 top-0 z-50 h-full w-full max-w-[760px] bg-white shadow-2xl border-l border-pebble flex flex-col"
+        className="fixed right-0 top-0 z-50 h-full w-full max-w-[560px] bg-white shadow-2xl border-l border-pebble flex flex-col"
       >
         <header className="flex items-start justify-between gap-3 p-4 border-b border-pebble">
           <div className="min-w-0 flex-1">

@@ -80,6 +80,7 @@ _SUBTASK_STATUSES = Literal[
 class TaskEntityCreate(BaseModel):
     entity_type: Literal["building", "client"]
     entity_id: str
+    per_entity_start_date: Optional[date] = None
     per_entity_end_date: Optional[date] = None
 
 
@@ -1768,6 +1769,7 @@ def get_task_stakeholders(
 
 class TaskEntityUpdate(BaseModel):
     per_entity_status: Optional[str] = None
+    per_entity_start_date: Optional[date] = None
     per_entity_end_date: Optional[date] = None
 
 
@@ -1792,11 +1794,19 @@ def update_task_entity(
     prior_status = prior[0].get("per_entity_status") if prior else None
     prior_due_str = prior[0].get("per_entity_end_date") if prior else None
 
+    set_fields = body.model_fields_set
     payload: dict = {}
     if body.per_entity_status is not None:
         payload["per_entity_status"] = body.per_entity_status
-    if body.per_entity_end_date is not None:
-        payload["per_entity_end_date"] = body.per_entity_end_date.isoformat()
+    # start/end are clearable (explicit null) so a per-entity span can be reset.
+    if "per_entity_start_date" in set_fields:
+        payload["per_entity_start_date"] = (
+            body.per_entity_start_date.isoformat() if body.per_entity_start_date else None
+        )
+    if "per_entity_end_date" in set_fields:
+        payload["per_entity_end_date"] = (
+            body.per_entity_end_date.isoformat() if body.per_entity_end_date else None
+        )
     if not payload:
         raise HTTPException(status_code=422, detail="No fields to update")
 
@@ -1866,6 +1876,7 @@ def add_task_entity(
         "entity_type": body.entity_type,
         "entity_id": body.entity_id,
         "per_entity_status": "backlog",
+        "per_entity_start_date": body.per_entity_start_date.isoformat() if body.per_entity_start_date else None,
         "per_entity_end_date": body.per_entity_end_date.isoformat() if body.per_entity_end_date else None,
         "updated_at": now_iso,
     }

@@ -898,7 +898,7 @@ def get_initiative_gantt(
     tasks = (
         sb.table("tasks")
         .select("id, title, start_date, due_date, status, priority, depends_on, date_mode, "
-                "created_at, task_entities(entity_type, entity_id, per_entity_end_date)")
+                "created_at, task_entities(entity_type, entity_id, per_entity_start_date, per_entity_end_date)")
         .eq("initiative_id", initiative_id)
         .execute()
         .data
@@ -912,7 +912,7 @@ def get_initiative_gantt(
             sb.table("subtasks")
             .select("id, title, status, task_id, parent_subtask_id, date_mode, "
                     "start_date, due_date, "
-                    "created_at, subtask_entities(entity_type, entity_id, per_entity_end_date)")
+                    "created_at, subtask_entities(entity_type, entity_id, per_entity_start_date, per_entity_end_date)")
             .in_("task_id", task_ids)
             .execute()
             .data
@@ -954,6 +954,7 @@ def get_initiative_gantt(
             {
                 "type": e.get("entity_type"),
                 "name": name_map.get(e["entity_id"], e["entity_id"]),
+                "start_date": e.get("per_entity_start_date"),
                 "end_date": e.get("per_entity_end_date"),
             }
             for e in ents
@@ -1005,7 +1006,11 @@ def get_initiative_gantt(
             e_end = e.get("end_date") or own_end
             if not e_end:
                 continue
-            e_start = row_start if (not e.get("end_date")) else _derive_start(e_end)
+            # Per-entity start when set; else the holder's start (no per-entity
+            # end) or a derived start.
+            e_start = e.get("start_date") or (
+                row_start if not e.get("end_date") else _derive_start(e_end)
+            )
             rows.append({
                 "id": f"{holder['id']}::{e['type']}:{e['name']}",
                 "kind": "entity",
