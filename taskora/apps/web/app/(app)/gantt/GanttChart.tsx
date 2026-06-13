@@ -46,6 +46,9 @@ export type GanttRow = {
   toggleable?: boolean;
   open?: boolean;
   loading?: boolean;
+  // For entity (building/client) rows — the real entity id, so the timeline
+  // can target it for reschedule.
+  entity_id?: string | null;
   depends_on?: string[];
   entities?: GanttEntity[];
 };

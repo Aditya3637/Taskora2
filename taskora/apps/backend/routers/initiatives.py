@@ -953,6 +953,7 @@ def get_initiative_gantt(
         return [
             {
                 "type": e.get("entity_type"),
+                "entity_id": e.get("entity_id"),
                 "name": name_map.get(e["entity_id"], e["entity_id"]),
                 "start_date": e.get("per_entity_start_date"),
                 "end_date": e.get("per_entity_end_date"),
@@ -1015,6 +1016,7 @@ def get_initiative_gantt(
                 "id": f"{holder['id']}::{e['type']}:{e['name']}",
                 "kind": "entity",
                 "parent_id": holder["id"],
+                "entity_id": e.get("entity_id"),
                 "depth": depth + 1,
                 "title": e["name"],
                 "status": holder.get("status"),

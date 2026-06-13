@@ -111,3 +111,24 @@ def test_add_duplicate_building_409(sb):
     r = client.post(f"/api/v1/tasks/{TASK}/entities",
                     json={"entity_type": "building", "entity_id": B1})
     assert r.status_code == 409, r.text
+
+
+# ── change_reason logging (Gantt drag) ──────────────────────────────────────
+
+def test_task_due_change_records_reason(sb):
+    app.dependency_overrides[get_current_user] = _as(OWNER)
+    r = client.patch(f"/api/v1/tasks/{TASK}",
+                     json={"due_date": "2026-09-30", "change_reason": "Rescheduled from the timeline"})
+    assert r.status_code == 200, r.text
+    logs = sb.store.get("task_date_change_log", [])
+    assert logs and logs[-1]["reason"] == "Rescheduled from the timeline"
+    assert logs[-1]["changed_by"] == OWNER
+
+
+def test_entity_due_change_records_reason(sb):
+    app.dependency_overrides[get_current_user] = _as(OWNER)
+    r = client.patch(f"/api/v1/tasks/{TASK}/entities/{B1}",
+                     json={"per_entity_end_date": "2026-09-30", "change_reason": "Rescheduled from the timeline"})
+    assert r.status_code == 200, r.text
+    logs = [l for l in sb.store.get("task_date_change_log", []) if l.get("entity_id") == B1]
+    assert logs and logs[-1]["reason"] == "Rescheduled from the timeline"
