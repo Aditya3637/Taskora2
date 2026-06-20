@@ -13,11 +13,14 @@ import {
   Calendar,
   FileText,
   ArrowUpRight,
+  Workflow,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useWorkspaceFormat } from "@/lib/use-workspace-format";
 import { EditInitiativeModal, type EditableInitiative } from "./EditInitiativeModal";
 import { WorkDocPanel } from "./_components/WorkDocPanel";
+import { ProcessTemplateModal } from "./_components/ProcessTemplateModal";
+import { ProcessManageModal } from "./_components/ProcessManageModal";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -536,6 +539,25 @@ function ProgramRow({
   const [editInit, setEditInit] = useState<EditableInitiative | null>(null);
   // Which initiative's Work doc slide-over is open (opened from the row chip).
   const [docInit, setDocInit] = useState<{ id: string; name: string } | null>(null);
+  // Playbooks: apply / manage a process on an initiative (opened from row chips).
+  const [processInit, setProcessInit] = useState<{ id: string; name: string } | null>(null);
+  const [manageInit, setManageInit] = useState<{ id: string; name: string } | null>(null);
+  const [processMsg, setProcessMsg] = useState("");
+  const [undoIds, setUndoIds] = useState<string[]>([]);
+
+  async function undoApply() {
+    const ids = undoIds;
+    setUndoIds([]);
+    setProcessMsg("Undoing…");
+    try {
+      await Promise.all(ids.map((id) =>
+        apiFetch(`/api/v1/process-instances/${id}`, { method: "DELETE" })));
+      setProcessMsg("Undone — the generated tasks were removed.");
+    } catch {
+      setProcessMsg("Couldn't fully undo — check the timeline.");
+    }
+    setTimeout(() => setProcessMsg(""), 5000);
+  }
 
   // Fetch detail whenever the row is expanded and we don't already have it
   // (covers both manual toggle and restored-from-sessionStorage initial state).
@@ -765,6 +787,21 @@ function ProgramRow({
                       <FileText className="w-3 h-3" />
                     </button>
 
+                    {/* Process (Playbooks) — one entry: apply + progress + manage */}
+                    {canEdit && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setManageInit({ id: init.id, name: init.name });
+                        }}
+                        title="Process — apply a step chain to many sites, track progress, reschedule"
+                        aria-label="Process"
+                        className="flex items-center justify-center w-6 h-6 rounded-full border border-pebble text-steel hover:border-taskora-red hover:text-taskora-red transition-colors flex-shrink-0"
+                      >
+                        <Workflow className="w-3 h-3" />
+                      </button>
+                    )}
+
                     {/* Edit icon button (workspace owner/admin only) */}
                     {canEdit && (
                       <button
@@ -840,6 +877,50 @@ function ProgramRow({
           onClose={() => setDocInit(null)}
         />
       )}
+
+      {/* Playbooks: apply / manage a process (opened from initiative row chips) */}
+      {processInit && (
+        <ProcessTemplateModal
+          initiativeId={processInit.id}
+          businessId={businessId}
+          initiativeName={processInit.name}
+          onClose={() => setProcessInit(null)}
+          onApplied={({ tasks, sites, skipped, skippedSites, instanceIds }) => {
+            const base = `Created ${tasks} tasks across ${sites} site${sites === 1 ? "" : "s"}.`;
+            const note = skipped > 0
+              ? ` Skipped ${skipped} already running this process${skippedSites.length ? ` (${skippedSites.join(", ")})` : ""}.`
+              : "";
+            setProcessMsg(base + note);
+            setUndoIds(instanceIds);
+            const ms = skipped > 0 ? 12000 : 10000;
+            setTimeout(() => { setProcessMsg(""); setUndoIds([]); }, ms);
+          }}
+        />
+      )}
+      {manageInit && (
+        <ProcessManageModal
+          initiativeId={manageInit.id}
+          businessId={businessId}
+          initiativeName={manageInit.name}
+          onClose={() => setManageInit(null)}
+          onChanged={() => setProcessMsg("Updated — refresh the timeline to see the new dates.")}
+          onApply={() => {
+            setProcessInit({ id: manageInit.id, name: manageInit.name });
+            setManageInit(null);
+          }}
+        />
+      )}
+      {processMsg && (
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[120] flex items-center gap-3 rounded-lg bg-midnight text-white text-[12.5px] px-4 py-2 shadow-lg">
+          <span>{processMsg}</span>
+          {undoIds.length > 0 && (
+            <button onClick={undoApply}
+              className="font-semibold text-amber-300 hover:text-amber-200 underline underline-offset-2">
+              Undo
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -869,6 +950,38 @@ export default function ProgramsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showNew, setShowNew] = useState(false);
+  // ⌘K "New initiative/programme" deep-link: /programs?new=1 opens create.
+  // Read from location (not useSearchParams) to avoid a Suspense boundary.
+  useEffect(() => {
+    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).get("new")) {
+      setShowNew(true);
+    }
+  }, []);
+  const [seeding, setSeeding] = useState(false);
+
+  // Template-seeded first programme (deck: onboarding starter). Creates a
+  // sample programme + two initiatives via the normal endpoints, then reloads.
+  async function seedTemplate() {
+    if (!businessId) return;
+    setSeeding(true);
+    try {
+      const prog = await apiFetch("/api/v1/programs/", {
+        method: "POST",
+        body: JSON.stringify({
+          business_id: businessId, name: "Operations",
+          description: "Starter programme — rename or delete anytime.", color: "#6366F1",
+        }),
+      });
+      for (const nm of ["Set up your first initiative", "Onboard the team"]) {
+        await apiFetch(`/api/v1/programs/${prog.id}/initiatives`, {
+          method: "POST", body: JSON.stringify({ name: nm }),
+        });
+      }
+      await load();
+    } catch {
+      /* best-effort — the manual create path still works */
+    } finally { setSeeding(false); }
+  }
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() =>
     readExpandedFromStorage()
   );
@@ -1037,12 +1150,21 @@ export default function ProgramsPage() {
             Create a program like HR, Operations, or Accounts to get started.
           </p>
           {canEdit && (
-            <button
-              onClick={() => setShowNew(true)}
-              className="px-4 py-2 bg-taskora-red text-white rounded-lg text-sm font-semibold hover:opacity-90"
-            >
-              Create First Program
-            </button>
+            <div className="flex items-center justify-center gap-2">
+              <button
+                onClick={() => setShowNew(true)}
+                className="px-4 py-2 bg-taskora-red text-white rounded-lg text-sm font-semibold hover:opacity-90"
+              >
+                Create First Program
+              </button>
+              <button
+                onClick={seedTemplate}
+                disabled={seeding}
+                className="px-4 py-2 border border-pebble text-midnight rounded-lg text-sm font-semibold hover:bg-mist disabled:opacity-50"
+              >
+                {seeding ? "Setting up…" : "Start from a template"}
+              </button>
+            </div>
           )}
         </div>
       ) : (

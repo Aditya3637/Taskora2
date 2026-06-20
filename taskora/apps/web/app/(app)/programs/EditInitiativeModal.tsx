@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-import { X, History, Eye, Plus } from "lucide-react";
+import { X, History, Eye, Plus, Paperclip } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
@@ -165,12 +165,8 @@ export function EditInitiativeModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
-    // Dates are mandatory and ordered (056).
-    if (!startDate || !targetDate) {
-      setError("Start date and target end date are required.");
-      return;
-    }
-    if (targetDate < startDate) {
+    // Dates are optional (068); only enforce ordering when both are present.
+    if (startDate && targetDate && targetDate < startDate) {
       setError("Target end date can't be before the start date.");
       return;
     }
@@ -181,8 +177,8 @@ export function EditInitiativeModal({
     if (name.trim() !== initiative.name) payload.name = name.trim();
     if ((description || null) !== (initiative.description ?? null)) payload.description = description || null;
     if (status !== initiative.status) payload.status = status;
-    if ((startDate || null) !== (initiative.start_date ?? null)) payload.start_date = startDate;
-    if ((targetDate || null) !== (initiative.target_end_date ?? null)) payload.target_end_date = targetDate;
+    if ((startDate || null) !== (initiative.start_date ?? null)) payload.start_date = startDate || null;
+    if ((targetDate || null) !== (initiative.target_end_date ?? null)) payload.target_end_date = targetDate || null;
     if ((primaryStakeholderId || null) !== (initiative.primary_stakeholder_id ?? null)) payload.primary_stakeholder_id = primaryStakeholderId || null;
     if ((ownerId || null) !== (initiative.owner_id ?? null)) payload.owner_id = ownerId || null;
     if (impactCategory !== (initiative.impact_category ?? "other")) payload.impact_category = impactCategory;
@@ -433,6 +429,10 @@ export function EditInitiativeModal({
           </div>
         </form>
 
+        <div className="border-t border-pebble px-6 py-5">
+          <InitiativeFiles initiativeId={initiative.id} />
+        </div>
+
         <div className="border-t border-pebble bg-mist/30 px-6 py-5">
           <div className="flex items-center gap-2 mb-3">
             <History className="w-4 h-4 text-steel" />
@@ -468,6 +468,83 @@ export function EditInitiativeModal({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Files attached directly to an initiative (deck: "Initiative attachments,
+ * separate from doc files"). Sign → upload to Storage → record, mirroring the
+ * task attachment flow.
+ */
+function InitiativeFiles({ initiativeId }: { initiativeId: string }) {
+  const [files, setFiles] = useState<{ id: string; file_name: string; file_size_bytes?: number | null }[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const load = async () => {
+    try {
+      const d = await apiFetch(`/api/v1/initiatives/${initiativeId}/files`);
+      setFiles(Array.isArray(d) ? d : []);
+    } catch { /* leave */ }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [initiativeId]);
+
+  async function upload(file: File) {
+    setBusy(true); setErr("");
+    try {
+      const sign = await apiFetch(`/api/v1/initiatives/${initiativeId}/files/sign`, {
+        method: "POST",
+        body: JSON.stringify({ file_name: file.name, content_type: file.type || "application/octet-stream" }),
+      });
+      if (file.size > (sign.max_bytes ?? 26214400)) throw new Error("File is too large (max 25 MB).");
+      const { error: upErr } = await supabase.storage
+        .from(sign.bucket)
+        .uploadToSignedUrl(sign.path, sign.token, file, { contentType: file.type || undefined });
+      if (upErr) throw upErr;
+      await apiFetch(`/api/v1/initiatives/${initiativeId}/files`, {
+        method: "POST",
+        body: JSON.stringify({ path: sign.path, file_name: file.name, file_size_bytes: file.size }),
+      });
+      await load();
+    } catch (e: any) {
+      setErr(e?.message || "Couldn’t upload that file.");
+    } finally { setBusy(false); }
+  }
+
+  async function remove(id: string) {
+    setFiles((prev) => prev.filter((f) => f.id !== id));
+    try { await apiFetch(`/api/v1/initiatives/${initiativeId}/files/${id}`, { method: "DELETE" }); } catch { load(); }
+  }
+
+  async function openFile(id: string) {
+    try {
+      const d = await apiFetch(`/api/v1/initiatives/${initiativeId}/files/${id}/url`);
+      if (d?.url) window.open(d.url, "_blank", "noopener");
+    } catch { /* ignore */ }
+  }
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-2">
+        <Paperclip className="w-4 h-4 text-steel" />
+        <h3 className="text-sm font-semibold text-midnight">Files</h3>
+      </div>
+      <div className="space-y-1">
+        {files.length === 0 && <span className="text-[12px] text-steel/60">No files attached.</span>}
+        {files.map((f) => (
+          <div key={f.id} className="flex items-center gap-2 text-[12.5px]">
+            <button type="button" onClick={() => openFile(f.id)} className="text-ocean hover:underline truncate">{f.file_name}</button>
+            <button type="button" onClick={() => remove(f.id)} className="ml-auto text-steel hover:text-red-600">Remove</button>
+          </div>
+        ))}
+      </div>
+      <label className="mt-1.5 inline-flex items-center gap-1.5 text-[12px] text-taskora-red font-semibold cursor-pointer">
+        {busy ? "Uploading…" : "+ Attach file"}
+        <input type="file" disabled={busy} className="hidden"
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f); e.currentTarget.value = ""; }} />
+      </label>
+      {err && <p className="text-[11px] text-red-600 mt-1">{err}</p>}
     </div>
   );
 }

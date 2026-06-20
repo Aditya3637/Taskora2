@@ -13,7 +13,7 @@ from typing import Optional
 
 from supabase import Client
 
-from automation import campaigns, dispatch
+from automation import campaigns, dispatch, notify_scans
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,7 @@ def tick(sb: Client, now: Optional[datetime] = None) -> dict:
         "dunning": campaigns.run_dunning(sb, now),
         "activation": campaigns.run_activation(sb, now),
         "program_snapshots": campaigns.run_program_snapshots(sb, now),
+        "due_overdue": notify_scans.run_due_overdue(sb, now),
     }
     logger.info("[runner] tick %s", summary)
     return summary

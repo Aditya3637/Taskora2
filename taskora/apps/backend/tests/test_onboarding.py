@@ -50,13 +50,14 @@ def test_create_business_succeeds_without_amount_inr(sb):
     assert sb.store["subscriptions"] == []
 
 
-def test_create_business_conflict_when_one_exists(sb):
-    """Cap: a user owns at most one workspace; second create 409s."""
+def test_second_owned_workspace_allowed(sb):
+    """A company owns many workspaces — a second owned workspace is allowed
+    (the old one-owned cap was removed)."""
     client.post("/api/v1/businesses/",
                 json={"name": "Acme", "type": "building"})
     r = client.post("/api/v1/businesses/",
                     json={"name": "Acme 2", "type": "building"})
-    assert r.status_code == 409
+    assert r.status_code == 201
 
 
 def test_membership_failure_rolls_back_business(sb):

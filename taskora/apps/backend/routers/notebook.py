@@ -21,6 +21,8 @@ module is the ONLY enforcement layer for ownership + sharing rules.
 """
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
+from uuid import uuid4
+import re as _re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -28,6 +30,7 @@ from supabase import Client
 
 from auth import get_current_user
 from deps import get_supabase, require_member
+from config import get_settings, Settings
 
 router = APIRouter(prefix="/api/v1/notebook", tags=["notebook"])
 
@@ -61,6 +64,9 @@ class PageUpdate(BaseModel):
     format: Optional[str] = None
     sort_order: Optional[int] = None
     icon: Optional[str] = Field(default=None, max_length=8)
+    pinned: Optional[bool] = None
+    favourite: Optional[bool] = None
+    tags: Optional[list] = None
 
 
 class GoalsUpdate(BaseModel):
@@ -386,6 +392,12 @@ def update_page(
         patch["sort_order"] = body.sort_order
     if "icon" in fields_set:
         patch["icon"] = body.icon
+    if body.pinned is not None:
+        patch["pinned"] = body.pinned
+    if body.favourite is not None:
+        patch["favourite"] = body.favourite
+    if body.tags is not None:
+        patch["tags"] = body.tags
     if not patch:
         return page
     result = sb.table("notebook_pages").update(patch).eq("id", page_id).execute()
@@ -1099,3 +1111,136 @@ def people_picker(
         external = [{"id": u["id"], "name": u["name"], "email": None} for u in rest if u["id"] not in seen]
 
     return {"in_workspace": in_workspace, "external": external[:25]}
+
+
+# ── Notebook page file attachments (Excel/PDF/Word/images/etc.) ─────────────
+def _nb_safe_name(name: str) -> str:
+    base = _re.sub(r"[^A-Za-z0-9._-]", "_", (name or "file").strip()) or "file"
+    return base[:120]
+
+
+class NbAttSignIn(BaseModel):
+    file_name: str
+    content_type: Optional[str] = None
+
+
+class NbAttRecordIn(BaseModel):
+    path: str
+    file_name: str
+    file_size_bytes: Optional[int] = None
+
+
+@router.get("/pages/{page_id}/files")
+def list_page_files(
+    page_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    page = _page_or_404(sb, page_id)
+    if not _page_visible_to(sb, page, user["id"]):
+        raise HTTPException(status_code=404, detail="Page not found")
+    rows = (
+        sb.table("notebook_attachments")
+        .select("id, file_name, file_size_bytes, created_at")
+        .eq("page_id", page_id).order("created_at", desc=True).execute().data
+    )
+    return rows
+
+
+@router.post("/pages/{page_id}/files/sign")
+def sign_page_file(
+    page_id: str,
+    body: NbAttSignIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    page = _page_or_404(sb, page_id)
+    if not _page_writable_by(sb, page, user["id"]):
+        raise HTTPException(status_code=403, detail="Read-only on this page")
+    path = f"notebook/{page_id}/{uuid4().hex}-{_nb_safe_name(body.file_name)}"
+    try:
+        signed = sb.storage.from_(settings.workspace_docs_bucket).create_signed_upload_url(path)
+    except Exception:
+        raise HTTPException(status_code=503, detail="File storage is not available")
+    return {
+        "path": path, "token": signed.get("token"),
+        "signed_url": signed.get("signed_url") or signed.get("signedURL"),
+        "bucket": settings.workspace_docs_bucket, "max_bytes": settings.doc_upload_max_bytes,
+    }
+
+
+@router.post("/pages/{page_id}/files", status_code=201)
+def record_page_file(
+    page_id: str,
+    body: NbAttRecordIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    page = _page_or_404(sb, page_id)
+    if not _page_writable_by(sb, page, user["id"]):
+        raise HTTPException(status_code=403, detail="Read-only on this page")
+    if body.file_size_bytes and body.file_size_bytes > settings.doc_upload_max_bytes:
+        raise HTTPException(status_code=413, detail="File exceeds the size limit")
+    prefix = f"notebook/{page_id}/"
+    if not body.path.startswith(prefix) or ".." in body.path:
+        raise HTTPException(status_code=400, detail="path is not within this page")
+    rows = sb.table("notebook_attachments").insert({
+        "page_id": page_id, "file_url": body.path,
+        "file_name": _nb_safe_name(body.file_name),
+        "file_size_bytes": body.file_size_bytes, "uploaded_by": user["id"],
+    }).execute().data
+    if not rows:
+        raise HTTPException(status_code=500, detail="Failed to record attachment")
+    r = rows[0]
+    return {"id": r["id"], "file_name": r.get("file_name"), "file_size_bytes": r.get("file_size_bytes")}
+
+
+@router.get("/pages/{page_id}/files/{attachment_id}/url")
+def page_file_url(
+    page_id: str,
+    attachment_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    page = _page_or_404(sb, page_id)
+    if not _page_visible_to(sb, page, user["id"]):
+        raise HTTPException(status_code=404, detail="Page not found")
+    rows = (
+        sb.table("notebook_attachments").select("file_url")
+        .eq("id", attachment_id).eq("page_id", page_id).execute().data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    try:
+        signed = sb.storage.from_(settings.workspace_docs_bucket).create_signed_url(rows[0]["file_url"], 3600)
+    except Exception:
+        raise HTTPException(status_code=503, detail="File storage is not available")
+    return {"url": signed.get("signedURL") or signed.get("signed_url")}
+
+
+@router.delete("/pages/{page_id}/files/{attachment_id}", status_code=204)
+def delete_page_file(
+    page_id: str,
+    attachment_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    page = _page_or_404(sb, page_id)
+    if not _page_writable_by(sb, page, user["id"]):
+        raise HTTPException(status_code=403, detail="Read-only on this page")
+    rows = (
+        sb.table("notebook_attachments").select("file_url")
+        .eq("id", attachment_id).eq("page_id", page_id).execute().data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    sb.table("notebook_attachments").delete().eq("id", attachment_id).eq("page_id", page_id).execute()
+    try:
+        sb.storage.from_(settings.workspace_docs_bucket).remove([rows[0]["file_url"]])
+    except Exception:
+        pass
+    return

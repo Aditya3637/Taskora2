@@ -103,10 +103,13 @@ def _wire(monkeypatch):
     }
     app.dependency_overrides[get_supabase] = lambda: sb
     _PUSHES.clear()
-    monkeypatch.setattr(
-        tasks_mod, "send_push_to_user",
-        lambda _sb, uid, title, body, data=None: _PUSHES.append((uid, title)),
-    )
+    # The approval-resolved push now routes through automation.notify (in-app +
+    # push), so patch the symbol there. Keep the tasks_mod patch too in case any
+    # direct push remains.
+    import automation.notify as notify_mod
+    _push = lambda _sb, uid, title, body, data=None: _PUSHES.append((uid, title))
+    monkeypatch.setattr(tasks_mod, "send_push_to_user", _push)
+    monkeypatch.setattr(notify_mod, "send_push_to_user", _push)
     _as(U_OWNER)
     yield sb
     app.dependency_overrides.clear()
@@ -365,7 +368,8 @@ def test_reject_reopens_and_posts_red_comment(_wire):
     c = row(sb, "comments", task_id="T1", kind="rejection")
     assert c and c["content"] == "Numbers don't reconcile"
     assert c["entity_id"] is None and c["subtask_id"] is None
-    assert (U_OWNER, "Item rejected") in _PUSHES
+    # notify() now sends an in-app + push titled '"<task>" was rejected'.
+    assert any(uid == U_OWNER and "rejected" in title.lower() for uid, title in _PUSHES)
 
 
 def test_non_approver_cannot_act(_wire):

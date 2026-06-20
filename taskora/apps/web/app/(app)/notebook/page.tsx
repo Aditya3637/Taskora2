@@ -1,9 +1,6 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
-  Target,
-  ListChecks,
-  PanelLeftClose,
   PanelLeftOpen,
   Share2,
   Trash2,
@@ -11,10 +8,14 @@ import {
   Minimize2,
   Notebook as NotebookIcon,
   Sparkles,
+  Star,
+  Pin,
+  Paperclip,
+  Plus,
+  X,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import Goals from "./_components/Goals";
-import Checklist from "./_components/Checklist";
+import { supabase } from "@/lib/supabase";
 import CommandPalette from "./_components/CommandPalette";
 import NotebookNav from "./_components/NotebookNav";
 import RichPageEditor from "./_components/RichPageEditor";
@@ -24,28 +25,12 @@ import TrashModal from "./_components/TrashModal";
 import type { Page, Person, Project } from "./_lib/types";
 import { Button, EmptyState, Kbd, Tooltip, cn } from "@/components/ui";
 
-type FocusMode = null | "goals" | "checklist" | "notebook";
-const RATIO_KEY = "taskora_notebook_goals_pct";
 const NAV_OPEN_KEY = "taskora_notebook_nav_open";
-const LEFT_MIN_KEY = "taskora_notebook_left_minimized";
 
 /**
- * Notebook surface — three coordinated zones in a book-spread:
- *
- *   ┌────────────┬─────────────────────────────────────────────────┐
- *   │ GOALS      │ NotebookNav (collapsible)   |  Editor           │
- *   ├────────────┤  Search                     |  Title            │
- *   │ CHECKLIST  │  + New page                 |  Block list       │
- *   │ [My][Asn•N]│  Recent / Projects / Shared │  (text, table,    │
- *   │            │                             │   slash, math…)   │
- *   └────────────┴─────────────────────────────────────────────────┘
- *
- * Goals + Checklist live on the left page; the right page hosts the
- * collapsible navigation sidebar plus the actual editor.
- *
- * One notebook per user, cross-workspace. Workspace switch does not
- * switch notebooks — that's enforced by the backend (no business_id
- * column on any notebook_* table).
+ * Notebook — a calm, single-canvas writing space. A collapsible page tree on
+ * the left, the editor on the right. Pages can be pinned/favourited to the top
+ * of the tree. One notebook per user, cross-workspace (enforced server-side).
  */
 export default function NotebookPage() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -56,6 +41,9 @@ export default function NotebookPage() {
   const [loading, setLoading] = useState(true);
   const [shareOpen, setShareOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
+  const [zen, setZen] = useState(false);
+  // Click a tag to filter the tree to just notes carrying it.
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
 
   // Sidebar open/closed — persisted per user via localStorage.
   const [navOpen, setNavOpen] = useState<boolean>(true);
@@ -67,17 +55,6 @@ export default function NotebookPage() {
     if (typeof window !== "undefined") localStorage.setItem(NAV_OPEN_KEY, String(navOpen));
   }, [navOpen]);
 
-  // Left panel (Goals + Checklist) collapse to a thin rail so the
-  // notebook editor can take the bulk of the screen.
-  const [leftMinimized, setLeftMinimized] = useState<boolean>(false);
-  useEffect(() => {
-    const v = typeof window !== "undefined" && localStorage.getItem(LEFT_MIN_KEY);
-    if (v === "true") setLeftMinimized(true);
-  }, []);
-  useEffect(() => {
-    if (typeof window !== "undefined") localStorage.setItem(LEFT_MIN_KEY, String(leftMinimized));
-  }, [leftMinimized]);
-
   // Cmd/Ctrl+K quick switcher + `?` shortcuts cheat-sheet.
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -88,37 +65,13 @@ export default function NotebookPage() {
         setPaletteOpen((v) => !v);
         return;
       }
-      // `?` opens the cheat-sheet — but only when not typing into a field,
-      // so a literal "?" in a note still works.
       if (e.key === "?" && !e.metaKey && !e.ctrlKey && !e.altKey) {
         const el = document.activeElement as HTMLElement | null;
         const typing =
-          !!el &&
-          (el.tagName === "INPUT" ||
-            el.tagName === "TEXTAREA" ||
-            el.isContentEditable);
+          !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
         if (!typing) {
           e.preventDefault();
           setHelpOpen(true);
-        }
-        return;
-      }
-      // Alt+1/2/3 jump between sections; Alt+0 restores the full spread.
-      // Match on e.code because Option+digit yields a symbol in e.key on
-      // macOS (Option+1 = "¡"). Works even while typing — preventDefault
-      // stops the symbol being inserted.
-      if (e.altKey && !e.metaKey && !e.ctrlKey) {
-        const jump: Record<string, FocusMode> = {
-          Digit1: "goals",
-          Digit2: "checklist",
-          Digit3: "notebook",
-          Digit0: null,
-        };
-        if (e.code in jump) {
-          e.preventDefault();
-          const target = jump[e.code];
-          if (target && target !== "notebook") setLeftMinimized(false);
-          setFocus(target);
         }
       }
     }
@@ -154,14 +107,11 @@ export default function NotebookPage() {
   }, []);
   useEffect(() => { void loadShared(); }, [loadShared]);
 
-  // Re-fetch owned pages — used after restoring from trash so the
-  // recovered page reappears in the sidebar tree.
   const reloadPages = useCallback(async () => {
     const pagesAll = await apiFetch("/api/v1/notebook/pages") as Page[];
     setPages(pagesAll);
   }, []);
 
-  // Resolve the active page from either owned or shared lists.
   const activePage =
     activePageId == null
       ? null
@@ -196,6 +146,42 @@ export default function NotebookPage() {
     setPages((prev) => prev.map((p) => (p.id === next.id ? { ...p, ...next } : p)));
   };
 
+  // Pin → moves the page to the Pinned section at the top.
+  const togglePin = async (page: Page) => {
+    const next = !page.pinned;
+    setPages((prev) => prev.map((p) => (p.id === page.id ? { ...p, pinned: next } : p)));
+    try {
+      await apiFetch(`/api/v1/notebook/pages/${page.id}`, {
+        method: "PATCH", body: JSON.stringify({ pinned: next }),
+      });
+    } catch {
+      setPages((prev) => prev.map((p) => (p.id === page.id ? { ...p, pinned: !next } : p)));
+    }
+  };
+
+  // Star/favourite → highlight only (does not reorder).
+  const toggleFavourite = async (page: Page) => {
+    const next = !page.favourite;
+    setPages((prev) => prev.map((p) => (p.id === page.id ? { ...p, favourite: next } : p)));
+    try {
+      await apiFetch(`/api/v1/notebook/pages/${page.id}`, {
+        method: "PATCH", body: JSON.stringify({ favourite: next }),
+      });
+    } catch {
+      setPages((prev) => prev.map((p) => (p.id === page.id ? { ...p, favourite: !next } : p)));
+    }
+  };
+
+  // Update a page's tags (add/remove), persisted.
+  const setTags = async (page: Page, tags: string[]) => {
+    setPages((prev) => prev.map((p) => (p.id === page.id ? { ...p, tags } : p)));
+    try {
+      await apiFetch(`/api/v1/notebook/pages/${page.id}`, {
+        method: "PATCH", body: JSON.stringify({ tags }),
+      });
+    } catch { /* optimistic */ }
+  };
+
   const archivePage = async () => {
     if (!activePage || !isOwnerOfActive) return;
     if (!window.confirm(`Delete "${activePage.title}"? This can't be undone in v1.`)) return;
@@ -204,150 +190,30 @@ export default function NotebookPage() {
     setActivePageId(null);
   };
 
-  // Focus mode + adjustable Goals/Checklist split.
-  const [focus, setFocus] = useState<FocusMode>(null);
-  const [goalsPct, setGoalsPct] = useState<number>(40);
-  useEffect(() => {
-    const stored = typeof window !== "undefined" && localStorage.getItem(RATIO_KEY);
-    const n = stored ? Number(stored) : NaN;
-    if (Number.isFinite(n) && n >= 20 && n <= 80) setGoalsPct(n);
-  }, []);
-  useEffect(() => {
-    if (typeof window !== "undefined") localStorage.setItem(RATIO_KEY, String(goalsPct));
-  }, [goalsPct]);
-
-  const leftPanelRef = useRef<HTMLDivElement | null>(null);
-  const dragging = useRef<boolean>(false);
-  const startDrag = (e: React.MouseEvent | React.TouchEvent) => {
-    e.preventDefault();
-    dragging.current = true;
-    const move = (clientY: number) => {
-      if (!dragging.current || !leftPanelRef.current) return;
-      const box = leftPanelRef.current.getBoundingClientRect();
-      const offsetTop = clientY - box.top;
-      const pct = Math.round((offsetTop / box.height) * 100);
-      setGoalsPct(Math.max(20, Math.min(80, pct)));
-    };
-    const onMouseMove = (ev: MouseEvent) => move(ev.clientY);
-    const onTouchMove = (ev: TouchEvent) => move(ev.touches[0]?.clientY ?? 0);
-    const stop = () => {
-      dragging.current = false;
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", stop);
-      window.removeEventListener("touchmove", onTouchMove);
-      window.removeEventListener("touchend", stop);
-    };
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", stop);
-    window.addEventListener("touchmove", onTouchMove);
-    window.addEventListener("touchend", stop);
-  };
-
-  const showLeft = focus === null || focus === "goals" || focus === "checklist";
-  const showRight = focus === null || focus === "notebook";
-  // Grid columns reflect three states:
-  //   - focused: single column (the focused panel only)
-  //   - left minimized: a thin rail on the left, notebook takes the rest
-  //   - default: 30/70 book-spread
-  const gridCols =
-    focus !== null
-      ? "md:grid-cols-1"
-      : leftMinimized
-      ? "md:grid-cols-[56px_1fr]"
-      : "md:grid-cols-[3fr_7fr]";
-
   return (
-    <div className="min-h-screen p-4 md:p-6 bg-bg">
-      <div className={`grid grid-cols-1 ${gridCols} gap-4 max-w-[1600px] mx-auto h-[calc(100vh-2rem)]`}>
-        {/* ── LEFT PAGE: Goals + Checklist (with minimize rail) ─────── */}
-        {showLeft && (
-          leftMinimized && focus === null ? (
-            // Compact rail — restores to default on click.
-            <div className="surface-card flex flex-col items-center py-3 gap-1.5 animate-fade-in">
-              <Tooltip label="Expand Goals + Checklist" side="right">
-                <button
-                  onClick={() => setLeftMinimized(false)}
-                  aria-label="Expand Goals + Checklist"
-                  className="h-9 w-9 inline-flex items-center justify-center rounded-md text-fg-muted hover:text-fg hover:bg-muted transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
-                >
-                  <PanelLeftOpen className="h-[17px] w-[17px]" strokeWidth={1.8} />
-                </button>
-              </Tooltip>
-              <div className="h-px w-6 bg-line my-1" aria-hidden="true" />
-              <Tooltip label="Open Goals" side="right">
-                <button
-                  onClick={() => { setLeftMinimized(false); setFocus("goals"); }}
-                  aria-label="Open Goals"
-                  className="h-9 w-9 inline-flex items-center justify-center rounded-md text-fg-muted hover:text-fg hover:bg-muted transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
-                >
-                  <Target className="h-[17px] w-[17px]" strokeWidth={1.8} />
-                </button>
-              </Tooltip>
-              <Tooltip label="Open Checklist" side="right">
-                <button
-                  onClick={() => { setLeftMinimized(false); setFocus("checklist"); }}
-                  aria-label="Open Checklist"
-                  className="h-9 w-9 inline-flex items-center justify-center rounded-md text-fg-muted hover:text-fg hover:bg-muted transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
-                >
-                  <ListChecks className="h-[17px] w-[17px]" strokeWidth={1.8} />
-                </button>
-              </Tooltip>
-            </div>
-          ) : (
-            <div ref={leftPanelRef} className="surface-card p-4 flex flex-col overflow-hidden relative animate-fade-in">
-              {focus === null && (
-                <Tooltip label="Minimize Goals + Checklist" side="left">
-                  <button
-                    onClick={() => setLeftMinimized(true)}
-                    aria-label="Minimize Goals + Checklist"
-                    className="absolute top-2 right-2 z-20 h-7 w-7 inline-flex items-center justify-center rounded-md text-fg-subtle hover:text-fg hover:bg-muted transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
-                  >
-                    <PanelLeftClose className="h-4 w-4" strokeWidth={1.8} />
-                  </button>
-                </Tooltip>
-              )}
+    <div className="min-h-screen bg-bg">
+      {/* ── Centered page header — compact, with how-to hints ──────── */}
+      <header className="pt-5 pb-3 text-center">
+        <div className="flex items-center justify-center gap-2.5">
+          <span className="inline-flex items-center justify-center h-8 w-8 rounded-xl bg-gradient-to-br from-brand-500/15 to-brand-700/10">
+            <NotebookIcon className="h-[18px] w-[18px] text-brand-600" strokeWidth={1.8} />
+          </span>
+          <h1 className="font-display text-[22px] leading-none font-semibold tracking-tight text-fg">Notebook</h1>
+        </div>
+        <div className="mt-2.5 flex items-center justify-center gap-x-3 gap-y-1 flex-wrap text-[11.5px] text-fg-subtle">
+          <Hint k="/" label="blocks" />
+          <Hint k="@" label="mention people / pages" />
+          <Hint k="⌘K" label="switch page" />
+          <Hint k="drop / paste" label="attach files" />
+          <Hint k="?" label="all shortcuts" />
+        </div>
+      </header>
 
-              {(focus === null || focus === "goals") && (
-                <PanelFrame
-                  focused={focus === "goals"}
-                  onToggleFocus={() => setFocus(focus === "goals" ? null : "goals")}
-                  style={focus === null ? { height: `${goalsPct}%` } : undefined}
-                  className={focus === "goals" ? "flex-1" : ""}
-                >
-                  <Goals />
-                </PanelFrame>
-              )}
-
-              {focus === null && (
-                <div
-                  onMouseDown={startDrag}
-                  onTouchStart={startDrag}
-                  className="h-2 -my-1 cursor-row-resize flex items-center justify-center group flex-shrink-0"
-                  aria-label="Resize between Goals and Checklist"
-                  role="separator"
-                >
-                  <div className="w-8 h-0.5 bg-line group-hover:bg-brand-500/60 rounded transition-colors duration-fast" />
-                </div>
-              )}
-
-              {(focus === null || focus === "checklist") && (
-                <PanelFrame
-                  focused={focus === "checklist"}
-                  onToggleFocus={() => setFocus(focus === "checklist" ? null : "checklist")}
-                  className="flex-1 min-h-0 border-t border-pebble pt-3"
-                >
-                  <Checklist />
-                </PanelFrame>
-              )}
-            </div>
-          )
-        )}
-
-        {/* ── RIGHT PAGE: Nav + AI Notebook ─────────────────────────── */}
-        {showRight && (
-          <div className="surface-card flex flex-row overflow-hidden relative animate-fade-in">
+      <div className="px-4 md:px-6 pb-6">
+        <div className="max-w-[1480px] mx-auto h-[calc(100vh-9.5rem)]">
+          <div className="surface-card h-full flex flex-row overflow-hidden rounded-2xl border border-line shadow-sm animate-fade-in">
             {/* Sidebar */}
-            {navOpen ? (
+            {navOpen && !zen ? (
               <NotebookNav
                 projects={projects}
                 pages={pages}
@@ -358,13 +224,17 @@ export default function NotebookPage() {
                 onCreateProject={createProject}
                 onCollapse={() => setNavOpen(false)}
                 onOpenTrash={() => setTrashOpen(true)}
+                onTogglePin={togglePin}
+                onToggleFavourite={toggleFavourite}
+                tagFilter={tagFilter}
+                onTagFilter={setTagFilter}
               />
             ) : (
               <Tooltip label="Open notebook sidebar" side="right">
                 <button
-                  onClick={() => setNavOpen(true)}
+                  onClick={() => { setNavOpen(true); setZen(false); }}
                   aria-label="Open notebook sidebar"
-                  className="w-9 flex-shrink-0 bg-surface-2 border-r border-line flex items-start justify-center pt-3 text-fg-subtle hover:text-fg hover:bg-muted transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500/40"
+                  className="w-10 flex-shrink-0 bg-surface-2 border-r border-line flex items-start justify-center pt-3.5 text-fg-subtle hover:text-fg hover:bg-muted transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500/40"
                 >
                   <PanelLeftOpen className="h-4 w-4" strokeWidth={1.8} />
                 </button>
@@ -372,19 +242,54 @@ export default function NotebookPage() {
             )}
 
             {/* Editor area */}
-            <div className="flex-1 flex flex-col overflow-hidden p-4 min-w-0">
+            <div className="flex-1 flex flex-col overflow-hidden px-5 md:px-7 py-4 min-w-0">
               {/* Top action bar */}
               <div className="flex items-center justify-between gap-2 mb-3 flex-shrink-0 min-h-[28px]">
-                <div className="text-[11px] text-fg-subtle truncate font-medium uppercase tracking-wider">
-                  {activePage
-                    ? activePage.follower_role
-                      ? `Shared with you · ${activePage.follower_role}`
-                      : "Your page"
-                    : ""}
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-[11px] text-fg-subtle truncate font-medium uppercase tracking-wider">
+                    {activePage
+                      ? activePage.follower_role
+                        ? `Shared with you · ${activePage.follower_role}`
+                        : "Your page"
+                      : ""}
+                  </span>
+                  {activePage && (
+                    <span className="text-[11px] text-fg-subtle/80 whitespace-nowrap">
+                      · {activePage.updated_at
+                        ? new Date(activePage.updated_at).toLocaleDateString(undefined, { day: "numeric", month: "short" })
+                        : "no date"}
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-1">
                   {activePage && isOwnerOfActive && (
                     <>
+                      <Tooltip label={activePage.favourite ? "Unfavourite" : "Favourite"}>
+                        <button
+                          onClick={() => toggleFavourite(activePage)}
+                          aria-label={activePage.favourite ? "Unfavourite" : "Favourite"}
+                          aria-pressed={!!activePage.favourite}
+                          className={cn(
+                            "h-7 w-7 inline-flex items-center justify-center rounded transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40",
+                            activePage.favourite ? "text-amber-500 hover:bg-amber-50" : "text-fg-subtle hover:text-fg hover:bg-muted",
+                          )}
+                        >
+                          <Star className="h-3.5 w-3.5" strokeWidth={1.8} fill={activePage.favourite ? "currentColor" : "none"} />
+                        </button>
+                      </Tooltip>
+                      <Tooltip label={activePage.pinned ? "Unpin" : "Pin to top"}>
+                        <button
+                          onClick={() => togglePin(activePage)}
+                          aria-label={activePage.pinned ? "Unpin page" : "Pin page"}
+                          aria-pressed={!!activePage.pinned}
+                          className={cn(
+                            "h-7 w-7 inline-flex items-center justify-center rounded transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40",
+                            activePage.pinned ? "text-ocean hover:bg-ocean/10" : "text-fg-subtle hover:text-fg hover:bg-muted",
+                          )}
+                        >
+                          <Pin className="h-3.5 w-3.5" strokeWidth={1.8} fill={activePage.pinned ? "currentColor" : "none"} />
+                        </button>
+                      </Tooltip>
                       <Button
                         size="xs"
                         variant="secondary"
@@ -404,20 +309,31 @@ export default function NotebookPage() {
                       </Tooltip>
                     </>
                   )}
-                  <Tooltip label={focus === "notebook" ? "Exit focus" : "Focus this panel"}>
+                  <Tooltip label={zen ? "Exit focus" : "Focus mode"}>
                     <button
-                      onClick={() => setFocus(focus === "notebook" ? null : "notebook")}
-                      aria-label={focus === "notebook" ? "Exit focus" : "Focus this panel"}
-                      aria-pressed={focus === "notebook"}
+                      onClick={() => setZen((v) => !v)}
+                      aria-label={zen ? "Exit focus" : "Focus mode"}
+                      aria-pressed={zen}
                       className="h-7 w-7 inline-flex items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-muted transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
                     >
-                      {focus === "notebook"
+                      {zen
                         ? <Minimize2 className="h-3.5 w-3.5" strokeWidth={1.8} />
                         : <Maximize2 className="h-3.5 w-3.5" strokeWidth={1.8} />}
                     </button>
                   </Tooltip>
                 </div>
               </div>
+
+              {/* Tags row */}
+              {activePage && (
+                <PageTagsRow
+                  page={activePage}
+                  editable={canEditActive}
+                  activeTag={tagFilter}
+                  onChange={(tags) => setTags(activePage, tags)}
+                  onTagClick={(t) => setTagFilter((cur) => (cur === t ? null : t))}
+                />
+              )}
 
               {/* Editor or empty state */}
               <div className="flex-1 overflow-hidden">
@@ -429,19 +345,24 @@ export default function NotebookPage() {
                     onCreate={() => createPage(null)}
                   />
                 ) : (
-                  <RichPageEditor
-                    page={activePage}
-                    readOnly={!canEditActive}
-                    onSaved={updatePageInList}
-                    people={people}
-                    allPages={[...pages, ...sharedPages]}
-                    onOpenPage={(id) => setActivePageId(id)}
-                  />
+                  <div className={cn("h-full flex flex-col", zen && "max-w-[760px] mx-auto")}>
+                    <div className="flex-1 overflow-hidden">
+                      <RichPageEditor
+                        page={activePage}
+                        readOnly={!canEditActive}
+                        onSaved={updatePageInList}
+                        people={people}
+                        allPages={[...pages, ...sharedPages]}
+                        onOpenPage={(id) => setActivePageId(id)}
+                      />
+                    </div>
+                    <NotebookFiles pageId={activePage.id} editable={canEditActive} />
+                  </div>
                 )}
               </div>
             </div>
           </div>
-        )}
+        </div>
       </div>
 
       {shareOpen && activePage && (
@@ -473,37 +394,154 @@ export default function NotebookPage() {
   );
 }
 
-function PanelFrame({
-  focused,
-  onToggleFocus,
-  className = "",
-  style,
-  children,
+function Hint({ k, label }: { k: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <kbd className="rounded border border-line bg-surface px-1.5 py-0.5 text-[10.5px] font-medium text-fg-muted">{k}</kbd>
+      <span>{label}</span>
+    </span>
+  );
+}
+
+/** Tag chips for the active page — add/remove + click to filter the tree. */
+function PageTagsRow({
+  page, editable, activeTag, onChange, onTagClick,
 }: {
-  focused: boolean;
-  onToggleFocus: () => void;
-  className?: string;
-  style?: React.CSSProperties;
-  children: React.ReactNode;
+  page: Page;
+  editable: boolean;
+  activeTag: string | null;
+  onChange: (tags: string[]) => void;
+  onTagClick: (tag: string) => void;
 }) {
+  const tags = page.tags ?? [];
+  const addTag = () => {
+    const t = window.prompt("Add a tag")?.trim().toLowerCase();
+    if (!t || tags.includes(t)) return;
+    onChange([...tags, t]);
+  };
+  if (tags.length === 0 && !editable) return null;
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap mb-3">
+      {tags.map((t) => (
+        <span key={t} className={cn(
+          "group inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px] transition-colors",
+          activeTag === t ? "border-brand-500/40 bg-brand-500/10 text-brand-700" : "border-line bg-surface text-fg-muted hover:text-fg",
+        )}>
+          <button type="button" onClick={() => onTagClick(t)} className="font-medium">#{t}</button>
+          {editable && (
+            <button type="button" onClick={() => onChange(tags.filter((x) => x !== t))} className="text-fg-subtle/60 hover:text-danger-600" aria-label={`Remove ${t}`}>
+              <X className="h-3 w-3" />
+            </button>
+          )}
+        </span>
+      ))}
+      {editable && (
+        <button type="button" onClick={addTag}
+          className="inline-flex items-center gap-1 rounded-full border border-dashed border-line px-2 py-0.5 text-[11.5px] text-fg-subtle hover:text-fg hover:border-fg-subtle">
+          <Plus className="h-3 w-3" /> tag
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * File attachments on a notebook page (Excel/PDF/Word/images/etc.). Attach
+ * button + drag-drop + paste (non-image clipboard files; the editor inlines
+ * pasted images itself). Sign → upload to Storage → record.
+ */
+function NotebookFiles({ pageId, editable }: { pageId: string; editable: boolean }) {
+  const [files, setFiles] = useState<{ id: string; file_name: string; file_size_bytes?: number | null }[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const d = await apiFetch(`/api/v1/notebook/pages/${pageId}/files`);
+      setFiles(Array.isArray(d) ? d : []);
+    } catch { /* leave */ }
+  }, [pageId]);
+  useEffect(() => { void load(); }, [load]);
+
+  const upload = useCallback(async (file: File) => {
+    setBusy(true);
+    try {
+      const sign = await apiFetch(`/api/v1/notebook/pages/${pageId}/files/sign`, {
+        method: "POST", body: JSON.stringify({ file_name: file.name, content_type: file.type || "application/octet-stream" }),
+      });
+      if (file.size > (sign.max_bytes ?? 26214400)) throw new Error("File too large (max 25 MB).");
+      const { error: upErr } = await supabase.storage
+        .from(sign.bucket).uploadToSignedUrl(sign.path, sign.token, file, { contentType: file.type || undefined });
+      if (upErr) throw upErr;
+      await apiFetch(`/api/v1/notebook/pages/${pageId}/files`, {
+        method: "POST", body: JSON.stringify({ path: sign.path, file_name: file.name, file_size_bytes: file.size }),
+      });
+      await load();
+    } catch { /* ignore */ } finally { setBusy(false); }
+  }, [pageId, load]);
+
+  // Paste non-image files (e.g. a copied PDF/xlsx). Images are inlined by the
+  // editor, so we skip them here to avoid double-handling.
+  useEffect(() => {
+    if (!editable) return;
+    const onPaste = (e: ClipboardEvent) => {
+      const items = Array.from(e.clipboardData?.files ?? []);
+      const nonImages = items.filter((f) => !f.type.startsWith("image/"));
+      if (nonImages.length === 0) return;
+      e.preventDefault();
+      nonImages.forEach((f) => void upload(f));
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, [editable, upload]);
+
+  async function openFile(id: string) {
+    try {
+      const d = await apiFetch(`/api/v1/notebook/pages/${pageId}/files/${id}/url`);
+      if (d?.url) window.open(d.url, "_blank", "noopener");
+    } catch { /* ignore */ }
+  }
+  async function remove(id: string) {
+    setFiles((prev) => prev.filter((f) => f.id !== id));
+    try { await apiFetch(`/api/v1/notebook/pages/${pageId}/files/${id}`, { method: "DELETE" }); } catch { void load(); }
+  }
+
+  if (files.length === 0 && !editable) return null;
+
   return (
     <div
-      className={`relative ${focused ? "flex-1" : ""} ${className} overflow-hidden`}
-      style={style}
+      onDragOver={(e) => { if (editable) { e.preventDefault(); setDragOver(true); } }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        if (!editable) return;
+        e.preventDefault(); setDragOver(false);
+        Array.from(e.dataTransfer.files).forEach((f) => void upload(f));
+      }}
+      className={cn(
+        "flex-shrink-0 mt-2 pt-2.5 border-t border-line",
+        dragOver && "ring-2 ring-brand-500/40 rounded-lg",
+      )}
     >
-      <Tooltip label={focused ? "Exit focus" : "Focus this panel"}>
-        <button
-          onClick={onToggleFocus}
-          aria-label={focused ? "Exit focus" : "Focus this panel"}
-          aria-pressed={focused}
-          className="absolute top-0 right-0 z-10 h-7 w-7 inline-flex items-center justify-center rounded text-fg-subtle hover:text-fg hover:bg-muted transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
-        >
-          {focused
-            ? <Minimize2 className="h-3.5 w-3.5" strokeWidth={1.8} />
-            : <Maximize2 className="h-3.5 w-3.5" strokeWidth={1.8} />}
-        </button>
-      </Tooltip>
-      <div className="h-full overflow-hidden pr-6">{children}</div>
+      <div className="flex items-center gap-2 flex-wrap">
+        <Paperclip className="h-3.5 w-3.5 text-fg-subtle" />
+        {files.length === 0 && <span className="text-[12px] text-fg-subtle/70">Drop or paste a file — Excel, PDF, Word, images…</span>}
+        {files.map((f) => (
+          <span key={f.id} className="group inline-flex items-center gap-1 rounded-md border border-line bg-surface px-2 py-0.5 text-[12px]">
+            <button type="button" onClick={() => openFile(f.id)} className="text-ocean hover:underline max-w-[180px] truncate">{f.file_name}</button>
+            {editable && (
+              <button type="button" onClick={() => remove(f.id)} className="text-fg-subtle/50 hover:text-danger-600" aria-label="Remove">
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </span>
+        ))}
+        {editable && (
+          <label className={cn("inline-flex items-center gap-1 text-[12px] font-semibold cursor-pointer text-brand-600 hover:text-brand-700", busy && "opacity-50 pointer-events-none")}>
+            {busy ? "Uploading…" : "+ Attach"}
+            <input type="file" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); e.currentTarget.value = ""; }} />
+          </label>
+        )}
+      </div>
     </div>
   );
 }
@@ -511,7 +549,7 @@ function PanelFrame({
 function NotebookLoadingState() {
   return (
     <div className="h-full px-1 py-2 animate-fade-in">
-      <div className="space-y-3 max-w-2xl">
+      <div className="space-y-3 max-w-2xl mx-auto">
         <div className="skeleton h-7 w-1/3 rounded" />
         <div className="skeleton h-3 w-full rounded" />
         <div className="skeleton h-3 w-11/12 rounded" />

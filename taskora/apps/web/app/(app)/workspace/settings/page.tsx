@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import SettingsTabs from "@/components/SettingsTabs";
+import { Dialog } from "@/components/ui";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -135,6 +136,13 @@ export default function WorkspaceSettingsPage() {
     setToast(msg);
     setTimeout(() => setToast(""), 3000);
   };
+
+  // Remove-member dialog (G2): pick who inherits the leaver's work instead of
+  // silently dumping it all on the admin who clicked Remove.
+  const [removeTarget, setRemoveTarget] = useState<{ userId: string; name: string } | null>(null);
+  const [removeSummary, setRemoveSummary] = useState<{ initiatives_owned: number; tasks_primary: number; as_secondary_or_watcher: number } | null>(null);
+  const [reassignTo, setReassignTo] = useState<string>(""); // "" = reassign to me
+  const [removing, setRemoving] = useState(false);
 
   const loadData = useCallback(async (bId: string) => {
     try {
@@ -320,24 +328,35 @@ export default function WorkspaceSettingsPage() {
   }
 
   async function handleRemoveMember(targetUserId: string, name: string) {
-    const who = name || "this member";
-    if (
-      !confirm(
-        `Remove ${who} from the workspace?\n\n` +
-          `Their tasks stay — anything where they were the primary will be ` +
-          `reassigned to you. Their secondary assignments and follower/approver ` +
-          `entries are removed.`,
-      )
-    )
-      return;
+    // Open the reassignment dialog and load what this member owns so the admin
+    // can choose who inherits it (default = me).
+    setRemoveTarget({ userId: targetUserId, name: name || "this member" });
+    setReassignTo("");
+    setRemoveSummary(null);
     try {
-      await apiFetch(`/api/v1/businesses/${businessId}/members/${targetUserId}`, {
+      const s = await apiFetch(`/api/v1/businesses/${businessId}/members/${targetUserId}/work-summary`);
+      setRemoveSummary(s);
+    } catch { /* dialog still works; counts just won't show */ }
+  }
+
+  async function confirmRemoveMember() {
+    if (!removeTarget) return;
+    setRemoving(true);
+    try {
+      const q = reassignTo ? `?reassign_to=${encodeURIComponent(reassignTo)}` : "";
+      await apiFetch(`/api/v1/businesses/${businessId}/members/${removeTarget.userId}${q}`, {
         method: "DELETE",
       });
-      setMembers((prev) => prev.filter((m) => m.user_id !== targetUserId));
-      showToast("Member removed — their tasks were reassigned to you");
+      setMembers((prev) => prev.filter((m) => m.user_id !== removeTarget.userId));
+      const heir = reassignTo
+        ? members.find((m) => m.user_id === reassignTo)?.name || "the chosen member"
+        : "you";
+      showToast(`Member removed — their work was reassigned to ${heir}`);
+      setRemoveTarget(null);
     } catch (e: any) {
       showToast(`Error: ${e.message}`);
+    } finally {
+      setRemoving(false);
     }
   }
 
@@ -881,6 +900,62 @@ export default function WorkspaceSettingsPage() {
             ))}
           </div>
         </div>
+      )}
+
+      {removeTarget && (
+        <Dialog
+          open={!!removeTarget}
+          onOpenChange={(o) => { if (!o && !removing) setRemoveTarget(null); }}
+          title={`Remove ${removeTarget.name}?`}
+          description="Their tasks and initiatives stay in the workspace — choose who inherits the ones they owned. Secondary assignments and follower/approver entries are removed."
+          footer={
+            <>
+              <button
+                type="button"
+                onClick={() => setRemoveTarget(null)}
+                disabled={removing}
+                className="h-9 rounded-lg border border-pebble px-4 text-sm font-semibold text-steel hover:bg-mist disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmRemoveMember}
+                disabled={removing}
+                className="h-9 rounded-lg bg-taskora-red px-4 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-40"
+              >
+                {removing ? "Removing…" : "Remove & reassign"}
+              </button>
+            </>
+          }
+        >
+          {removeSummary && (
+            <p className="text-[13px] text-steel mb-3">
+              They own <b className="text-midnight">{removeSummary.initiatives_owned}</b> initiative(s) and are primary on{" "}
+              <b className="text-midnight">{removeSummary.tasks_primary}</b> task(s)
+              {removeSummary.as_secondary_or_watcher > 0 && (
+                <> · {removeSummary.as_secondary_or_watcher} secondary/watcher entr{removeSummary.as_secondary_or_watcher === 1 ? "y" : "ies"} will be removed</>
+              )}.
+            </p>
+          )}
+          <label className="block text-[11px] uppercase tracking-wide text-steel/70 mb-1">
+            Reassign their owned work to
+          </label>
+          <select
+            value={reassignTo}
+            onChange={(e) => setReassignTo(e.target.value)}
+            className="w-full border border-pebble rounded-lg px-3 py-2 text-sm text-midnight focus:outline-none focus:border-taskora-red"
+          >
+            <option value="">Me</option>
+            {members
+              .filter((m) => m.user_id !== removeTarget.userId)
+              .map((m) => (
+                <option key={m.user_id} value={m.user_id}>
+                  {m.name || m.email || "Member"}
+                </option>
+              ))}
+          </select>
+        </Dialog>
       )}
     </div>
   );

@@ -62,9 +62,10 @@ def test_create_task_returns_201():
         app.dependency_overrides.clear()
 
 
-def test_create_task_requires_dates():
-    """start_date + due_date are mandatory (057) — omitting either is 422 at
-    validation time, before any DB work."""
+def test_create_task_dates_optional():
+    """Dates are optional (068). Omitting them no longer fails Pydantic parsing
+    (would be 422) — the request now reaches the handler, which here stops at
+    the alignment gate (403) rather than a date-required 422."""
     from unittest.mock import MagicMock
     app.dependency_overrides[get_current_user] = override_auth
     app.dependency_overrides[get_supabase] = lambda: MagicMock()
@@ -73,12 +74,7 @@ def test_create_task_requires_dates():
             "title": "No dates", "initiative_id": "init-789",
             "primary_stakeholder_id": "user-123",
         })
-        assert r.status_code == 422, r.text
-        r = client.post("/api/v1/tasks/", json={
-            "title": "Only start", "initiative_id": "init-789",
-            "primary_stakeholder_id": "user-123", "start_date": "2026-01-01",
-        })
-        assert r.status_code == 422, r.text
+        assert r.status_code != 422, r.text
     finally:
         app.dependency_overrides.clear()
 

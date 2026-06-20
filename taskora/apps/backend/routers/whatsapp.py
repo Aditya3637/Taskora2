@@ -101,7 +101,7 @@ def _tasks_for_user(sb: Client, uid: str, business_id: str) -> dict:
         return {"overdue": [], "pending": [], "blocked": [], "due_week": []}
     tasks = (
         sb.table("tasks")
-        .select("id, title, status, due_date, blocker_reason, initiative_id, initiatives(name, title)")
+        .select("id, title, status, due_date, blocker_reason, initiative_id, initiatives(name)")
         .in_("id", all_ids)
         .in_("initiative_id", biz_init_ids)
         .execute()
@@ -157,7 +157,7 @@ def generate_digest(
     # Fetch user details
     user_rows = (
         sb.table("users")
-        .select("id, email, settings")
+        .select("id, name, email, settings")
         .in_("id", user_ids)
         .execute()
         .data
@@ -169,7 +169,7 @@ def generate_digest(
         u = user_map.get(uid)
         if not u:
             continue
-        user_name = (u.get("settings") or {}).get("full_name") or u.get("email") or uid
+        user_name = u.get("name") or (u.get("settings") or {}).get("full_name") or u.get("email") or uid
         phone = (u.get("settings") or {}).get("phone")
         cats = _tasks_for_user(sb, uid, body.business_id)
         text = _build_message(
@@ -190,6 +190,13 @@ def generate_digest(
             "phone_number": phone,
             "message": text,
             "wa_link": wa_link,
+            # Counts power the Nudges left-list (who's stuck + how badly).
+            "counts": {
+                "overdue": len(cats["overdue"]),
+                "pending": len(cats["pending"]),
+                "blocked": len(cats["blocked"]),
+                "due_week": len(cats["due_week"]),
+            },
         })
 
     return {"messages": messages}

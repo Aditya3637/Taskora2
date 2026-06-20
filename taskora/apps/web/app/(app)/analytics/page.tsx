@@ -117,6 +117,28 @@ export default function AnalyticsPage() {
   // Report-tab state
   const [startDate, setStartDate] = useState(() => fmtDate(new Date(Date.now() - 30 * 86400_000)));
   const [endDate, setEndDate] = useState(() => fmtDate(new Date()));
+
+  // Saved views — named presets of {tab, days, dates}, persisted per browser.
+  type SavedView = { name: string; tab: Tab; days: number; startDate: string; endDate: string };
+  const [views, setViews] = useState<SavedView[]>([]);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("taskora_analytics_views");
+      if (raw) setViews(JSON.parse(raw));
+    } catch { /* ignore */ }
+  }, []);
+  function persistViews(next: SavedView[]) {
+    setViews(next);
+    try { localStorage.setItem("taskora_analytics_views", JSON.stringify(next)); } catch { /* ignore */ }
+  }
+  function saveCurrentView() {
+    const name = window.prompt("Name this view (e.g. “Q3 delivery”)")?.trim();
+    if (!name) return;
+    persistViews([...views.filter((v) => v.name !== name), { name, tab, days, startDate, endDate }]);
+  }
+  function applyView(v: SavedView) {
+    setTab(v.tab); setDays(v.days); setStartDate(v.startDate); setEndDate(v.endDate);
+  }
   const [peopleRows, setPeopleRows] = useState<PeopleRow[] | null>(null);
   const [programBlocks, setProgramBlocks] = useState<ProgramBlock[] | null>(null);
   const [exporting, setExporting] = useState(false);
@@ -199,7 +221,21 @@ export default function AnalyticsPage() {
 
   return (
     <div className="max-w-[1100px] mx-auto px-4 sm:px-6 py-6 sm:py-8">
-      <h1 className="text-2xl font-bold text-midnight mb-6">Analytics</h1>
+      <div className="flex items-center gap-3 mb-6 flex-wrap">
+        <h1 className="text-2xl font-bold text-midnight">Analytics</h1>
+        <div className="ml-auto flex items-center gap-1.5 flex-wrap">
+          {views.map((v) => (
+            <span key={v.name} className="inline-flex items-center gap-1 rounded-full border border-pebble bg-white pl-2.5 pr-1 py-0.5 text-[12px]">
+              <button type="button" onClick={() => applyView(v)} className="text-midnight hover:text-taskora-red">{v.name}</button>
+              <button type="button" onClick={() => persistViews(views.filter((x) => x.name !== v.name))} className="text-steel/50 hover:text-red-600 px-0.5" aria-label={`Delete ${v.name}`}>×</button>
+            </span>
+          ))}
+          <button type="button" onClick={saveCurrentView}
+            className="inline-flex items-center gap-1 rounded-full border border-dashed border-pebble px-2.5 py-0.5 text-[12px] text-steel hover:text-midnight hover:border-steel/50">
+            + Save view
+          </button>
+        </div>
+      </div>
 
       <div className="flex gap-4 sm:gap-6 border-b border-pebble mb-8 overflow-x-auto">
         {([

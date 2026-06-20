@@ -100,17 +100,16 @@ def test_gantt_dateless_task_row_has_no_dates():
     assert t2["end_date"] is None
 
 
-def test_gantt_uniform_task_emits_building_rows():
-    """A uniform-mode task with entities now surfaces each building/client as a
-    child row (inheriting the task's span) so its timeline is visible."""
+def test_gantt_buildings_are_task_attributes_not_rows():
+    """Buildings/clients are ATTRIBUTES of the task (carried in `entities`),
+    never rows of their own. The tree is task → subtasks directly."""
     _setup(_store())
     rows = client.get(f"/api/v1/initiatives/{INIT}/gantt").json()["rows"]
-    ent_rows = [r for r in rows if r["kind"] == "entity" and r["parent_id"] == "T1"]
-    names = sorted(r["title"] for r in ent_rows)
-    assert names == ["Acme", "Tower A"]
-    # No per-entity date → inherit the task's end (2026-05-20).
-    for r in ent_rows:
-        assert r["end_date"] == "2026-05-20"
+    # No 'entity' kind rows exist anywhere.
+    assert not [r for r in rows if r["kind"] == "entity"]
+    # The buildings/clients ride along on the task row as attributes.
+    t1 = _row(rows, "T1")
+    assert sorted(e["name"] for e in t1["entities"]) == ["Acme", "Tower A"]
 
 
 def test_gantt_subtask_nested_and_inherits_due():
@@ -138,3 +137,22 @@ def test_gantt_non_member_forbidden():
     store["business_members"] = []
     _setup(store)
     assert client.get(f"/api/v1/initiatives/{INIT}/gantt").status_code == 403
+
+
+def test_gantt_site_owned_tasks_grouped_under_building_lane():
+    """Playbooks: a task with tasks.entity_id is grouped under a building/client
+    LANE (kind='entity-lane'), with the task nested beneath it — not flat."""
+    store = _store()
+    store["tasks"].append({
+        "id": "TG", "title": "Survey", "status": "in_progress", "priority": "medium",
+        "start_date": "2026-05-05", "due_date": "2026-05-08", "initiative_id": INIT,
+        "date_mode": "uniform", "depends_on": [], "entity_id": "B1",
+        "entity_type": "building", "created_at": "2026-05-05T00:00:00+00:00",
+    })
+    _setup(store)
+    rows = client.get(f"/api/v1/initiatives/{INIT}/gantt").json()["rows"]
+    lane = next(r for r in rows if r["kind"] == "entity-lane")
+    assert lane["title"] == "Tower A"            # resolved building name
+    assert lane["start_date"] == "2026-05-05" and lane["end_date"] == "2026-05-08"
+    tg = _row(rows, "TG")
+    assert tg["parent_id"] == lane["id"]         # task nested under the lane

@@ -2,9 +2,10 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   PanelLeftClose, Search, X, Plus, Trash2, FileText, FolderClosed,
-  ChevronRight, ChevronDown, CheckSquare, Square,
+  ChevronRight, ChevronDown, CheckSquare, Square, Star, Pin, Tag,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { cn } from "@/components/ui";
 import type { Page, Project } from "../_lib/types";
 
 const EXPANDED_KEY = "taskora_notebook_expanded_projects";
@@ -46,6 +47,10 @@ export default function NotebookNav({
   onCreateProject,
   onCollapse,
   onOpenTrash,
+  onTogglePin,
+  onToggleFavourite,
+  tagFilter = null,
+  onTagFilter,
 }: {
   projects: Project[];
   pages: Page[];
@@ -56,6 +61,10 @@ export default function NotebookNav({
   onCreateProject: () => void;
   onCollapse: () => void;
   onOpenTrash: () => void;
+  onTogglePin?: (page: Page) => void;
+  onToggleFavourite?: (page: Page) => void;
+  tagFilter?: string | null;
+  onTagFilter?: (tag: string | null) => void;
 }) {
   const [q, setQ] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -87,10 +96,22 @@ export default function NotebookNav({
     });
   };
 
+  // When a tag is active, the tree narrows to pages carrying it.
+  const visiblePages = useMemo(
+    () => (tagFilter ? pages.filter((p) => (p.tags ?? []).includes(tagFilter)) : pages),
+    [pages, tagFilter],
+  );
+
+  const allTags = useMemo(() => {
+    const s = new Set<string>();
+    for (const p of pages) for (const t of p.tags ?? []) s.add(t);
+    return Array.from(s).sort();
+  }, [pages]);
+
   // Index pages by project
   const pagesByProject = useMemo(() => {
     const m = new Map<string, Page[]>();
-    for (const p of pages) {
+    for (const p of visiblePages) {
       if (!p.project_id) continue;
       const arr = m.get(p.project_id) ?? [];
       arr.push(p);
@@ -98,16 +119,26 @@ export default function NotebookNav({
     }
     m.forEach((arr) => arr.sort(byUpdatedAtDesc));
     return m;
-  }, [pages]);
+  }, [visiblePages]);
 
   const orphans = useMemo(
-    () => pages.filter((p) => !p.project_id).sort(byUpdatedAtDesc),
-    [pages],
+    () => visiblePages.filter((p) => !p.project_id).sort(byUpdatedAtDesc),
+    [visiblePages],
   );
 
   const recent = useMemo(
-    () => [...pages].sort(byUpdatedAtDesc).slice(0, 5),
-    [pages],
+    () => [...visiblePages].sort(byUpdatedAtDesc).slice(0, 5),
+    [visiblePages],
+  );
+
+  const pinned = useMemo(
+    () => visiblePages.filter((p) => p.pinned).sort(byUpdatedAtDesc),
+    [visiblePages],
+  );
+
+  const favourites = useMemo(
+    () => visiblePages.filter((p) => p.favourite && !p.pinned).sort(byUpdatedAtDesc),
+    [visiblePages],
   );
 
   // Debounced backend search across titles + body + checklist. Needs ≥2
@@ -252,6 +283,69 @@ export default function NotebookNav({
         ) : (
           // ── Default tree ────────────────────────────────────────
           <>
+            {/* Active tag filter banner */}
+            {tagFilter && (
+              <button
+                type="button"
+                onClick={() => onTagFilter?.(null)}
+                className="mb-2 w-full flex items-center gap-1.5 rounded-md bg-brand-500/10 text-brand-700 px-2 py-1.5 text-[12px] font-medium hover:bg-brand-500/15"
+              >
+                <Tag className="w-3.5 h-3.5" /> #{tagFilter}
+                <X className="w-3.5 h-3.5 ml-auto" />
+              </button>
+            )}
+
+            {/* Tags — click to filter */}
+            {allTags.length > 0 && !tagFilter && (
+              <div className="mb-2">
+                <SectionHeader label="Tags" />
+                <div className="flex flex-wrap gap-1 px-1 pb-1">
+                  {allTags.map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => onTagFilter?.(t)}
+                      className="inline-flex items-center gap-0.5 rounded-full border border-line bg-surface px-2 py-0.5 text-[11px] text-fg-muted hover:text-fg hover:border-fg-subtle"
+                    >
+                      #{t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {pinned.length > 0 && (
+              <div className="mb-2">
+                <SectionHeader label="Pinned" />
+                {pinned.map((p) => (
+                  <PageItem
+                    key={p.id}
+                    page={p}
+                    active={p.id === activePageId}
+                    onClick={() => onSelectPage(p.id)}
+                    onTogglePin={onTogglePin}
+                    onToggleFavourite={onToggleFavourite}
+                  />
+                ))}
+              </div>
+            )}
+
+            {favourites.length > 0 && (
+              <div className="mb-2">
+                <SectionHeader label="Favourites" />
+                {favourites.map((p) => (
+                  <PageItem
+                    key={p.id}
+                    page={p}
+                    active={p.id === activePageId}
+                    onClick={() => onSelectPage(p.id)}
+                    onTogglePin={onTogglePin}
+                    onToggleFavourite={onToggleFavourite}
+                  />
+                ))}
+              </div>
+            )}
+
             {recent.length > 0 && (
               <div className="mb-2">
                 <SectionHeader label="Recent" />
@@ -261,6 +355,8 @@ export default function NotebookNav({
                     page={p}
                     active={p.id === activePageId}
                     onClick={() => onSelectPage(p.id)}
+                    onTogglePin={onTogglePin}
+                    onToggleFavourite={onToggleFavourite}
                   />
                 ))}
               </div>
@@ -310,6 +406,8 @@ export default function NotebookNav({
                                 page={p}
                                 active={p.id === activePageId}
                                 onClick={() => onSelectPage(p.id)}
+                                onTogglePin={onTogglePin}
+                                onToggleFavourite={onToggleFavourite}
                               />
                             ))
                           )}
@@ -330,6 +428,8 @@ export default function NotebookNav({
                     page={p}
                     active={p.id === activePageId}
                     onClick={() => onSelectPage(p.id)}
+                    onTogglePin={onTogglePin}
+                    onToggleFavourite={onToggleFavourite}
                   />
                 ))}
               </div>
@@ -345,6 +445,7 @@ export default function NotebookNav({
                     active={p.id === activePageId}
                     onClick={() => onSelectPage(p.id)}
                     rightLabel={p.follower_role === "editor" ? "edit" : "view"}
+                    shared
                   />
                 ))}
               </div>
@@ -387,29 +488,72 @@ function PageItem({
   active,
   onClick,
   rightLabel,
+  onTogglePin,
+  onToggleFavourite,
+  shared = false,
 }: {
   page: Page;
   active: boolean;
   onClick: () => void;
   rightLabel?: string;
+  onTogglePin?: (page: Page) => void;
+  onToggleFavourite?: (page: Page) => void;
+  shared?: boolean;
 }) {
   return (
-    <button
-      onClick={onClick}
-      className={`w-full text-left flex items-center gap-2 px-2 py-1.5 rounded-md text-sm truncate transition-colors ${
-        active ? "bg-ocean/10 text-ocean font-medium" : "text-fg-muted hover:bg-mist hover:text-fg"
-      }`}
+    <div
+      className={cn(
+        "group w-full flex items-center gap-1 px-2 py-1.5 rounded-md text-sm transition-colors relative",
+        // Shared-with-me pages get a violet left accent + tint so they stand
+        // apart from your own notes.
+        shared && "border-l-2 border-violet-400 bg-violet-50/40",
+        active ? (shared ? "bg-violet-100/70" : "bg-ocean/10") : "hover:bg-mist",
+      )}
     >
-      <span aria-hidden="true" className="w-4 flex items-center justify-center text-sm flex-shrink-0">
-        {page.icon || <FileText className={`w-3.5 h-3.5 ${active ? "text-ocean" : "text-fg-subtle"}`} />}
-      </span>
-      <span className="truncate flex-1">{page.title || "Untitled"}</span>
+      <button
+        onClick={onClick}
+        className={cn(
+          "flex items-center gap-2 flex-1 min-w-0 text-left",
+          active ? (shared ? "text-violet-700 font-medium" : "text-ocean font-medium") : "text-fg-muted group-hover:text-fg",
+        )}
+      >
+        <span aria-hidden="true" className="w-4 flex items-center justify-center text-sm flex-shrink-0">
+          {page.icon || <FileText className={`w-3.5 h-3.5 ${active ? (shared ? "text-violet-600" : "text-ocean") : "text-fg-subtle"}`} />}
+        </span>
+        <span className="truncate">{page.title || "Untitled"}</span>
+      </button>
       {rightLabel && (
         <span className={`text-[10px] uppercase tracking-wide flex-shrink-0 ${active ? "text-ocean/70" : "text-fg-subtle"}`}>
           {rightLabel}
         </span>
       )}
-    </button>
+      {onToggleFavourite && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onToggleFavourite(page); }}
+          title={page.favourite ? "Unfavourite" : "Favourite"}
+          aria-label={page.favourite ? "Unfavourite" : "Favourite"}
+          className={cn(
+            "p-0.5 rounded flex-shrink-0 transition-opacity",
+            page.favourite ? "text-amber-500" : "opacity-0 group-hover:opacity-100 text-fg-subtle hover:text-amber-500",
+          )}
+        >
+          <Star className="w-3.5 h-3.5" fill={page.favourite ? "currentColor" : "none"} />
+        </button>
+      )}
+      {onTogglePin && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onTogglePin(page); }}
+          title={page.pinned ? "Unpin" : "Pin to top"}
+          aria-label={page.pinned ? "Unpin" : "Pin to top"}
+          className={cn(
+            "p-0.5 rounded flex-shrink-0 transition-opacity",
+            page.pinned ? "text-ocean" : "opacity-0 group-hover:opacity-100 text-fg-subtle hover:text-ocean",
+          )}
+        >
+          <Pin className="w-3.5 h-3.5" fill={page.pinned ? "currentColor" : "none"} />
+        </button>
+      )}
+    </div>
   );
 }
 
