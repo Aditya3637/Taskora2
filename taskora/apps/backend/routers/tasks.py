@@ -645,6 +645,219 @@ def get_my_tasks_page(
     }
 
 
+# ── Work view: server-side query (filter + sort + group + search) ─────────────
+# Powers the redesigned Work surface. Unlike /my/page (which paginates first and
+# leaves filtering/search to the client over a single page), this evaluates the
+# WHOLE visible set, so filter/sort/group/search are correct across all 200-300
+# tasks. At that scale a full in-memory pass is cheap; only the returned page is
+# hydrated with entities/comments/watchers.
+_STATUS_RANK = {
+    "blocked": 0, "pending_decision": 1, "in_progress": 2,
+    "todo": 3, "backlog": 4, "done": 8, "archived": 9,
+}
+_PRIORITY_RANK = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
+
+
+class TaskFilters(BaseModel):
+    status: List[str] = []
+    priority: List[str] = []
+    assignee_ids: List[str] = []          # primary_stakeholder_id
+    unassigned: bool = False              # OR'd with assignee_ids
+    initiative_ids: List[str] = []
+    program_ids: List[str] = []           # resolved → initiative scope
+    entity_ids: List[str] = []            # building/client (tasks.entity_id OR task_entities)
+    search: Optional[str] = None          # case-insensitive, title + description
+    due: Optional[Literal["overdue", "today", "week", "none"]] = None
+    blocked: bool = False
+    archived: bool = False
+
+
+class TaskSort(BaseModel):
+    field: Literal["status", "priority", "due_date", "start_date", "created_at", "title"] = "created_at"
+    dir: Literal["asc", "desc"] = "desc"
+
+
+class TaskQueryBody(BaseModel):
+    business_id: Optional[str] = None
+    filters: TaskFilters = TaskFilters()
+    sort: List[TaskSort] = []
+    group_by: Literal["none", "initiative", "status", "assignee", "priority", "due"] = "none"
+    limit: int = 50
+    offset: int = 0
+
+
+def _due_bucket(due: Optional[str], status: Optional[str], today: str, week_end: str) -> str:
+    if not due:
+        return "none"
+    d = due[:10]
+    if status not in ("done", "archived") and d < today:
+        return "overdue"
+    if d == today:
+        return "today"
+    if d <= week_end:
+        return "week"
+    return "later"
+
+
+def _sort_value(t: dict, field: str):
+    if field == "status":
+        return _STATUS_RANK.get(t.get("status"), 5)
+    if field == "priority":
+        return _PRIORITY_RANK.get(t.get("priority"), 9)
+    if field == "title":
+        return (t.get("title") or "").lower()
+    # date fields — coerce missing to far-future so undated rows sit last in asc.
+    return (t.get(field) or "9999-12-31")[:10] if t.get(field) else "9999-12-31"
+
+
+@router.post("/query")
+def query_tasks(
+    body: TaskQueryBody,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Filter/sort/group/search the caller's visible tasks across the whole
+    workspace (not a single page). Returns the requested page plus the total and,
+    when grouped, a per-group rollup so the client can render group headers
+    without loading every row."""
+    uid = user["id"]
+    business_id = _user_business_id(sb, uid, prefer=body.business_id)
+    empty = {"items": [], "total": 0, "groups": [], "has_more": False}
+    if not business_id:
+        return empty
+    visible = _visible_task_ids_for(sb, business_id, uid)
+    f = body.filters
+
+    # initiative scope = explicit ids ∪ initiatives under the requested programs
+    init_scope: set = set(f.initiative_ids)
+    if f.program_ids:
+        prog_inits = (
+            sb.table("initiatives").select("id")
+            .eq("business_id", business_id).in_("program_id", f.program_ids).execute().data
+        )
+        init_scope |= {r["id"] for r in prog_inits}
+
+    if visible is None:  # admin/owner → every task in the business
+        biz_inits = [r["id"] for r in sb.table("initiatives").select("id")
+                     .eq("business_id", business_id).execute().data]
+        if not biz_inits:
+            return empty
+        q = sb.table("tasks").select("*").in_("initiative_id", biz_inits)
+    else:
+        if not visible:
+            return empty
+        q = sb.table("tasks").select("*").in_("id", list(visible))
+
+    # server-side filters PostgREST handles cleanly
+    q = q.not_.is_("archived_at", "null") if f.archived else q.is_("archived_at", "null")
+    if f.blocked:
+        q = q.eq("status", "blocked")
+    elif f.status:
+        q = q.in_("status", f.status)
+    if f.priority:
+        q = q.in_("priority", f.priority)
+    if init_scope:
+        q = q.in_("initiative_id", list(init_scope))
+    rows = q.limit(2000).execute().data
+
+    # in-memory filters (small N): assignee, search, entity membership, due
+    if f.assignee_ids or f.unassigned:
+        aset = set(f.assignee_ids)
+        rows = [t for t in rows if (t.get("primary_stakeholder_id") in aset)
+                or (f.unassigned and not t.get("primary_stakeholder_id"))]
+    if f.search:
+        s = f.search.strip().lower()
+        rows = [t for t in rows
+                if s in (t.get("title") or "").lower()
+                or s in (t.get("description") or "").lower()]
+    if f.entity_ids:
+        eset = set(f.entity_ids)
+        te = (sb.table("task_entities").select("task_id, entity_id")
+              .in_("entity_id", list(eset)).execute().data)
+        te_tasks = {r["task_id"] for r in te}
+        rows = [t for t in rows if t.get("entity_id") in eset or t["id"] in te_tasks]
+
+    today = date.today().isoformat()
+    week_end = (date.today() + timedelta(days=7)).isoformat()
+    if f.due:
+        rows = [t for t in rows
+                if _due_bucket(t.get("due_date"), t.get("status"), today, week_end) == f.due]
+
+    total = len(rows)
+
+    # multi-sort: stable, apply keys right-to-left (default newest-first)
+    sort_keys = body.sort or [TaskSort(field="created_at", dir="desc")]
+    for sk in reversed(sort_keys):
+        rows.sort(key=lambda t, fld=sk.field: _sort_value(t, fld), reverse=(sk.dir == "desc"))
+
+    # grouping: compute key/label per row, summarise, and order rows by group
+    groups: list = []
+    if body.group_by != "none":
+        rows, groups = _group_rows(sb, rows, body.group_by, today, week_end)
+
+    page = rows[body.offset: body.offset + body.limit]
+    return {
+        "items": _hydrate_tasks_with_entities(sb, page),
+        "total": total,
+        "groups": groups,
+        "has_more": body.offset + body.limit < total,
+    }
+
+
+def _group_rows(sb: Client, rows: list, group_by: str, today: str, week_end: str):
+    """Return (rows-ordered-by-group, [{key,label,count,done} ...])."""
+    def key_of(t: dict):
+        if group_by == "initiative":
+            return t.get("initiative_id") or "—"
+        if group_by == "status":
+            return t.get("status") or "—"
+        if group_by == "assignee":
+            return t.get("primary_stakeholder_id") or "__unassigned__"
+        if group_by == "priority":
+            return t.get("priority") or "—"
+        if group_by == "due":
+            return _due_bucket(t.get("due_date"), t.get("status"), today, week_end)
+        return "—"
+
+    # label lookups for id-based groups
+    label_map: dict = {}
+    if group_by == "initiative":
+        ids = list({key_of(t) for t in rows}) or []
+        for r in (sb.table("initiatives").select("id, name").in_("id", ids).execute().data if ids else []):
+            label_map[r["id"]] = r.get("name") or "Untitled"
+    elif group_by == "assignee":
+        ids = [k for k in {key_of(t) for t in rows} if k != "__unassigned__"]
+        for r in (sb.table("users").select("id, name").in_("id", ids).execute().data if ids else []):
+            label_map[r["id"]] = r.get("name") or "Member"
+        label_map["__unassigned__"] = "Unassigned"
+
+    # group order
+    if group_by == "status":
+        rank = lambda k: _STATUS_RANK.get(k, 5)
+    elif group_by == "priority":
+        rank = lambda k: _PRIORITY_RANK.get(k, 9)
+    elif group_by == "due":
+        order = {"overdue": 0, "today": 1, "week": 2, "later": 3, "none": 4}
+        rank = lambda k: order.get(k, 9)
+    else:
+        rank = lambda k: label_map.get(k, str(k)).lower()
+
+    summary: dict = {}
+    for t in rows:
+        k = key_of(t)
+        g = summary.setdefault(k, {"key": k, "count": 0, "done": 0})
+        g["count"] += 1
+        if t.get("status") == "done":
+            g["done"] += 1
+    groups = sorted(summary.values(), key=lambda g: rank(g["key"]))
+    for g in groups:
+        g["label"] = label_map.get(g["key"], g["key"] if g["key"] != "—" else "—")
+
+    group_rank = {g["key"]: i for i, g in enumerate(groups)}
+    rows = sorted(rows, key=lambda t: group_rank.get(key_of(t), 999))
+    return rows, groups
+
+
 # Registered at both "" and "/" because the Vercel/Next.js rewrite strips the
 # trailing slash, so the proxied request arrives as POST /api/v1/tasks (no
 # slash) and FastAPI's slash-redirect does not survive the proxy.
