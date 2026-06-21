@@ -31,11 +31,6 @@ const STATUS_DOT: Record<string, string> = {
   pending_decision: "bg-amber-500", blocked: "bg-red-500", done: "bg-emerald-500",
   reopened: "bg-red-500", archived: "bg-gray-300",
 };
-const PRIORITY_CHIP: Record<string, string> = {
-  urgent: "bg-red-50 text-red-700", critical: "bg-red-100 text-red-800",
-  high: "bg-amber-50 text-amber-700", medium: "bg-slate-50 text-slate-600",
-  low: "bg-slate-50 text-slate-400",
-};
 const EDITABLE_STATUSES = ["todo", "in_progress", "pending_decision", "blocked", "done"];
 const NON_DONE = ["todo", "in_progress", "pending_decision", "blocked", "backlog", "reopened"];
 
@@ -170,9 +165,11 @@ export function WorkTable({
     return () => io.disconnect();
   }, [hasMore, loading, loadingMore, items.length, fetchPage]);
 
-  async function setStatus(id: string, status: string) {
-    setItems((prev) => prev.map((t) => (t.id === id ? { ...t, status } : t)));
-    try { await apiFetch(`/api/v1/tasks/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }); }
+  // Optimistic inline edit (status / priority / owner / due). On failure we
+  // refetch from scratch to resync.
+  async function patchTask(id: string, body: Record<string, any>) {
+    setItems((prev) => prev.map((t) => (t.id === id ? { ...t, ...body } : t)));
+    try { await apiFetch(`/api/v1/tasks/${id}`, { method: "PATCH", body: JSON.stringify(body) }); }
     catch { void fetchPage(true, 0); }
   }
 
@@ -279,7 +276,7 @@ export function WorkTable({
                     onChange={() => setSelected((s) => { const n = new Set(s); n.has(t.id) ? n.delete(t.id) : n.add(t.id); return n; })}
                     className={`accent-taskora-red ${selected.has(t.id) ? "" : "opacity-0 group-hover:opacity-100"}`} />
                   <div onClick={(e) => e.stopPropagation()}>
-                    <StatusPill value={t.status} onChange={(s) => setStatus(t.id, s)} />
+                    <StatusPill value={t.status} onChange={(s) => patchTask(t.id, { status: s })} />
                   </div>
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5 min-w-0">
@@ -295,13 +292,19 @@ export function WorkTable({
                       <div className="text-[11px] text-steel/60 truncate">{initName(t.initiative_id)}</div>
                     )}
                   </div>
-                  <span className={`justify-self-start rounded px-1.5 py-0.5 text-[11px] font-medium capitalize ${PRIORITY_CHIP[t.priority] ?? "text-steel/50"}`}>
-                    {t.priority}
-                  </span>
-                  <span className="text-[12px] text-steel truncate">{memberName(t.primary_stakeholder_id)}</span>
-                  <span className={`text-[12px] tabular-nums ${isOverdue(t.due_date, t.status) ? "text-red-600 font-medium" : "text-steel"}`}>
-                    {fmtDue(t.due_date)}
-                  </span>
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <PriorityPill value={t.priority} onChange={(p) => patchTask(t.id, { priority: p })} />
+                  </div>
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <OwnerSelect value={t.primary_stakeholder_id} members={members}
+                      onChange={(uid) => patchTask(t.id, { primary_stakeholder_id: uid })} />
+                  </div>
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <input type="date" value={(t.due_date || "").slice(0, 10)}
+                      onChange={(e) => patchTask(t.id, { due_date: e.target.value || null })}
+                      className={`w-full bg-transparent text-[12px] tabular-nums rounded px-1 py-0.5 border border-transparent hover:border-pebble focus:border-ocean focus:outline-none cursor-pointer ${
+                        isOverdue(t.due_date, t.status) ? "text-red-600 font-medium" : "text-steel"}`} />
+                  </div>
                 </div>
               </div>
             );
@@ -339,6 +342,38 @@ function StatusPill({ value, onChange }: { value: string; onChange: (s: string) 
         {EDITABLE_STATUSES.map((s) => <option key={s} value={s}>{STATUS_LABELS[s]}</option>)}
       </select>
     </div>
+  );
+}
+
+const PRIORITIES = ["urgent", "high", "medium", "low"];
+const PRIORITY_DOT: Record<string, string> = {
+  urgent: "bg-red-500", critical: "bg-red-600", high: "bg-amber-500",
+  medium: "bg-blue-400", low: "bg-gray-300",
+};
+
+function PriorityPill({ value, onChange }: { value: string; onChange: (p: string) => void }) {
+  const known = PRIORITIES.includes(value);
+  return (
+    <div className="relative inline-flex items-center">
+      <span className={`absolute left-2 h-2 w-2 rounded-full pointer-events-none ${PRIORITY_DOT[value] ?? "bg-gray-300"}`} />
+      <select value={known ? value : ""} onChange={(e) => onChange(e.target.value)}
+        className="appearance-none pl-6 pr-1 h-7 w-full rounded-md border border-transparent bg-transparent text-[11.5px] capitalize text-steel hover:border-pebble focus:outline-none focus:border-ocean cursor-pointer">
+        {!known && <option value="">{value}</option>}
+        {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+      </select>
+    </div>
+  );
+}
+
+function OwnerSelect({ value, members, onChange }: {
+  value?: string | null; members: Member[]; onChange: (uid: string | null) => void;
+}) {
+  return (
+    <select value={value || ""} onChange={(e) => onChange(e.target.value || null)}
+      className="w-full appearance-none bg-transparent text-[12px] text-steel truncate rounded px-1 h-7 border border-transparent hover:border-pebble focus:border-ocean focus:outline-none cursor-pointer">
+      <option value="">Unassigned</option>
+      {members.map((m) => <option key={m.user_id} value={m.user_id}>{m.name || m.email || "Member"}</option>)}
+    </select>
   );
 }
 

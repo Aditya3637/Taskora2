@@ -131,6 +131,7 @@ class TaskUpdate(BaseModel):
     title: Optional[str] = None
     status: Optional[str] = None
     priority: Optional[str] = None
+    primary_stakeholder_id: Optional[str] = None  # reassign owner (null = unassign)
     start_date: Optional[date] = None
     due_date: Optional[date] = None
     description: Optional[str] = None
@@ -1130,10 +1131,11 @@ def update_task(
     # dates on tasks they didn't personally own.
     _assert_task_write(sb, task_id, user["id"])
     # Snapshot current state BEFORE the update so we can detect transitions.
-    prior = sb.table("tasks").select("start_date, due_date, status, closed_at").eq("id", task_id).execute().data
+    prior = sb.table("tasks").select("start_date, due_date, status, closed_at, primary_stakeholder_id").eq("id", task_id).execute().data
     prior_due_str = prior[0].get("due_date") if prior else None
     prior_start_str = prior[0].get("start_date") if prior else None
     prior_status = prior[0].get("status") if prior else None
+    prior_owner = prior[0].get("primary_stakeholder_id") if prior else None
 
     # Distinguish "field absent" from "field explicitly null" so the sheet
     # can clear description. model_fields_set is the only way to tell
@@ -1155,6 +1157,17 @@ def update_task(
             payload["blocked_since"] = None
     if "priority" in set_fields and body.priority is not None:
         payload["priority"] = body.priority
+    # Reassign owner inline. A non-null target must be a workspace member (so
+    # they gain visibility); null unassigns. The new owner is notified below.
+    notify_new_owner: Optional[str] = None
+    if "primary_stakeholder_id" in set_fields:
+        if body.primary_stakeholder_id:
+            _assert_target_is_member(sb, task_id, body.primary_stakeholder_id)
+            payload["primary_stakeholder_id"] = body.primary_stakeholder_id
+            if body.primary_stakeholder_id != prior_owner:
+                notify_new_owner = body.primary_stakeholder_id
+        else:
+            payload["primary_stakeholder_id"] = None
     # Dates are optional (068) — clearing to NULL is allowed (undated tray).
     if "start_date" in set_fields:
         payload["start_date"] = body.start_date.isoformat() if body.start_date else None
@@ -1195,6 +1208,16 @@ def update_task(
 
     result = sb.table("tasks").update(payload).eq("id", task_id).execute()
     updated = result.data[0] if result.data else {}
+
+    # Tell the newly-assigned owner (inline reassign), mirroring add_stakeholder.
+    if notify_new_owner:
+        _trow = sb.table("tasks").select("title").eq("id", task_id).execute().data
+        notify(
+            sb, type="assigned", business_id=_task_business_id(sb, task_id),
+            actor_id=user["id"], recipients=[notify_new_owner],
+            title=f"You were assigned “{(_trow[0].get('title') if _trow else None) or 'a task'}”",
+            entity_type="task", entity_id=task_id,
+        )
 
     # Fire workflow notifications on status transitions — parity with the
     # /status endpoint, since the task drawer saves through this PATCH.

@@ -115,6 +115,53 @@ def test_update_task_status_per_entity():
         app.dependency_overrides.clear()
 
 
+def _reassign_store():
+    return {
+        "users": [
+            {"id": "user-123", "name": "Me", "email": "me@x.io"},
+            {"id": "u-2", "name": "Two", "email": "t@x.io"},
+        ],
+        "business_members": [
+            {"business_id": "biz-456", "user_id": "user-123", "role": "admin"},
+            {"business_id": "biz-456", "user_id": "u-2", "role": "member"},
+        ],
+        "initiatives": [{"id": "init-789", "business_id": "biz-456"}],
+        "tasks": [{"id": "t1", "initiative_id": "init-789", "primary_stakeholder_id": "user-123",
+                   "status": "todo", "priority": "medium", "title": "X",
+                   "start_date": None, "due_date": None}],
+        "task_stakeholders": [{"task_id": "t1", "user_id": "user-123", "role": "primary"}],
+        "messages": [], "platform_events": [],
+    }
+
+
+def test_patch_reassigns_owner_to_member_and_notifies():
+    store = _reassign_store()
+    sb = FakeSupabase(store)
+    app.dependency_overrides[get_current_user] = override_auth
+    app.dependency_overrides[get_supabase] = lambda: sb
+    try:
+        r = client.patch("/api/v1/tasks/t1", json={"primary_stakeholder_id": "u-2"})
+        assert r.status_code == 200, r.text
+        assert r.json()["primary_stakeholder_id"] == "u-2"
+        assert any(m.get("user_id") == "u-2" and m.get("template") == "assigned"
+                   for m in store["messages"])
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_patch_reassign_owner_rejects_non_member():
+    store = _reassign_store()
+    sb = FakeSupabase(store)
+    app.dependency_overrides[get_current_user] = override_auth
+    app.dependency_overrides[get_supabase] = lambda: sb
+    try:
+        r = client.patch("/api/v1/tasks/t1", json={"primary_stakeholder_id": "stranger"})
+        assert r.status_code == 400, r.text
+        assert store["tasks"][0]["primary_stakeholder_id"] == "user-123"  # unchanged
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_get_task_not_found_returns_404():
     mock_sb = MagicMock()
     mock_sb.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
