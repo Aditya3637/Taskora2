@@ -55,6 +55,9 @@ const GROUPS = [
   { key: "priority", label: "Priority" }, { key: "due", label: "Due" },
 ];
 const PAGE = 50;
+// Per-user persisted layout (view/sort/group/density). Keyed by user id so a
+// shared browser never leaks one user's layout to another.
+const PREFS_KEY = "taskora_worktable_prefs_v1";
 const COLS =
   "grid grid-cols-[20px_136px_minmax(0,1fr)_84px_128px_92px] gap-2 items-center";
 
@@ -91,6 +94,7 @@ export function WorkTable({
   const [sortKey, setSortKey] = useState("recent");
   const [groupBy, setGroupBy] = useState("none");
   const [compact, setCompact] = useState(false);
+  const [prefsHydrated, setPrefsHydrated] = useState(false);
 
   const [items, setItems] = useState<WorkTask[]>([]);
   const [total, setTotal] = useState(0);
@@ -115,6 +119,34 @@ export function WorkTable({
     const t = setTimeout(() => setDebounced(search.trim()), 250);
     return () => clearTimeout(t);
   }, [search]);
+
+  // Hydrate the saved layout once on mount, validating each value against the
+  // current option sets so a stale/renamed key can't crash buildBody's non-null
+  // .find(). The first fetch is gated on this (below) so we restore the view in
+  // one fetch instead of fetching defaults then immediately refetching.
+  useEffect(() => {
+    if (!currentUserId) { setPrefsHydrated(true); return; }
+    try {
+      const p = JSON.parse(localStorage.getItem(`${PREFS_KEY}:${currentUserId}`) || "null");
+      if (p) {
+        if (VIEWS.some((v) => v.key === p.viewKey)) setViewKey(p.viewKey);
+        if (SORTS.some((s) => s.key === p.sortKey)) setSortKey(p.sortKey);
+        if (GROUPS.some((g) => g.key === p.groupBy)) setGroupBy(p.groupBy);
+        if (typeof p.compact === "boolean") setCompact(p.compact);
+      }
+    } catch { /* corrupt storage — fall through with defaults */ }
+    setPrefsHydrated(true);
+  }, [currentUserId]);
+
+  useEffect(() => {
+    if (!prefsHydrated || !currentUserId) return;
+    try {
+      localStorage.setItem(
+        `${PREFS_KEY}:${currentUserId}`,
+        JSON.stringify({ viewKey, sortKey, groupBy, compact }),
+      );
+    } catch { /* quota or storage disabled — ignore */ }
+  }, [prefsHydrated, currentUserId, viewKey, sortKey, groupBy, compact]);
 
   const buildBody = useCallback((offset: number) => {
     const view = VIEWS.find((v) => v.key === viewKey)!;
@@ -145,11 +177,13 @@ export function WorkTable({
     }
   }, [buildBody]);
 
-  // Refetch from scratch whenever the query shape changes.
+  // Refetch from scratch whenever the query shape changes. Held until the
+  // persisted layout has hydrated so the first query uses the restored view.
   useEffect(() => {
+    if (!prefsHydrated) return;
     setSelected(new Set());
     void fetchPage(true, 0);
-  }, [fetchPage]);
+  }, [fetchPage, prefsHydrated]);
 
   // Infinite scroll.
   const sentinel = useRef<HTMLDivElement>(null);
