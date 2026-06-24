@@ -104,6 +104,12 @@ export function WorkTable({
   const [hasMore, setHasMore] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkStatus, setBulkStatus] = useState("");
+  // Keyboard-driven active row (j/k navigate, x select, e/Enter open). Index
+  // into `items`; -1 = none. Mirrored into a ref so the key handler reads the
+  // live value without re-binding on every move.
+  const [activeIdx, setActiveIdx] = useState(-1);
+  const activeIdxRef = useRef(-1);
+  useEffect(() => { activeIdxRef.current = activeIdx; }, [activeIdx]);
 
   const memberName = useMemo(() => {
     const m = new Map(members.map((x) => [x.user_id, x.name || x.email || "Member"]));
@@ -182,10 +188,12 @@ export function WorkTable({
   useEffect(() => {
     if (!prefsHydrated) return;
     setSelected(new Set());
+    setActiveIdx(-1);
     void fetchPage(true, 0);
   }, [fetchPage, prefsHydrated]);
 
   // Infinite scroll.
+  const scrollBox = useRef<HTMLDivElement>(null);
   const sentinel = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = sentinel.current;
@@ -198,6 +206,53 @@ export function WorkTable({
     io.observe(el);
     return () => io.disconnect();
   }, [hasMore, loading, loadingMore, items.length, fetchPage]);
+
+  // Keyboard nav: j/↓ & k/↑ move the active row, x toggles its selection,
+  // e/Enter opens it, Esc clears. Ignored while typing in a field or when a
+  // dialog (e.g. the task detail sheet) is open so it can't drive the list
+  // underneath. Re-binds only when items/onOpenTask change (j/k use functional
+  // setState; x/e read the live index from activeIdxRef).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "SELECT" ||
+        el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (document.querySelector('[role="dialog"]')) return;
+      const n = items.length;
+      if (n === 0) return;
+      switch (e.key) {
+        case "j": case "ArrowDown":
+          e.preventDefault(); setActiveIdx((i) => Math.min(i < 0 ? 0 : i + 1, n - 1)); break;
+        case "k": case "ArrowUp":
+          e.preventDefault(); setActiveIdx((i) => Math.max(i <= 0 ? 0 : i - 1, 0)); break;
+        case "x": {
+          const i = activeIdxRef.current;
+          if (i < 0 || i >= n) break;
+          e.preventDefault();
+          const id = items[i].id;
+          setSelected((s) => { const m = new Set(s); m.has(id) ? m.delete(id) : m.add(id); return m; });
+          break;
+        }
+        case "e": case "Enter": {
+          const i = activeIdxRef.current;
+          if (i < 0 || i >= n) break;
+          e.preventDefault(); onOpenTask(items[i]);
+          break;
+        }
+        case "Escape": setActiveIdx(-1); break;
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [items, onOpenTask]);
+
+  // Keep the active row in view as j/k walk past the viewport edge.
+  useEffect(() => {
+    if (activeIdx < 0) return;
+    scrollBox.current?.querySelector('[data-active="true"]')
+      ?.scrollIntoView({ block: "nearest" });
+  }, [activeIdx]);
 
   // Optimistic inline edit (status / priority / owner / due). On failure we
   // refetch from scratch to resync.
@@ -258,7 +313,11 @@ export function WorkTable({
           className="h-8 px-2.5 rounded-lg border border-pebble text-[12px] text-steel hover:text-midnight">
           {compact ? "Comfortable" : "Compact"}
         </button>
-        <span className="text-[12px] text-steel/70 ml-auto tabular-nums">
+        <span className="hidden lg:inline text-[11px] text-steel/45 ml-auto"
+          title="Keyboard: j / k move · e or Enter open · x select · Esc clear">
+          <kbd className="font-sans">j</kbd>/<kbd className="font-sans">k</kbd> move · <kbd className="font-sans">e</kbd> open · <kbd className="font-sans">x</kbd> select
+        </span>
+        <span className="text-[12px] text-steel/70 tabular-nums lg:ml-3 ml-auto">
           {loading ? "…" : `${items.length} of ${total}`}
         </span>
       </div>
@@ -270,13 +329,13 @@ export function WorkTable({
       </div>
 
       {/* Rows */}
-      <div className="flex-1 overflow-y-auto border-x border-b border-pebble rounded-b-lg">
+      <div ref={scrollBox} className="flex-1 overflow-y-auto border-x border-b border-pebble rounded-b-lg">
         {loading ? (
           <div className="p-8 text-center text-[13px] text-steel">Loading…</div>
         ) : items.length === 0 ? (
           <div className="p-12 text-center text-[13px] text-steel">No tasks match this view.</div>
         ) : (
-          items.map((t) => {
+          items.map((t, i) => {
             const gk = groupBy !== "none" ? groupKeyOf(t) : null;
             const header = gk !== null && gk !== lastGroup ? gk : null;
             lastGroup = gk;
@@ -303,8 +362,10 @@ export function WorkTable({
                     )}
                   </div>
                 )}
-                <div className={`${COLS} px-2.5 ${rowPad} border-t border-pebble/50 hover:bg-mist/30 group cursor-pointer`}
-                  onClick={() => onOpenTask(t)}>
+                <div data-active={i === activeIdx ? "true" : undefined}
+                  className={`${COLS} px-2.5 ${rowPad} border-t border-pebble/50 group cursor-pointer ${
+                    i === activeIdx ? "bg-ocean/10 ring-1 ring-inset ring-ocean/40" : "hover:bg-mist/30"}`}
+                  onClick={() => { setActiveIdx(i); onOpenTask(t); }}>
                   <input type="checkbox" checked={selected.has(t.id)}
                     onClick={(e) => e.stopPropagation()}
                     onChange={() => setSelected((s) => { const n = new Set(s); n.has(t.id) ? n.delete(t.id) : n.add(t.id); return n; })}
