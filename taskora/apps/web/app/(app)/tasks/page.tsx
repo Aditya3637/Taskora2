@@ -4423,6 +4423,12 @@ function TasksPageInner() {
   const PAGE_SIZE = 20;
 
   const [tasks, setTasks] = useState<Task[]>([]);
+  // Board view is server-driven via /tasks/query (like the Table view) so the
+  // kanban reflects the WHOLE matching set, not just the loaded /my/page slice.
+  // List view still uses the paginated `tasks` above (retired only once Board
+  // reaches parity in QA).
+  const [boardTasks, setBoardTasks] = useState<Task[]>([]);
+  const [boardLoading, setBoardLoading] = useState(false);
   // Archived tasks across the workspace — loaded once and grouped per
   // initiative so each group's "show archived" toggle reveals its own.
   const [archivedTasks, setArchivedTasks] = useState<Task[]>([]);
@@ -4628,6 +4634,54 @@ function TasksPageInner() {
     }
   }, [filtersHydrated, search, programFilter, ownerFilter, filter]);
 
+  // Board view: server-driven dataset via /tasks/query. Debounce the search
+  // (the legacy toolbar search is instant/client-side; the server query isn't)
+  // and only fetch while the Board is actually showing.
+  const [boardSearch, setBoardSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setBoardSearch(search.trim()), 250);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  useEffect(() => {
+    if (viewMode !== "board" || !filtersHydrated || !businessId) return;
+    let cancelled = false;
+    (async () => {
+      setBoardLoading(true);
+      // Map the legacy filter toolbar onto the /tasks/query body so the board
+      // matches what List/Table would show for the same filters.
+      const f: Record<string, unknown> = {};
+      if (filter !== "All") f.status = [filter];
+      if (boardSearch) f.search = boardSearch;
+      if (programFilter) f.program_ids = [programFilter];
+      if (ownerFilter === "__me__") f.assignee_ids = [currentUserId];
+      else if (ownerFilter) f.assignee_ids = [ownerFilter];
+      try {
+        const all: Task[] = [];
+        let offset = 0;
+        // Pull every matching task (bounded) — the board needs all columns, not
+        // a single page. 200/page covers the 200-300/company design point in 1-2
+        // round trips; the cap guards a pathological workspace.
+        for (let i = 0; i < 25; i++) {
+          const res = await apiFetch("/api/v1/tasks/query", {
+            method: "POST",
+            body: JSON.stringify({ business_id: businessId, filters: f, group_by: "none", limit: 200, offset }),
+          });
+          const items: Task[] = Array.isArray(res?.items) ? (res.items as Task[]) : [];
+          all.push(...items);
+          if (!res?.has_more || items.length === 0) break;
+          offset += items.length;
+        }
+        if (!cancelled) setBoardTasks(all);
+      } catch {
+        if (!cancelled) setBoardTasks([]);
+      } finally {
+        if (!cancelled) setBoardLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [viewMode, filtersHydrated, businessId, filter, boardSearch, programFilter, ownerFilter, currentUserId]);
+
   // Hydrate expanded-group state from localStorage. If there's no entry
   // yet (first-ever visit), leave the Set empty — the auto-expand effect
   // below will pick the first non-empty group once data arrives.
@@ -4737,22 +4791,21 @@ function TasksPageInner() {
   }
 
   function handleStatusChange(taskId: string, newStatus: string) {
-    setTasks((prev) =>
-      prev.map((t) =>
-        t.id === taskId
-          ? {
-              ...t,
-              status: newStatus,
-              // Mirror the backend's closure stamp optimistically; the next
-              // page load replaces this with the exact server timestamp.
-              closed_at:
-                newStatus === "done"
-                  ? t.closed_at ?? new Date().toISOString()
-                  : null,
-            }
-          : t
-      )
-    );
+    const apply = (t: Task) =>
+      t.id === taskId
+        ? {
+            ...t,
+            status: newStatus,
+            // Mirror the backend's closure stamp optimistically; the next
+            // page load replaces this with the exact server timestamp.
+            closed_at:
+              newStatus === "done"
+                ? t.closed_at ?? new Date().toISOString()
+                : null,
+          }
+        : t;
+    setTasks((prev) => prev.map(apply));
+    setBoardTasks((prev) => prev.map(apply));
   }
 
   // Optimistic delete
@@ -5183,15 +5236,20 @@ function TasksPageInner() {
           </div>
         )}
 
-        {/* Board view */}
-        {!loading && !error && viewMode === "board" &&
-          (displayInitiativeIds.length > 0 || unlinkedTasks.length > 0) && (
+        {/* Board view — server-driven via /tasks/query (whole matching set). */}
+        {!loading && !error && viewMode === "board" && (
+          boardLoading && boardTasks.length === 0 ? (
+            <div className="p-8 text-center text-[13px] text-steel">Loading…</div>
+          ) : boardTasks.length === 0 ? (
+            <div className="p-12 text-center text-[13px] text-steel">No tasks match these filters.</div>
+          ) : (
             <TaskBoard
-              tasks={[...Object.values(tasksByInitiative).flat(), ...unlinkedTasks]}
+              tasks={boardTasks}
               onStatusChange={handleStatusChange}
               onOpenSheet={setSheetScope}
             />
-          )}
+          )
+        )}
 
         {/* Grouped tasks (list view) */}
         {!loading &&
