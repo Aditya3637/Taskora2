@@ -1,10 +1,13 @@
 from typing import List, Literal, Optional
 from datetime import date, datetime, timezone
+from uuid import uuid4
+import re as _re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from supabase import Client
 from pydantic import BaseModel
 from auth import get_current_user
+from config import get_settings, Settings
 from deps import (
     get_supabase, require_member, require_admin_or_owner, get_member_role,
     is_admin_or_owner, aligned_initiative_ids, follower_initiative_ids,
@@ -30,22 +33,17 @@ class InitiativeCreate(BaseModel):
     impact: Optional[str] = None
     impact_metric: Optional[str] = None
     impact_category: Optional[str] = "other"
-    # Mandatory (056): every initiative occupies a real span on the program
-    # timeline, and target_end_date bounds its tasks/subtasks.
-    start_date: date
-    target_end_date: date
+    # Optional (068): dates may be omitted; undated initiatives land in the
+    # Roadmap undated tray rather than blocking creation.
+    start_date: Optional[date] = None
+    target_end_date: Optional[date] = None
     date_mode: Literal["uniform", "per_entity"] = "uniform"
     entities: List[EntityAssignment] = []
 
 
-def _validate_initiative_dates(start: date, end: date) -> None:
-    """Both dates are mandatory and end must not precede start."""
-    if start is None or end is None:
-        raise HTTPException(
-            status_code=422,
-            detail="start_date and target_end_date are required",
-        )
-    if end < start:
+def _validate_initiative_dates(start: Optional[date], end: Optional[date]) -> None:
+    """Dates are optional (068). Only enforce ordering when BOTH are present."""
+    if start is not None and end is not None and end < start:
         raise HTTPException(
             status_code=422,
             detail="target_end_date cannot be before start_date",
@@ -137,6 +135,9 @@ def create_initiative(
         "impact_category": body.impact_category or "other",
         "start_date": body.start_date.isoformat() if body.start_date else None,
         "target_end_date": body.target_end_date.isoformat() if body.target_end_date else None,
+        # Baseline snapshot at creation (G5) — frozen plan for drift tracking.
+        "baseline_start_date": body.start_date.isoformat() if body.start_date else None,
+        "baseline_end_date": body.target_end_date.isoformat() if body.target_end_date else None,
         "date_mode": body.date_mode,
     }).execute()
 
@@ -817,6 +818,143 @@ def list_initiative_attachments(
     return attachments
 
 
+# ── Initiative-level files (deck: attachments separate from doc files) ───────
+def _safe_att_name(name: str) -> str:
+    base = _re.sub(r"[^A-Za-z0-9._-]", "_", (name or "file").strip()) or "file"
+    return base[:120]
+
+
+def _init_att_prefix(business_id: str, initiative_id: str) -> str:
+    return f"initiative/{business_id}/{initiative_id}/"
+
+
+class InitAttSignIn(BaseModel):
+    file_name: str
+    content_type: Optional[str] = None
+
+
+class InitAttRecordIn(BaseModel):
+    path: str
+    file_name: str
+    file_size_bytes: Optional[int] = None
+
+
+@router.get("/{initiative_id}/files")
+def list_initiative_files(
+    initiative_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Files attached directly to the initiative (not its tasks/docs)."""
+    initiative = _get_initiative_or_404(sb, initiative_id)
+    require_member(sb, initiative["business_id"], user["id"])
+    rows = (
+        sb.table("attachments")
+        .select("id, file_name, file_size_bytes, created_at")
+        .eq("initiative_id", initiative_id).order("created_at").execute().data
+    )
+    return rows
+
+
+@router.post("/{initiative_id}/files/sign")
+def sign_initiative_file(
+    initiative_id: str,
+    body: InitAttSignIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    initiative = _get_initiative_or_404(sb, initiative_id)
+    require_member(sb, initiative["business_id"], user["id"])
+    path = f"{_init_att_prefix(initiative['business_id'], initiative_id)}{uuid4().hex}-{_safe_att_name(body.file_name)}"
+    try:
+        signed = sb.storage.from_(settings.workspace_docs_bucket).create_signed_upload_url(path)
+    except Exception:
+        raise HTTPException(status_code=503, detail="File storage is not available")
+    return {
+        "path": path,
+        "token": signed.get("token"),
+        "signed_url": signed.get("signed_url") or signed.get("signedURL"),
+        "bucket": settings.workspace_docs_bucket,
+        "max_bytes": settings.doc_upload_max_bytes,
+    }
+
+
+@router.post("/{initiative_id}/files", status_code=201)
+def record_initiative_file(
+    initiative_id: str,
+    body: InitAttRecordIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    initiative = _get_initiative_or_404(sb, initiative_id)
+    require_member(sb, initiative["business_id"], user["id"])
+    if body.file_size_bytes and body.file_size_bytes > settings.doc_upload_max_bytes:
+        raise HTTPException(status_code=413, detail="File exceeds the size limit")
+    prefix = _init_att_prefix(initiative["business_id"], initiative_id)
+    if not body.path.startswith(prefix) or ".." in body.path:
+        raise HTTPException(status_code=400, detail="path is not within this initiative")
+    rows = sb.table("attachments").insert({
+        "initiative_id": initiative_id,
+        "file_url": body.path,
+        "file_name": _safe_att_name(body.file_name),
+        "file_size_bytes": body.file_size_bytes,
+        "uploaded_by": user["id"],
+    }).execute().data
+    if not rows:
+        raise HTTPException(status_code=500, detail="Failed to record attachment")
+    r = rows[0]
+    return {"id": r["id"], "file_name": r.get("file_name"), "file_size_bytes": r.get("file_size_bytes")}
+
+
+@router.get("/{initiative_id}/files/{attachment_id}/url")
+def initiative_file_url(
+    initiative_id: str,
+    attachment_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    initiative = _get_initiative_or_404(sb, initiative_id)
+    require_member(sb, initiative["business_id"], user["id"])
+    rows = (
+        sb.table("attachments").select("file_url")
+        .eq("id", attachment_id).eq("initiative_id", initiative_id).execute().data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    try:
+        signed = sb.storage.from_(settings.workspace_docs_bucket).create_signed_url(rows[0]["file_url"], 3600)
+    except Exception:
+        raise HTTPException(status_code=503, detail="File storage is not available")
+    return {"url": signed.get("signedURL") or signed.get("signed_url")}
+
+
+@router.delete("/{initiative_id}/files/{attachment_id}", status_code=204)
+def delete_initiative_file(
+    initiative_id: str,
+    attachment_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    initiative = _get_initiative_or_404(sb, initiative_id)
+    require_member(sb, initiative["business_id"], user["id"])
+    rows = (
+        sb.table("attachments").select("file_url")
+        .eq("id", attachment_id).eq("initiative_id", initiative_id).execute().data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    sb.table("attachments").delete().eq("id", attachment_id).eq("initiative_id", initiative_id).execute()
+    try:
+        sb.storage.from_(settings.workspace_docs_bucket).remove([rows[0]["file_url"]])
+    except Exception:
+        pass
+    return
+
+
 class AttachmentUpdate(BaseModel):
     doc_status: Optional[Literal["pending", "received", "rejected"]] = None
     notes: Optional[str] = None
@@ -898,6 +1036,7 @@ def get_initiative_gantt(
     tasks = (
         sb.table("tasks")
         .select("id, title, start_date, due_date, status, priority, depends_on, date_mode, "
+                "entity_id, entity_type, "
                 "created_at, task_entities(entity_type, entity_id, per_entity_start_date, per_entity_end_date)")
         .eq("initiative_id", initiative_id)
         .execute()
@@ -940,6 +1079,13 @@ def get_initiative_gantt(
                 building_ids.add(e["entity_id"])
             elif e.get("entity_type") == "client":
                 client_ids.add(e["entity_id"])
+    # Site-owned tasks (Playbooks: tasks.entity_id) → resolve their site names too.
+    for t in tasks:
+        if t.get("entity_id"):
+            if t.get("entity_type") == "building":
+                building_ids.add(t["entity_id"])
+            elif t.get("entity_type") == "client":
+                client_ids.add(t["entity_id"])
     name_map: dict = {}
     if building_ids:
         for r in sb.table("buildings").select("id, name").in_("id", list(building_ids)).execute().data:
@@ -984,6 +1130,10 @@ def get_initiative_gantt(
             row_start = own_start if (not row_end or own_start <= row_end) else row_end
         else:
             row_start = _derive_start(row_end)
+        # Buildings/clients are ATTRIBUTES of the task (carried in `entities` and
+        # rendered as badges on the bar) — NOT a level of their own. The tree is
+        # task → subtasks directly; per-building dates/status live in the task
+        # detail. (The Group-by=Building swimlane view is the site-centric cut.)
         rows.append({
             "id": holder["id"],
             "kind": kind,
@@ -999,35 +1149,6 @@ def get_initiative_gantt(
             "depends_on": holder.get("depends_on") or [],
             "entities": ents,
         })
-        # Surface every building/client attached to the holder as a child row so
-        # its own timeline is visible on expand — per-entity deadline when set,
-        # otherwise inheriting the holder's span. (Previously only per_entity
-        # tasks did this, so uniform-mode tasks showed no building rows at all.)
-        for e in ents:
-            e_end = e.get("end_date") or own_end
-            if not e_end:
-                continue
-            # Per-entity start when set; else the holder's start (no per-entity
-            # end) or a derived start.
-            e_start = e.get("start_date") or (
-                row_start if not e.get("end_date") else _derive_start(e_end)
-            )
-            rows.append({
-                "id": f"{holder['id']}::{e['type']}:{e['name']}",
-                "kind": "entity",
-                "parent_id": holder["id"],
-                "entity_id": e.get("entity_id"),
-                "depth": depth + 1,
-                "title": e["name"],
-                "status": holder.get("status"),
-                "priority": holder.get("priority"),
-                "start_date": e_start,
-                "end_date": e_end,
-                "is_milestone": False,
-                "over_end": _over(e_end),
-                "depends_on": [],
-                "entities": [e],
-            })
         return own_end
 
     # Index subtasks by their parent (task id or parent_subtask_id) for nesting.
@@ -1042,10 +1163,47 @@ def get_initiative_gantt(
                    inherited_end=inherited_end)
             _emit_subtree(s["id"], depth + 1, inherited_end)
 
-    for t in tasks:
-        task_end = _emit(t, kind="task", parent_id=None, depth=0,
-                         inherited_end=None)
+    # Unsited tasks sit directly under the initiative; site-owned tasks
+    # (Playbooks: tasks.entity_id) are grouped under a building/client LANE so
+    # "Initiative → Building → Tasks → Subtasks" reads correctly.
+    unsited = [t for t in tasks if not t.get("entity_id")]
+    sited = [t for t in tasks if t.get("entity_id")]
+
+    for t in unsited:
+        task_end = _emit(t, kind="task", parent_id=None, depth=0, inherited_end=None)
         _emit_subtree(t["id"], 1, task_end)
+
+    lane_groups: "list[tuple[tuple, list]]" = []
+    seen_keys: dict = {}
+    for t in sited:
+        key = (t.get("entity_type"), t["entity_id"])
+        if key not in seen_keys:
+            seen_keys[key] = len(lane_groups)
+            lane_groups.append((key, []))
+        lane_groups[seen_keys[key]][1].append(t)
+
+    for (etype, eid), grp in lane_groups:
+        lane_id = f"lane:{etype}:{eid}"
+        lane_row = {
+            "id": lane_id, "kind": "entity-lane", "parent_id": None, "depth": 0,
+            "title": name_map.get(eid, eid), "status": None, "priority": None,
+            "start_date": None, "end_date": None, "is_milestone": False,
+            "over_end": False, "depends_on": [],
+            "entity_id": eid, "entity_type": etype,
+            "entities": [{"type": etype, "entity_id": eid, "name": name_map.get(eid, eid)}],
+        }
+        rows.append(lane_row)
+        for t in grp:
+            task_end = _emit(t, kind="task", parent_id=lane_id, depth=1, inherited_end=None)
+            _emit_subtree(t["id"], 2, task_end)
+        # Roll-up the lane's bar span from its (now-emitted) task rows.
+        grp_ids = {t["id"] for t in grp}
+        starts = [r["start_date"] for r in rows if r["id"] in grp_ids and r.get("start_date")]
+        ends = [r["end_date"] for r in rows if r["id"] in grp_ids and r.get("end_date")]
+        if starts:
+            lane_row["start_date"] = min(starts)
+        if ends:
+            lane_row["end_date"] = max(ends)
 
     for m in milestones:
         rows.append({

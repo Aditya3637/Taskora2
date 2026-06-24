@@ -15,6 +15,17 @@ from deps import (
     visible_initiative_ids,
 )
 from notifications import send_push_to_user
+from automation.notify import notify
+from config import get_settings, Settings
+from uuid import uuid4
+import re as _re
+
+_ATT_SAFE = _re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_name(name: str) -> str:
+    base = (name or "").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    return (_ATT_SAFE.sub("_", base).strip("._") or "file")[:120]
 
 def _bust_brief_cache_on_write(request: Request) -> None:
     """Any write to a task (create / update / status / due-date / subtask /
@@ -94,20 +105,19 @@ class TaskCreate(BaseModel):
     #   entity_inheritance IN (inherited, overridden)
     priority: Literal["low", "medium", "high", "urgent"] = "medium"
     status: _TASK_STATUSES = "backlog"
-    # Mandatory span (057): start_date + due_date (= end), ordered. Real bars
-    # on the Gantt; enforced at create.
-    start_date: date
-    due_date: date
+    # Optional span (068, deck "optional capture + undated tray"): dates may be
+    # omitted; if both are given, due must not precede start. Undated tasks land
+    # in the Roadmap's undated tray.
+    start_date: Optional[date] = None
+    due_date: Optional[date] = None
     date_mode: Literal["uniform", "per_entity"] = "uniform"
     entity_inheritance: Literal["inherited", "overridden"] = "inherited"
     entities: List[TaskEntityCreate] = []
 
 
-def _validate_task_dates(start: date, end: date) -> None:
-    """start_date + due_date are mandatory and due must not precede start."""
-    if start is None or end is None:
-        raise HTTPException(status_code=422, detail="start_date and due_date are required")
-    if end < start:
+def _validate_task_dates(start: Optional[date], end: Optional[date]) -> None:
+    """Dates are optional (068). Only enforce ordering when BOTH are present."""
+    if start is not None and end is not None and end < start:
         raise HTTPException(status_code=422, detail="due_date cannot be before start_date")
 
 
@@ -126,6 +136,11 @@ class TaskUpdate(BaseModel):
     description: Optional[str] = None
     # Optional note stored on the due-date change log (e.g. "via timeline").
     change_reason: Optional[str] = None
+    # Why the task is blocked — captured when status → blocked; feeds Nudges +
+    # the Notification Center "blocked" alert.
+    blocker_reason: Optional[str] = None
+    # Who can unblock it (G6) — they get the blocked notification too.
+    blocked_on_user_id: Optional[str] = None
 
 
 class StakeholderAdd(BaseModel):
@@ -180,6 +195,86 @@ def _watchers_for_tasks(sb: Client, task_ids: list):
         elif st == "subtask":
             by_subtask.setdefault(r.get("subtask_id"), []).append(w)
     return by_task, by_entity, by_subtask
+
+
+def _watcher_user_ids(sb: Client, task_id: str, role: str, scope_type: str = "task",
+                      subtask_id: Optional[str] = None, entity_id: Optional[str] = None) -> list[str]:
+    """User_ids on item_watchers for a scope+role (role: 'follower' | 'approver')."""
+    q = (
+        sb.table("item_watchers").select("user_id")
+        .eq("task_id", task_id).eq("scope_type", scope_type).eq("role", role)
+    )
+    if subtask_id:
+        q = q.eq("subtask_id", subtask_id)
+    if entity_id:
+        q = q.eq("entity_id", entity_id)
+    return [r["user_id"] for r in q.execute().data if r.get("user_id")]
+
+
+def _notify_approval_requested(sb: Client, task_id: str, scope_type: str, actor_id: str,
+                               subtask_id: Optional[str] = None, entity_id: Optional[str] = None) -> None:
+    """Tell the scope's approvers an item is awaiting their approval."""
+    approvers = _watcher_user_ids(sb, task_id, "approver", scope_type, subtask_id, entity_id)
+    if not approvers:
+        return
+    trow = sb.table("tasks").select("title").eq("id", task_id).execute().data
+    title = (trow[0].get("title") if trow else None) or "an item"
+    notify(
+        sb, type="approval_requested", business_id=_task_business_id(sb, task_id),
+        actor_id=actor_id, recipients=approvers,
+        title=f"Approval needed: “{title}”",
+        entity_type=(scope_type if scope_type != "task" else "task"),
+        entity_id=(entity_id or subtask_id or task_id),
+    )
+
+
+def _notify_blocked(sb: Client, task_id: str, actor_id: str, reason: Optional[str]) -> None:
+    """Tell task followers + the initiative owner + the blocked-on person that a
+    task is blocked (the blocked-on person is who can actually unblock it)."""
+    recipients = _watcher_user_ids(sb, task_id, "follower", "task")
+    trow = sb.table("tasks").select("title, initiative_id, blocked_on_user_id").eq("id", task_id).execute().data
+    if trow and trow[0].get("blocked_on_user_id"):
+        recipients = recipients + [trow[0]["blocked_on_user_id"]]
+    if trow and trow[0].get("initiative_id"):
+        irow = (
+            sb.table("initiatives").select("primary_stakeholder_id")
+            .eq("id", trow[0]["initiative_id"]).execute().data
+        )
+        if irow and irow[0].get("primary_stakeholder_id"):
+            recipients = recipients + [irow[0]["primary_stakeholder_id"]]
+    if not recipients:
+        return
+    title = (trow[0].get("title") if trow else None) or "a task"
+    notify(
+        sb, type="blocked", business_id=_task_business_id(sb, task_id),
+        actor_id=actor_id, recipients=recipients,
+        title=f"Blocked: “{title}”", body=(reason or "").strip(),
+        entity_type="task", entity_id=task_id,
+    )
+
+
+def _notify_comment(sb: Client, task_id: str, actor_id: str, content: str) -> None:
+    """Tell task followers + stakeholders about a new comment (not the author)."""
+    followers = _watcher_user_ids(sb, task_id, "follower", "task")
+    stake = [
+        r["user_id"]
+        for r in sb.table("task_stakeholders").select("user_id").eq("task_id", task_id).execute().data
+        if r.get("user_id")
+    ]
+    recipients = list({*followers, *stake})
+    if not recipients:
+        return
+    trow = sb.table("tasks").select("title").eq("id", task_id).execute().data
+    title = (trow[0].get("title") if trow else None) or "a task"
+    snippet = (content or "").strip()
+    if len(snippet) > 80:
+        snippet = snippet[:79] + "…"
+    notify(
+        sb, type="comment", business_id=_task_business_id(sb, task_id),
+        actor_id=actor_id, recipients=recipients,
+        title=f"New comment on “{title}”", body=snippet,
+        entity_type="task", entity_id=task_id,
+    )
 
 
 def _inherited_watchers_for(task_scope_watchers: list[dict]) -> list[dict]:
@@ -621,8 +716,11 @@ def create_task(
         "created_by": uid,
         "priority": body.priority,
         "status": body.status,
-        "start_date": body.start_date.isoformat(),
-        "due_date": body.due_date.isoformat(),
+        "start_date": body.start_date.isoformat() if body.start_date else None,
+        "due_date": body.due_date.isoformat() if body.due_date else None,
+        # Baseline snapshot at creation (G5) — frozen plan for drift tracking.
+        "baseline_start_date": body.start_date.isoformat() if body.start_date else None,
+        "baseline_due_date": body.due_date.isoformat() if body.due_date else None,
         "date_mode": body.date_mode,
         "entity_inheritance": body.entity_inheritance,
     }).execute()
@@ -665,6 +763,12 @@ def create_task(
                 detail="Failed to assign entities to task",
             )
 
+    notify(
+        sb, type="assigned", business_id=business_id, actor_id=uid,
+        recipients=[body.primary_stakeholder_id],
+        title=f"You were assigned “{body.title}”",
+        entity_type="task", entity_id=task_id,
+    )
     return task
 
 
@@ -827,19 +931,28 @@ def update_task(
         payload["title"] = body.title
     if "status" in set_fields and body.status is not None:
         payload["status"] = body.status
+        # Stamp "blocked since" on ENTRY (don't reset the clock if already
+        # blocked), clear on exit (deck: stuck-duration in Nudges).
+        cur = sb.table("tasks").select("status, blocked_since").eq("id", task_id).execute().data
+        cur_status = cur[0].get("status") if cur else None
+        cur_since = cur[0].get("blocked_since") if cur else None
+        if body.status == "blocked":
+            payload["blocked_since"] = cur_since or datetime.now(timezone.utc).isoformat()
+        elif cur_status == "blocked":
+            payload["blocked_since"] = None
     if "priority" in set_fields and body.priority is not None:
         payload["priority"] = body.priority
-    # start_date / due_date are mandatory (057) — reject clearing them.
+    # Dates are optional (068) — clearing to NULL is allowed (undated tray).
     if "start_date" in set_fields:
-        if body.start_date is None:
-            raise HTTPException(status_code=422, detail="start_date cannot be cleared")
-        payload["start_date"] = body.start_date.isoformat()
+        payload["start_date"] = body.start_date.isoformat() if body.start_date else None
     if "due_date" in set_fields:
-        if body.due_date is None:
-            raise HTTPException(status_code=422, detail="due_date cannot be cleared")
-        payload["due_date"] = body.due_date.isoformat()
+        payload["due_date"] = body.due_date.isoformat() if body.due_date else None
     if "description" in set_fields:
         payload["description"] = body.description
+    if "blocker_reason" in set_fields:
+        payload["blocker_reason"] = body.blocker_reason
+    if "blocked_on_user_id" in set_fields:
+        payload["blocked_on_user_id"] = body.blocked_on_user_id
     if not payload:
         raise HTTPException(status_code=422, detail="No fields to update")
 
@@ -869,6 +982,14 @@ def update_task(
 
     result = sb.table("tasks").update(payload).eq("id", task_id).execute()
     updated = result.data[0] if result.data else {}
+
+    # Fire workflow notifications on status transitions — parity with the
+    # /status endpoint, since the task drawer saves through this PATCH.
+    if body.status is not None and body.status != prior_status:
+        if body.status == "blocked":
+            _notify_blocked(sb, task_id, user["id"], body.blocker_reason)
+        elif body.status == "done" and payload.get("approval_state") == "pending":
+            _notify_approval_requested(sb, task_id, "task", user["id"])
 
     # Record the due-date change against the pre-update value. Triggered on
     # any explicit due_date write — including clearing the field to null.
@@ -937,6 +1058,16 @@ def update_task_status(
                 detail="Task not found",
             )
 
+    # Notifications (best-effort; notify() never raises).
+    if body.entity_id is not None:
+        if body.status == "done" and ent_payload.get("approval_state") == "pending":
+            _notify_approval_requested(sb, task_id, "entity", user["id"], entity_id=body.entity_id)
+    else:
+        if body.status == "done" and update_payload.get("approval_state") == "pending":
+            _notify_approval_requested(sb, task_id, "task", user["id"])
+        elif body.status == "blocked":
+            _notify_blocked(sb, task_id, user["id"], body.blocker_reason)
+
     return {"ok": True}
 
 
@@ -953,6 +1084,13 @@ def add_stakeholder(
         {"task_id": task_id, "user_id": body.user_id, "role": body.role},
         on_conflict="task_id,user_id",
     ).execute()
+    _trow = sb.table("tasks").select("title").eq("id", task_id).execute().data
+    notify(
+        sb, type="assigned", business_id=_task_business_id(sb, task_id),
+        actor_id=user["id"], recipients=[body.user_id],
+        title=f"You were assigned “{(_trow[0].get('title') if _trow else None) or 'a task'}”",
+        entity_type="task", entity_id=task_id,
+    )
     return result.data[0] if result.data else {}
 
 
@@ -1370,18 +1508,24 @@ def act_on_approval(
         "created_at": now_iso,
     }).execute()
 
-    # Notify the task owner that their item was approved/rejected.
-    owner_rows = sb.table("tasks").select("primary_stakeholder_id, title").eq("id", task_id).execute().data
+    # Notify the task owner (in-app bell + push) that their item was resolved.
+    owner_rows = (
+        sb.table("tasks")
+        .select("primary_stakeholder_id, title, business_id")
+        .eq("id", task_id).execute().data
+    )
     if owner_rows:
         owner_id = owner_rows[0].get("primary_stakeholder_id")
-        if owner_id and owner_id != uid:
-            verb = "approved" if body.action == "approve" else "rejected"
-            send_push_to_user(
-                sb, owner_id,
-                f"Item {verb}",
-                owner_rows[0].get("title") or "Your task",
-                {"task_id": task_id},
-            )
+        verb = "approved" if body.action == "approve" else "rejected"
+        notify(
+            sb, type="approval_resolved",
+            business_id=owner_rows[0].get("business_id"),
+            actor_id=uid,
+            recipients=[owner_id] if owner_id else [],
+            title=f"“{owner_rows[0].get('title') or 'Your task'}” was {verb}",
+            body=(body.reason or "").strip(),
+            entity_type="task", entity_id=task_id,
+        )
 
     return {
         "ok": True,
@@ -1719,7 +1863,9 @@ def create_subtask(
 
     # If parent_subtask_id is provided, verify it belongs to the same task and
     # inherit its entity scope (children of an entity-scoped subtask stay scoped
-    # to that entity). Cap nesting at depth 2 (sub-subtask): no grandchildren.
+    # to that entity). Nesting is now arbitrary-depth: a brand-new subtask has
+    # no descendants, so attaching it under any parent in the same task can't
+    # create a cycle (re-parenting existing subtasks isn't supported here).
     if body.parent_subtask_id:
         parent_rows = (
             sb.table("subtasks")
@@ -1733,8 +1879,6 @@ def create_subtask(
         parent = parent_rows[0]
         if parent["task_id"] != task_id:
             raise HTTPException(status_code=400, detail="Parent subtask belongs to a different task")
-        if parent.get("parent_subtask_id"):
-            raise HTTPException(status_code=400, detail="Subtasks can only nest one level deep")
         row["parent_subtask_id"] = body.parent_subtask_id
         # Inherit scope from parent so the child renders under the same entity
         if parent.get("scoped_entity_id"):
@@ -1774,6 +1918,10 @@ class TaskEntityUpdate(BaseModel):
     per_entity_status: Optional[str] = None
     per_entity_start_date: Optional[date] = None
     per_entity_end_date: Optional[date] = None
+    # Building/client as a full work unit (063): per-entity owner/priority/desc.
+    owner_id: Optional[str] = None
+    priority: Optional[str] = None
+    description: Optional[str] = None
     change_reason: Optional[str] = None
 
 
@@ -1811,6 +1959,13 @@ def update_task_entity(
         payload["per_entity_end_date"] = (
             body.per_entity_end_date.isoformat() if body.per_entity_end_date else None
         )
+    # Full-work-unit fields (063). owner_id + description are clearable (null).
+    if "owner_id" in set_fields:
+        payload["owner_id"] = body.owner_id
+    if body.priority is not None:
+        payload["priority"] = body.priority
+    if "description" in set_fields:
+        payload["description"] = body.description
     if not payload:
         raise HTTPException(status_code=422, detail="No fields to update")
 
@@ -1972,6 +2127,24 @@ def update_subtask(
     return result.data[0] if result.data else {}
 
 
+def _descendant_subtask_ids(sb: Client, root_id: str) -> list[str]:
+    """Every subtask id strictly below root_id at ANY depth (BFS). Used by the
+    delete/archive/restore cascades now that nesting is arbitrary-depth — a
+    single-level `.eq(parent_subtask_id, root)` would orphan grandchildren."""
+    out: list[str] = []
+    frontier = [root_id]
+    seen = {root_id}
+    while frontier:
+        rows = sb.table("subtasks").select("id").in_("parent_subtask_id", frontier).execute().data
+        children = [r["id"] for r in rows if r.get("id") and r["id"] not in seen]
+        if not children:
+            break
+        seen.update(children)
+        out.extend(children)
+        frontier = children
+    return out
+
+
 @router.delete("/{task_id}/subtasks/{subtask_id}", status_code=204)
 def delete_subtask(
     task_id: str,
@@ -1996,8 +2169,10 @@ def delete_subtask(
     )
     if not existing:
         raise HTTPException(status_code=404, detail="Subtask not found")
-    # Cascade: drop child sub-subtasks first so we don't leave orphans.
-    sb.table("subtasks").delete().eq("parent_subtask_id", subtask_id).execute()
+    # Cascade: drop the whole descendant subtree (any depth) first, then self.
+    descendants = _descendant_subtask_ids(sb, subtask_id)
+    if descendants:
+        sb.table("subtasks").delete().in_("id", descendants).execute()
     sb.table("subtasks").delete().eq("id", subtask_id).eq("task_id", task_id).execute()
 
 
@@ -2032,10 +2207,12 @@ def archive_subtask(
     sb.table("subtasks").update({"archived_at": now_iso, "updated_at": now_iso}).eq(
         "id", subtask_id
     ).eq("task_id", task_id).execute()
-    # Cascade to nested sub-subtasks.
-    sb.table("subtasks").update({"archived_at": now_iso, "updated_at": now_iso}).eq(
-        "parent_subtask_id", subtask_id
-    ).is_("archived_at", "null").execute()
+    # Cascade to the whole descendant subtree (any depth).
+    descendants = _descendant_subtask_ids(sb, subtask_id)
+    if descendants:
+        sb.table("subtasks").update({"archived_at": now_iso, "updated_at": now_iso}).in_(
+            "id", descendants
+        ).is_("archived_at", "null").execute()
     return {"id": subtask_id, "archived_at": now_iso}
 
 
@@ -2065,9 +2242,11 @@ def restore_subtask(
     sb.table("subtasks").update({"archived_at": None, "updated_at": now_iso}).eq(
         "id", subtask_id
     ).eq("task_id", task_id).execute()
-    sb.table("subtasks").update({"archived_at": None, "updated_at": now_iso}).eq(
-        "parent_subtask_id", subtask_id
-    ).not_.is_("archived_at", "null").execute()
+    descendants = _descendant_subtask_ids(sb, subtask_id)
+    if descendants:
+        sb.table("subtasks").update({"archived_at": None, "updated_at": now_iso}).in_(
+            "id", descendants
+        ).not_.is_("archived_at", "null").execute()
     return {"id": subtask_id, "archived_at": None}
 
 
@@ -2119,7 +2298,7 @@ def follow_up_today(
 
     tasks = (
         sb.table("tasks")
-        .select("*, task_entities(*), initiatives(title)")
+        .select("*, task_entities(*), initiatives(name)")
         .in_("id", all_ids)
         .order("created_at", desc=True)
         .execute()
@@ -2360,7 +2539,9 @@ def create_task_comment(
     sb: Client = Depends(get_supabase),
 ):
     _assert_task_access(sb, task_id, user["id"])
-    return _create_comment_scoped(sb, task_id, user["id"], body.content)
+    comment = _create_comment_scoped(sb, task_id, user["id"], body.content)
+    _notify_comment(sb, task_id, user["id"], body.content)
+    return comment
 
 
 # ── Entity-level ──────────────────────────────────────────────────────────────
@@ -2557,3 +2738,227 @@ def update_task_dependencies(
     }).eq("id", task_id).execute()
 
     return result.data[0] if result.data else {}
+
+
+# ── Task file attachments (reuse the workspace-docs storage bucket) ──────────
+class AttSignIn(BaseModel):
+    file_name: str
+    content_type: Optional[str] = None
+
+
+class AttRecordIn(BaseModel):
+    path: str
+    file_name: str
+    file_size_bytes: Optional[int] = None
+
+
+def _att_prefix(business_id: Optional[str], task_id: str) -> str:
+    return f"task/{business_id}/{task_id}/"
+
+
+@router.get("/{task_id}/attachments")
+def list_task_attachments(
+    task_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    _assert_task_access(sb, task_id, user["id"])
+    rows = (
+        sb.table("attachments")
+        .select("id, file_name, file_size_bytes, created_at")
+        .eq("task_id", task_id).order("created_at").execute().data
+    )
+    return rows
+
+
+@router.post("/{task_id}/attachments/sign")
+def sign_task_attachment(
+    task_id: str,
+    body: AttSignIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    """Mint a signed upload URL. The client uploads to this path, then POSTs to
+    /attachments to record the row (mirrors the workspace-docs flow)."""
+    _assert_task_write(sb, task_id, user["id"])
+    biz = _task_business_id(sb, task_id)
+    path = f"{_att_prefix(biz, task_id)}{uuid4().hex}-{_safe_name(body.file_name)}"
+    try:
+        signed = sb.storage.from_(settings.workspace_docs_bucket).create_signed_upload_url(path)
+    except Exception:
+        raise HTTPException(status_code=503, detail="File storage is not available")
+    return {
+        "path": path,
+        "token": signed.get("token"),
+        "signed_url": signed.get("signed_url") or signed.get("signedURL"),
+        "bucket": settings.workspace_docs_bucket,
+        "max_bytes": settings.doc_upload_max_bytes,
+    }
+
+
+@router.post("/{task_id}/attachments", status_code=201)
+def record_task_attachment(
+    task_id: str,
+    body: AttRecordIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    _assert_task_write(sb, task_id, user["id"])
+    if body.file_size_bytes and body.file_size_bytes > settings.doc_upload_max_bytes:
+        raise HTTPException(status_code=413, detail="File exceeds the size limit")
+    biz = _task_business_id(sb, task_id)
+    prefix = _att_prefix(biz, task_id)
+    if not body.path.startswith(prefix) or ".." in body.path:
+        raise HTTPException(status_code=400, detail="path is not within this task")
+    rows = sb.table("attachments").insert({
+        "task_id": task_id,
+        "file_url": body.path,
+        "file_name": _safe_name(body.file_name),
+        "file_size_bytes": body.file_size_bytes,
+        "uploaded_by": user["id"],
+    }).execute().data
+    if not rows:
+        raise HTTPException(status_code=500, detail="Failed to record attachment")
+    r = rows[0]
+    return {"id": r["id"], "file_name": r.get("file_name"), "file_size_bytes": r.get("file_size_bytes")}
+
+
+@router.get("/{task_id}/attachments/{attachment_id}/url")
+def task_attachment_url(
+    task_id: str,
+    attachment_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    _assert_task_access(sb, task_id, user["id"])
+    rows = (
+        sb.table("attachments").select("file_url")
+        .eq("id", attachment_id).eq("task_id", task_id).execute().data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    try:
+        signed = sb.storage.from_(settings.workspace_docs_bucket).create_signed_url(rows[0]["file_url"], 3600)
+    except Exception:
+        raise HTTPException(status_code=503, detail="File storage is not available")
+    return {"url": signed.get("signedURL") or signed.get("signed_url")}
+
+
+@router.delete("/{task_id}/attachments/{attachment_id}", status_code=204)
+def delete_task_attachment(
+    task_id: str,
+    attachment_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    _assert_task_write(sb, task_id, user["id"])
+    rows = (
+        sb.table("attachments").select("file_url")
+        .eq("id", attachment_id).eq("task_id", task_id).execute().data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    sb.table("attachments").delete().eq("id", attachment_id).eq("task_id", task_id).execute()
+    try:
+        sb.storage.from_(settings.workspace_docs_bucket).remove([rows[0]["file_url"]])
+    except Exception:
+        pass  # row is gone; orphaned object is harmless
+
+
+# ── Per-entity site photos (deck: mobile field photo upload) ────────────────
+def _entity_att_prefix(business_id: Optional[str], task_id: str, entity_id: str) -> str:
+    return f"entity/{business_id}/{task_id}/{entity_id}/"
+
+
+@router.get("/{task_id}/entities/{entity_id}/photos")
+def list_entity_photos(
+    task_id: str,
+    entity_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    _assert_task_access(sb, task_id, user["id"])
+    rows = (
+        sb.table("attachments")
+        .select("id, file_name, file_size_bytes, created_at")
+        .eq("task_id", task_id).eq("entity_id", entity_id)
+        .order("created_at", desc=True).execute().data
+    )
+    return rows
+
+
+@router.post("/{task_id}/entities/{entity_id}/photos/sign")
+def sign_entity_photo(
+    task_id: str,
+    entity_id: str,
+    body: AttSignIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    _assert_task_write(sb, task_id, user["id"])
+    biz = _task_business_id(sb, task_id)
+    path = f"{_entity_att_prefix(biz, task_id, entity_id)}{uuid4().hex}-{_safe_name(body.file_name)}"
+    try:
+        signed = sb.storage.from_(settings.workspace_docs_bucket).create_signed_upload_url(path)
+    except Exception:
+        raise HTTPException(status_code=503, detail="File storage is not available")
+    return {
+        "path": path, "token": signed.get("token"),
+        "signed_url": signed.get("signed_url") or signed.get("signedURL"),
+        "bucket": settings.workspace_docs_bucket, "max_bytes": settings.doc_upload_max_bytes,
+    }
+
+
+@router.post("/{task_id}/entities/{entity_id}/photos", status_code=201)
+def record_entity_photo(
+    task_id: str,
+    entity_id: str,
+    body: AttRecordIn,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    _assert_task_write(sb, task_id, user["id"])
+    if body.file_size_bytes and body.file_size_bytes > settings.doc_upload_max_bytes:
+        raise HTTPException(status_code=413, detail="File exceeds the size limit")
+    biz = _task_business_id(sb, task_id)
+    prefix = _entity_att_prefix(biz, task_id, entity_id)
+    if not body.path.startswith(prefix) or ".." in body.path:
+        raise HTTPException(status_code=400, detail="path is not within this site")
+    rows = sb.table("attachments").insert({
+        "task_id": task_id, "entity_id": entity_id,
+        "file_url": body.path, "file_name": _safe_name(body.file_name),
+        "file_size_bytes": body.file_size_bytes, "uploaded_by": user["id"],
+    }).execute().data
+    if not rows:
+        raise HTTPException(status_code=500, detail="Failed to record photo")
+    r = rows[0]
+    return {"id": r["id"], "file_name": r.get("file_name")}
+
+
+@router.get("/{task_id}/entities/{entity_id}/photos/{attachment_id}/url")
+def entity_photo_url(
+    task_id: str,
+    entity_id: str,
+    attachment_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+    settings: Settings = Depends(get_settings),
+):
+    _assert_task_access(sb, task_id, user["id"])
+    rows = (
+        sb.table("attachments").select("file_url")
+        .eq("id", attachment_id).eq("task_id", task_id).eq("entity_id", entity_id).execute().data
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Photo not found")
+    try:
+        signed = sb.storage.from_(settings.workspace_docs_bucket).create_signed_url(rows[0]["file_url"], 3600)
+    except Exception:
+        raise HTTPException(status_code=503, detail="File storage is not available")
+    return {"url": signed.get("signedURL") or signed.get("signed_url")}

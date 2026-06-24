@@ -7,6 +7,7 @@ const TABS = [
   { href: "/workspace/settings/profile",   label: "Profile" },
   { href: "/workspace/settings/buildings", label: "Buildings" },
   { href: "/workspace/settings/clients",   label: "Clients" },
+  { href: "/workspace/settings/processes", label: "Processes" },
 ];
 
 export default function SettingsTabs() {

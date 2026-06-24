@@ -148,7 +148,7 @@ export default function RichPageEditor({
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-[760px] px-6 py-6">
+      <div className="mx-auto max-w-[1040px] px-8 py-6">
         {/* Title + icon */}
         <div className="flex items-center gap-2 mb-3 relative">
           <button

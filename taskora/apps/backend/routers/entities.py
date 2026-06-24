@@ -90,6 +90,147 @@ def list_clients(
     )
 
 
+@router.get("/sites")
+def get_sites(
+    business_id: str,
+    kind: str = Query(default="building", description="building | client"),
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Cross-cutting Sites view: each building/client with a rollup of the work
+    happening at it across ALL programmes — #initiatives/#tasks, next deadline,
+    overdue/blocked health. Aggregates task_entities (per-building work)."""
+    require_member(sb, business_id, user["id"])
+    if kind not in ("building", "client"):
+        raise HTTPException(status_code=422, detail="kind must be 'building' or 'client'")
+    today = date.today().isoformat()
+
+    tbl = "buildings" if kind == "building" else "clients"
+    ent_rows = sb.table(tbl).select("*").eq("business_id", business_id).execute().data
+    entities = {e["id"]: e for e in ent_rows}
+    if not entities:
+        return []
+
+    init_ids = [r["id"] for r in sb.table("initiatives").select("id").eq("business_id", business_id).execute().data]
+    task_meta: dict = {}
+    if init_ids:
+        for t in sb.table("tasks").select("id, initiative_id, due_date").in_("initiative_id", init_ids).execute().data:
+            task_meta[t["id"]] = t
+    task_ids = list(task_meta.keys())
+
+    links: list = []
+    if task_ids:
+        links = (
+            sb.table("task_entities")
+            .select("task_id, entity_id, per_entity_status, per_entity_end_date")
+            .in_("task_id", task_ids).eq("entity_type", kind).execute().data
+        )
+
+    agg = {eid: {"tasks": 0, "open": 0, "overdue": 0, "blocked": 0,
+                 "initiatives": set(), "next_deadline": None} for eid in entities}
+    for l in links:
+        a = agg.get(l["entity_id"])
+        if a is None:
+            continue
+        tm = task_meta.get(l["task_id"]) or {}
+        a["tasks"] += 1
+        if tm.get("initiative_id"):
+            a["initiatives"].add(tm["initiative_id"])
+        st = l.get("per_entity_status")
+        deadline = l.get("per_entity_end_date") or tm.get("due_date")
+        if st != "done":
+            a["open"] += 1
+            if deadline and deadline < today:
+                a["overdue"] += 1
+            if deadline and (a["next_deadline"] is None or deadline < a["next_deadline"]):
+                a["next_deadline"] = deadline
+        if st == "blocked":
+            a["blocked"] += 1
+
+    out = []
+    for eid, e in entities.items():
+        a = agg[eid]
+        health = "bad" if a["overdue"] > 0 else ("warn" if a["blocked"] > 0 else "ok")
+        out.append({
+            "id": eid, "name": e.get("name") or "", "kind": kind,
+            "zone": e.get("zone"), "city": e.get("city"), "code": e.get("code"),
+            "tasks": a["tasks"], "initiatives": len(a["initiatives"]),
+            "open": a["open"], "overdue": a["overdue"], "blocked": a["blocked"],
+            "next_deadline": a["next_deadline"], "health": health,
+        })
+    health_rank = {"bad": 0, "warn": 1, "ok": 2}
+    out.sort(key=lambda r: (health_rank.get(r["health"], 3), r["next_deadline"] or "9999-99-99"))
+    return out
+
+
+@router.get("/my-sites")
+def my_sites(
+    business_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """The caller's per-building/client work — powers the mobile field-update
+    view. Includes entities on tasks the caller is primary on, plus entities
+    the caller owns (task_entities.owner_id, mig 063)."""
+    require_member(sb, business_id, user["id"])
+    uid = user["id"]
+    init_ids = [r["id"] for r in sb.table("initiatives").select("id").eq("business_id", business_id).execute().data]
+    if not init_ids:
+        return []
+    biz_task_ids = {
+        r["id"] for r in sb.table("tasks").select("id").in_("initiative_id", init_ids).execute().data
+    }
+    my_task_ids = [
+        r["id"] for r in sb.table("tasks").select("id")
+        .eq("primary_stakeholder_id", uid).in_("initiative_id", init_ids).execute().data
+    ]
+
+    cols = "task_id, entity_id, entity_type, per_entity_status, per_entity_end_date, owner_id"
+    rows: list = []
+    if my_task_ids:
+        rows += sb.table("task_entities").select(cols).in_("task_id", my_task_ids).execute().data
+    rows += sb.table("task_entities").select(cols).eq("owner_id", uid).execute().data
+
+    seen: set = set()
+    merged: list = []
+    for r in rows:
+        if r["task_id"] not in biz_task_ids:
+            continue
+        k = (r["task_id"], r["entity_id"])
+        if k in seen:
+            continue
+        seen.add(k)
+        merged.append(r)
+    if not merged:
+        return []
+
+    t_ids = list({r["task_id"] for r in merged})
+    tmap = {t["id"]: t for t in sb.table("tasks").select("id, title, due_date").in_("id", t_ids).execute().data}
+    b_ids = [r["entity_id"] for r in merged if r["entity_type"] == "building"]
+    c_ids = [r["entity_id"] for r in merged if r["entity_type"] == "client"]
+    names: dict = {}
+    if b_ids:
+        for b in sb.table("buildings").select("id, name").in_("id", b_ids).execute().data:
+            names[b["id"]] = b.get("name") or ""
+    if c_ids:
+        for cl in sb.table("clients").select("id, name").in_("id", c_ids).execute().data:
+            names[cl["id"]] = cl.get("name") or ""
+
+    out = []
+    for r in merged:
+        t = tmap.get(r["task_id"], {})
+        out.append({
+            "task_id": r["task_id"], "task_title": t.get("title") or "",
+            "entity_id": r["entity_id"], "entity_type": r["entity_type"],
+            "entity_name": names.get(r["entity_id"]) or "",
+            "status": r.get("per_entity_status"),
+            "due": r.get("per_entity_end_date") or t.get("due_date"),
+        })
+    rank = {"blocked": 0, "pending_decision": 1, "in_progress": 2, "todo": 3, "backlog": 4, "done": 9}
+    out.sort(key=lambda x: (rank.get(x["status"], 5), x["due"] or "9999-99-99"))
+    return out
+
+
 class ClientUpdate(BaseModel):
     name: Optional[str] = None
     code: Optional[str] = None

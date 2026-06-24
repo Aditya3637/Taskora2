@@ -37,7 +37,8 @@ from routers import (
     entities, initiatives, tasks, users, war_room,
     programs, activity, invites, whatsapp, themes, onboarding,
     people, join_requests, notebook, internal, portfolio, workspace_docs,
-    my_day,
+    my_day, notifications, quick_notes, companies, risk,
+    process_templates,
 )
 
 app = FastAPI(
@@ -109,6 +110,11 @@ app.include_router(internal.router)
 app.include_router(portfolio.router)
 app.include_router(workspace_docs.router)
 app.include_router(my_day.router)
+app.include_router(notifications.router)
+app.include_router(quick_notes.router)
+app.include_router(companies.router)
+app.include_router(risk.router)
+app.include_router(process_templates.router)
 
 
 # PostgREST/Supabase errors. Without this, every DB constraint, RLS, or

@@ -7,12 +7,14 @@ import { X, Maximize2, Minimize2, FileText, Paperclip, Link2 } from "lucide-reac
 import { WorkDocEditor, type UploadedAttachment } from "./WorkDocEditor";
 import { DocFilesRail } from "./DocFilesRail";
 
+type Bookmark = { url: string; label?: string };
 type Doc = {
   id: string;
   title: string;
   body: unknown;
   updated_at?: string;
   can_write?: boolean;
+  bookmarks?: Bookmark[];
 };
 type Backlink = { doc_id: string; doc_title: string; initiative_id: string; initiative_name: string };
 
@@ -39,12 +41,31 @@ export function WorkDocPanel({
   initiativeName,
   programName,
   onClose,
+  docsBasePath,
+  headerName,
+  headerSub,
+  backlinksPath,
+  promotePath,
 }: {
   initiativeId: string;
   initiativeName: string;
   programName?: string;
   onClose: () => void;
+  /** Override the list/create endpoint (default: initiative docs). Lets the
+   *  same panel host task-scoped docs (`/tasks/{id}/docs`). */
+  docsBasePath?: string;
+  headerName?: string;
+  headerSub?: string;
+  /** null disables the Mentions/backlinks rail (tasks have none today). */
+  backlinksPath?: string | null;
+  /** null disables promote-to-task (tasks don't promote into themselves). */
+  promotePath?: string | null;
 }) {
+  const docsEndpoint = docsBasePath ?? `/api/v1/initiatives/${initiativeId}/docs`;
+  const blPath = backlinksPath === undefined ? `/api/v1/initiatives/${initiativeId}/backlinks` : backlinksPath;
+  const promPath = promotePath === undefined ? `/api/v1/initiatives/${initiativeId}/promote-task` : promotePath;
+  const displayName = headerName ?? initiativeName;
+  const displaySub = headerSub ?? programName;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [doc, setDoc] = useState<Doc | null>(null);
@@ -61,7 +82,7 @@ export function WorkDocPanel({
     setLoading(true);
     setError(null);
     try {
-      const list: Doc[] = await apiFetch(`/api/v1/initiatives/${initiativeId}/docs`);
+      const list: Doc[] = await apiFetch(docsEndpoint);
       if (list.length > 0) {
         setDoc(await apiFetch(`/api/v1/docs/${list[0].id}`));
       } else {
@@ -72,11 +93,13 @@ export function WorkDocPanel({
     } finally {
       setLoading(false);
     }
-    // Inbound mentions of this initiative (best-effort; don't block the doc).
-    apiFetch(`/api/v1/initiatives/${initiativeId}/backlinks`)
-      .then((r) => setBacklinks(r?.backlinks ?? []))
-      .catch(() => setBacklinks([]));
-  }, [initiativeId]);
+    // Inbound mentions (best-effort; don't block the doc). Skipped when disabled.
+    if (blPath) {
+      apiFetch(blPath)
+        .then((r) => setBacklinks(r?.backlinks ?? []))
+        .catch(() => setBacklinks([]));
+    }
+  }, [docsEndpoint, blPath]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -89,7 +112,7 @@ export function WorkDocPanel({
 
   async function createDoc() {
     try {
-      const created: Doc = await apiFetch(`/api/v1/initiatives/${initiativeId}/docs`, {
+      const created: Doc = await apiFetch(docsEndpoint, {
         method: "POST",
         body: JSON.stringify({ title: "Work document" }),
       });
@@ -124,8 +147,9 @@ export function WorkDocPanel({
 
   // D5: promote selected text (or the current line) into a task.
   const promoteToTask = useCallback(async (text: string) => {
+    if (!promPath) return;
     try {
-      const t = await apiFetch(`/api/v1/initiatives/${initiativeId}/promote-task`, {
+      const t = await apiFetch(promPath, {
         method: "POST", body: JSON.stringify({ title: text }),
       });
       setPromoteMsg({ ok: true, text: `Added task: “${t.title}”` });
@@ -133,7 +157,7 @@ export function WorkDocPanel({
       setPromoteMsg({ ok: false, text: e?.status === 403 ? "You can't add tasks here." : "Couldn't add the task." });
     }
     setTimeout(() => setPromoteMsg(null), 3000);
-  }, [initiativeId]);
+  }, [promPath]);
 
   // §8: upload a file — sign, upload to Storage with the one-time token, record.
   const uploadAttachment = useCallback(
@@ -199,7 +223,7 @@ export function WorkDocPanel({
     <div className="h-[50vh] flex flex-col items-center justify-center text-center gap-3">
       <FileText className="w-8 h-8 text-fg-subtle" />
       <p className="text-sm text-fg-muted max-w-xs">
-        No work document yet for <span className="font-medium text-fg">{initiativeName}</span>.
+        No work document yet for <span className="font-medium text-fg">{displayName}</span>.
       </p>
       <button onClick={createDoc}
         className="px-3 py-1.5 rounded-lg bg-ocean text-white text-sm font-semibold hover:opacity-90">
@@ -234,9 +258,15 @@ export function WorkDocPanel({
         value={doc.body}
         editable={editable}
         onChange={(json) => queueSave({ body: json })}
-        onPromote={editable ? promoteToTask : undefined}
+        onPromote={editable && promPath ? promoteToTask : undefined}
         onUpload={editable ? uploadAttachment : undefined}
         onAssist={editable ? runAssist : undefined}
+      />
+      <DocBookmarks
+        docId={doc.id}
+        bookmarks={doc.bookmarks ?? []}
+        editable={editable}
+        onChange={(bm) => setDoc((d) => (d ? { ...d, bookmarks: bm } : d))}
       />
     </>
   );
@@ -270,7 +300,7 @@ export function WorkDocPanel({
       <FileText className="w-4 h-4 text-ocean shrink-0" />
       <div className="min-w-0 flex-1">
         <div className="text-[11px] text-fg-subtle truncate">
-          {programName ? `${programName} · ` : ""}{initiativeName}
+          {displaySub ? `${displaySub} · ` : ""}{displayName}
         </div>
         <div className="text-sm font-semibold text-fg truncate">Work document</div>
       </div>
@@ -348,4 +378,49 @@ function SaveBadge({ state }: { state: "idle" | "saving" | "saved" | "readonly" 
   if (state === "idle") return null;
   const map = { saving: "Saving…", saved: "Saved", readonly: "Read-only" } as const;
   return <span className="text-xs text-fg-subtle shrink-0">{map[state]}</span>;
+}
+
+/** External link bookmarks for a doc (deck: "files, links & references"). */
+function DocBookmarks({
+  docId, bookmarks, editable, onChange,
+}: {
+  docId: string;
+  bookmarks: { url: string; label?: string }[];
+  editable: boolean;
+  onChange: (bm: { url: string; label?: string }[]) => void;
+}) {
+  async function save(next: { url: string; label?: string }[]) {
+    onChange(next);
+    try { await apiFetch(`/api/v1/docs/${docId}`, { method: "PATCH", body: JSON.stringify({ bookmarks: next }) }); }
+    catch { /* optimistic; next load corrects */ }
+  }
+  function add() {
+    const url = window.prompt("Link URL (https://…)")?.trim();
+    if (!url) return;
+    const normalized = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+    const label = window.prompt("Label (optional)")?.trim() || normalized;
+    save([...bookmarks, { url: normalized, label }]);
+  }
+  if (bookmarks.length === 0 && !editable) return null;
+  return (
+    <div className="mt-5 pt-3 border-t border-pebble">
+      <div className="flex items-center gap-2 mb-2">
+        <Link2 className="w-3.5 h-3.5 text-fg-subtle" />
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-fg-subtle">Links</span>
+      </div>
+      <ul className="space-y-1">
+        {bookmarks.map((b, i) => (
+          <li key={i} className="flex items-center gap-2 text-[12.5px]">
+            <a href={b.url} target="_blank" rel="noopener noreferrer" className="text-ocean hover:underline truncate">{b.label || b.url}</a>
+            {editable && (
+              <button type="button" onClick={() => save(bookmarks.filter((_, j) => j !== i))} className="ml-auto text-fg-subtle hover:text-red-600">Remove</button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {editable && (
+        <button type="button" onClick={add} className="mt-1.5 text-[12px] text-ocean font-semibold hover:underline">+ Add link</button>
+      )}
+    </div>
+  );
 }

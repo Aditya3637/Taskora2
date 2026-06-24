@@ -46,14 +46,18 @@ def test_create_business_invalid_type_returns_422(sb):
     assert r.status_code == 422
 
 
-def test_one_owned_workspace_per_user_cap(sb):
-    """Cap: a user can own at most one workspace. Second create 409s.
-    Users may still be members of unlimited workspaces via invite — the
-    cap only applies to ownership."""
+def test_second_workspace_joins_same_company(sb):
+    """A company owns many workspaces: a 2nd owned workspace is allowed (no
+    cap) and auto-joins the company created for the 1st."""
     r1 = client.post("/api/v1/businesses/", json={"name": "A", "type": "building"})
     assert r1.status_code == 201
     r2 = client.post("/api/v1/businesses/", json={"name": "B", "type": "building"})
-    assert r2.status_code == 409, r2.text
+    assert r2.status_code == 201, r2.text
+    # Exactly one company; both workspaces roll under it.
+    assert len(sb.store.get("companies", [])) == 1
+    mine = client.get("/api/v1/businesses/mine").json()
+    company_ids = {m.get("company_id") for m in mine}
+    assert len(company_ids) == 1 and None not in company_ids
 
 
 def test_delete_workspace_requires_owner(sb):

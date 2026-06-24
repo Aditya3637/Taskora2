@@ -1,7 +1,9 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Plus, User, X, ChevronDown, ChevronRight, GanttChartSquare, Pencil, FileText } from "lucide-react";
+import { ArrowLeft, Plus, User, X, ChevronDown, ChevronRight, GanttChartSquare, Pencil, FileText, Workflow } from "lucide-react";
+import { ProcessTemplateModal } from "../_components/ProcessTemplateModal";
+import { ProcessManageModal } from "../_components/ProcessManageModal";
 import { supabase } from "@/lib/supabase";
 import { useWorkspaceFormat } from "@/lib/use-workspace-format";
 import { GanttModal } from "../../gantt/GanttChart";
@@ -67,6 +69,7 @@ type Initiative = {
   primary_stakeholder_id?: string | null;
   primary_stakeholder_name?: string;
   owner_id?: string | null;
+  themes?: { id: string; name: string; color?: string | null } | null;
 };
 
 // D1: inline per-initiative task rollup (GET /programs/{id}/initiative-stats).
@@ -369,10 +372,27 @@ function AddInitiativeModal({
 
 // ── Initiative Card ───────────────────────────────────────────────────────────
 
-function InitiativeCard({ init, stats, canEdit, onEdit, onOpenDoc }: { init: Initiative; stats?: InitiativeStats; canEdit: boolean; onEdit: () => void; onOpenDoc: () => void }) {
+function InitiativeCard({ init, stats, canEdit, onEdit, onOpenDoc, businessId }: { init: Initiative; stats?: InitiativeStats; canEdit: boolean; onEdit: () => void; onOpenDoc: () => void; businessId: string }) {
   const [expanded, setExpanded] = useState(false);
   const [showGantt, setShowGantt] = useState(false);
+  const [showProcess, setShowProcess] = useState(false);
+  const [showManage, setShowManage] = useState(false);
+  const [processMsg, setProcessMsg] = useState("");
+  const [undoIds, setUndoIds] = useState<string[]>([]);
   const cat = getCategoryMeta(init.impact_category);
+
+  async function undoApply() {
+    const ids = undoIds;
+    setUndoIds([]);
+    setProcessMsg("Undoing…");
+    try {
+      await Promise.all(ids.map((id) => apiFetch(`/api/v1/process-instances/${id}`, { method: "DELETE" })));
+      setProcessMsg("Undone — the generated tasks were removed.");
+    } catch {
+      setProcessMsg("Couldn't fully undo — check the timeline.");
+    }
+    setTimeout(() => setProcessMsg(""), 5000);
+  }
   const hasDetails = !!(init.description || init.impact_metric);
 
   return (
@@ -391,6 +411,15 @@ function InitiativeCard({ init, stats, canEdit, onEdit, onOpenDoc }: { init: Ini
               className={`text-[11px] px-2 py-0.5 rounded-full font-medium border ${cat.color}`}
             >
               {cat.label}
+            </span>
+          )}
+          {init.themes?.name && (
+            <span
+              className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-medium border border-pebble text-steel"
+              title="Theme"
+            >
+              <span className="h-2 w-2 rounded-full" style={{ background: init.themes.color || "#94A3B8" }} />
+              {init.themes.name}
             </span>
           )}
           {init.target_end_date && (
@@ -416,6 +445,15 @@ function InitiativeCard({ init, stats, canEdit, onEdit, onOpenDoc }: { init: Ini
           </button>
           {canEdit && (
             <button
+              onClick={() => setShowManage(true)}
+              title="Process — apply a step chain to many sites, track progress, reschedule"
+              className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-medium border border-pebble text-steel hover:border-taskora-red hover:text-taskora-red transition-colors whitespace-nowrap"
+            >
+              <Workflow className="w-3.5 h-3.5" /> Process
+            </button>
+          )}
+          {canEdit && (
+            <button
               onClick={onEdit}
               title="Edit initiative"
               className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-medium border border-pebble text-steel hover:border-taskora-red hover:text-taskora-red transition-colors whitespace-nowrap"
@@ -424,6 +462,42 @@ function InitiativeCard({ init, stats, canEdit, onEdit, onOpenDoc }: { init: Ini
             </button>
           )}
         </div>
+
+        {processMsg && (
+          <div className="mb-2 flex items-center gap-3 text-[12px] rounded-lg bg-emerald-50 text-emerald-700 px-3 py-1.5">
+            <span>{processMsg}</span>
+            {undoIds.length > 0 && (
+              <button onClick={undoApply} className="font-semibold text-emerald-800 hover:text-emerald-900 underline underline-offset-2">Undo</button>
+            )}
+          </div>
+        )}
+        {showProcess && (
+          <ProcessTemplateModal
+            initiativeId={init.id}
+            businessId={businessId}
+            initiativeName={init.name}
+            onClose={() => setShowProcess(false)}
+            onApplied={({ tasks, sites, skipped, skippedSites, instanceIds }) => {
+              const base = `Created ${tasks} tasks across ${sites} site${sites === 1 ? "" : "s"}. Refresh the timeline to see them.`;
+              const note = skipped > 0
+                ? ` Skipped ${skipped} already running this process${skippedSites.length ? ` (${skippedSites.join(", ")})` : ""}.`
+                : "";
+              setProcessMsg(base + note);
+              setUndoIds(instanceIds);
+              setTimeout(() => { setProcessMsg(""); setUndoIds([]); }, skipped > 0 ? 12000 : 10000);
+            }}
+          />
+        )}
+        {showManage && (
+          <ProcessManageModal
+            initiativeId={init.id}
+            businessId={businessId}
+            initiativeName={init.name}
+            onClose={() => setShowManage(false)}
+            onChanged={() => setProcessMsg("Updated. Refresh the timeline to see the new dates.")}
+            onApply={() => { setShowManage(false); setShowProcess(true); }}
+          />
+        )}
 
         <h3 className="flex items-center gap-2 font-semibold text-midnight text-base mb-2">
           {stats && (
@@ -940,7 +1014,7 @@ export default function ProgramDetailPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {initiatives.map((init) => (
-            <InitiativeCard key={init.id} init={init} stats={statsById[init.id]} canEdit={canEdit} onEdit={() => setEditInit(init)} onOpenDoc={() => setDocInit(init)} />
+            <InitiativeCard key={init.id} init={init} stats={statsById[init.id]} canEdit={canEdit} onEdit={() => setEditInit(init)} onOpenDoc={() => setDocInit(init)} businessId={businessId} />
           ))}
         </div>
       )}

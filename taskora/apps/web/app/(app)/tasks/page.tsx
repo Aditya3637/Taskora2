@@ -2,10 +2,11 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Suspense } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck, GanttChartSquare, MoreHorizontal, Search, Trash2, Inbox, Filter, ChevronsUpDown, Archive, ArchiveRestore } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck, GanttChartSquare, MoreHorizontal, Search, Trash2, Inbox, Filter, ChevronsUpDown, Archive, ArchiveRestore, FileText } from "lucide-react";
+import { WorkDocPanel } from "../programs/_components/WorkDocPanel";
 import { supabase } from "@/lib/supabase";
 import { GanttModal } from "../gantt/GanttChart";
-import { Button, Badge, Skeleton, EmptyState, PageHeader, cn } from "@/components/ui";
+import { Button, Badge, Skeleton, EmptyState, PageHeader, cn, useToast, Select, DatePicker } from "@/components/ui";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
@@ -85,6 +86,8 @@ type TaskEntity = {
   watchers?: Watcher[];
   date_change_count?: number;
   latest_comment?: LatestComment;
+  owner_id?: string | null;
+  priority?: string | null;
 };
 
 type Stakeholder = {
@@ -116,7 +119,22 @@ type Task = {
   // Resolved client-side from the task's initiative, so a due date beyond
   // the initiative's target end can be flagged (#6).
   initiative_target_end_date?: string;
+  // Recurring cadence (005): 'none' | daily | weekly | fortnightly | monthly,
+  // and the next occurrence the cron advances on mark-done.
+  recurring_type?: string | null;
+  next_meeting_at?: string | null;
+  blocker_reason?: string | null;
+  blocked_on_user_id?: string | null;
+  blocked_since?: string | null;
 };
+
+// Whole days a task has sat blocked (deck: stuck-duration). null when n/a.
+function blockedDays(iso?: string | null): number | null {
+  if (!iso) return null;
+  const ms = Date.now() - new Date(iso).getTime();
+  if (Number.isNaN(ms) || ms < 0) return null;
+  return Math.floor(ms / 86400000);
+}
 
 type Subtask = {
   id: string;
@@ -390,6 +408,7 @@ function SubtaskRow({
   programColor,
   initiativeName,
   onOpenSheet,
+  getChildren,
 }: {
   subtask: Subtask;
   // Named `subChildren` (not `children`) so callers don't trip React's
@@ -410,6 +429,9 @@ function SubtaskRow({
   programColor?: string;
   initiativeName?: string;
   onOpenSheet?: (scope: SheetScope) => void;
+  // Arbitrary-depth nesting: look up a row's direct children so each level can
+  // render its own subtree recursively. Absent → behaves as a leaf.
+  getChildren?: (parentId: string) => Subtask[];
 }) {
   const [updating, setUpdating] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -426,7 +448,8 @@ function SubtaskRow({
   // Schema caps nesting at 1 level: only top-level subtasks may have children.
   const isChild = !!subtask.parent_subtask_id;
   const hasChildren = subChildren.length > 0;
-  const canAddChild = !isChild;
+  // Arbitrary-depth nesting: any subtask may now hold children.
+  const canAddChild = true;
 
   const scope: WatcherScope = { scope_type: "subtask", subtask_id: subtask.id };
   const watchers = subtask.watchers ?? [];
@@ -601,25 +624,21 @@ function SubtaskRow({
             : "hover:bg-mist/30"
         }`}
       >
-        {/* Chevron — only on top-level rows; placeholder keeps alignment */}
-        {!isChild ? (
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="w-3.5 h-3.5 flex items-center justify-center text-steel/50 hover:text-midnight flex-shrink-0"
-            title={expanded ? "Collapse" : "Expand"}
-          >
-            {hasChildren || expanded ? (
-              expanded ? (
-                <ChevronDown className="w-3 h-3" />
-              ) : (
-                <ChevronRight className="w-3 h-3" />
-              )
-            ) : null}
-          </button>
-        ) : (
-          <span className="w-3.5 flex-shrink-0" />
-        )}
+        {/* Chevron — any row can hold children now (arbitrary nesting) */}
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="w-3.5 h-3.5 flex items-center justify-center text-steel/50 hover:text-midnight flex-shrink-0"
+          title={expanded ? "Collapse" : "Expand"}
+        >
+          {hasChildren || expanded ? (
+            expanded ? (
+              <ChevronDown className="w-3 h-3" />
+            ) : (
+              <ChevronRight className="w-3 h-3" />
+            )
+          ) : null}
+        </button>
 
         {/* Quick-toggle checkbox */}
         <button
@@ -905,14 +924,14 @@ function SubtaskRow({
         )}
       </div>
 
-      {/* Children + add-child form */}
-      {!isChild && expanded && (
+      {/* Children + add-child form. Recurses to any depth via getChildren. */}
+      {expanded && (
         <div className="ml-6 pl-2 border-l border-pebble/30">
           {subChildren.map((c) => (
             <SubtaskRow
               key={c.id}
               subtask={c}
-              subChildren={[]}
+              subChildren={getChildren ? getChildren(c.id) : []}
               taskId={taskId}
               members={members}
               currentUserId={currentUserId}
@@ -924,6 +943,7 @@ function SubtaskRow({
               programColor={programColor}
               initiativeName={initiativeName}
               onOpenSheet={onOpenSheet}
+              getChildren={getChildren}
             />
           ))}
           {showAddChild && (
@@ -1905,7 +1925,18 @@ function EntitySubtaskRow({
   const [entityStatus, setEntityStatus] = useState(entity.per_entity_status ?? "backlog");
   const [entityStartDate, setEntityStartDate] = useState(entity.per_entity_start_date?.slice(0, 10) ?? "");
   const [entityEndDate, setEntityEndDate] = useState(entity.per_entity_end_date?.slice(0, 10) ?? "");
+  const [entityOwner, setEntityOwner] = useState(entity.owner_id ?? "");
+  const [entityPriority, setEntityPriority] = useState(entity.priority ?? "medium");
   const [updatingStatus, setUpdatingStatus] = useState(false);
+
+  async function patchEntity(patch: Record<string, unknown>) {
+    try {
+      await apiFetch(`/api/v1/tasks/${taskId}/entities/${entity.entity_id}`, {
+        method: "PATCH", body: JSON.stringify(patch),
+      });
+      onEntityUpdate?.(entity.entity_id, patch as Partial<TaskEntity>);
+    } catch { /* silent */ }
+  }
   const [removing, setRemoving] = useState(false);
   const [showComments, setShowComments] = useState(false);
 
@@ -2099,6 +2130,35 @@ function EntitySubtaskRow({
           className="text-xs border border-pebble rounded px-1.5 py-0.5 text-midnight focus:outline-none focus:border-ocean flex-shrink-0"
         />
 
+        {/* Per-entity owner (who's accountable at this site) */}
+        <select
+          value={entityOwner}
+          onChange={(e) => { setEntityOwner(e.target.value); patchEntity({ owner_id: e.target.value || null }); }}
+          onClick={(e) => e.stopPropagation()}
+          disabled={!canManage}
+          title="Site owner"
+          className="text-xs border border-pebble rounded px-1.5 py-0.5 text-midnight focus:outline-none focus:border-ocean flex-shrink-0 max-w-[110px] disabled:opacity-60"
+        >
+          <option value="">Owner…</option>
+          {members.map((m) => (
+            <option key={m.user_id} value={m.user_id}>{m.name ?? m.email ?? "Member"}</option>
+          ))}
+        </select>
+
+        {/* Per-entity priority */}
+        <select
+          value={entityPriority}
+          onChange={(e) => { setEntityPriority(e.target.value); patchEntity({ priority: e.target.value }); }}
+          onClick={(e) => e.stopPropagation()}
+          disabled={!canManage}
+          title="Site priority"
+          className="text-xs border border-pebble rounded px-1.5 py-0.5 text-midnight focus:outline-none focus:border-ocean flex-shrink-0 disabled:opacity-60"
+        >
+          {["low", "medium", "high", "urgent"].map((p) => (
+            <option key={p} value={p}>{p[0].toUpperCase() + p.slice(1)}</option>
+          ))}
+        </select>
+
         {/* Due-date change counter */}
         {(entity.date_change_count ?? 0) > 0 && (
           <button
@@ -2188,6 +2248,7 @@ function EntitySubtaskRow({
               programColor={programColor}
               initiativeName={initiativeName}
               onOpenSheet={onOpenSheet}
+              getChildren={(pid) => childrenByParent[pid] ?? []}
             />
           ))}
           {!subtasksLoading && totalCount === 0 && (
@@ -2314,6 +2375,8 @@ function TaskCard({
   programColor,
   initiativeName,
   onOpenSheet,
+  selected,
+  onToggleSelect,
 }: {
   task: Task;
   members: Member[];
@@ -2332,6 +2395,9 @@ function TaskCard({
   programColor?: string;
   initiativeName?: string;
   onOpenSheet?: (scope: SheetScope) => void;
+  // Bulk-select: when onToggleSelect is supplied the card shows a checkbox.
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
 }) {
   const isFocused = !!focusTaskId && task.id === focusTaskId;
   const [expanded, setExpanded] = useState(isFocused);
@@ -2702,8 +2768,41 @@ function TaskCard({
               )}
             </div>
             <div className="flex items-center gap-2 mt-1 flex-wrap">
+              {/* Bulk-select checkbox (only when selection is active). */}
+              {onToggleSelect && (
+                <input
+                  type="checkbox"
+                  checked={!!selected}
+                  onChange={() => onToggleSelect(task.id)}
+                  onClick={(e) => e.stopPropagation()}
+                  aria-label="Select task"
+                  className="h-3.5 w-3.5 rounded border-pebble accent-taskora-red cursor-pointer"
+                />
+              )}
               {/* Inline status select */}
               <StatusSelect task={task} onStatusChange={onStatusChange} />
+
+              {/* Stuck-duration: how long it's sat blocked (deck). */}
+              {task.status === "blocked" && blockedDays(task.blocked_since) !== null && (
+                <span
+                  className="inline-flex items-center text-[10.5px] px-1.5 py-0.5 rounded-full bg-red-50 text-red-700 font-medium"
+                  title={`Blocked since ${new Date(task.blocked_since!).toLocaleDateString()}`}
+                >
+                  blocked {blockedDays(task.blocked_since)}d
+                </span>
+              )}
+
+              {/* Recurring cadence + next occurrence (read-only badge). */}
+              {task.recurring_type && task.recurring_type !== "none" && (
+                <span
+                  className="inline-flex items-center gap-1 text-[10.5px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-700 font-medium"
+                  title={task.next_meeting_at ? `Next: ${new Date(task.next_meeting_at).toLocaleString()}` : "Recurring task"}
+                >
+                  🔁 {task.recurring_type}
+                  {task.next_meeting_at &&
+                    ` · ${new Date(task.next_meeting_at).toLocaleDateString(undefined, { day: "numeric", month: "short" })}`}
+                </span>
+              )}
 
               {/* Due date — inline-editable from the row so users don't
                   have to expand the task to change it. Read-only fallback
@@ -3087,6 +3186,7 @@ function TaskCard({
                   programColor={programColor}
                   initiativeName={initiativeName}
                   onOpenSheet={onOpenSheet}
+                  getChildren={(pid) => flatChildrenByParent[pid] ?? []}
                 />
               ))}
               {flatTotal === 0 && !loadingSubtasks && (
@@ -3424,11 +3524,7 @@ function BreakdownModal({
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!title.trim()) return;
-    if (!startDate || !dueDate) {
-      setError("Start date and end date are required.");
-      return;
-    }
-    if (dueDate < startDate) {
+    if (startDate && dueDate && dueDate < startDate) {
       setError("End date can't be before the start date.");
       return;
     }
@@ -3700,11 +3796,7 @@ function NewTaskModal({
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!title.trim()) return;
-    if (!startDate || !dueDate) {
-      setError("Start date and end date are required.");
-      return;
-    }
-    if (dueDate < startDate) {
+    if (startDate && dueDate && dueDate < startDate) {
       setError("End date can't be before the start date.");
       return;
     }
@@ -3923,6 +4015,8 @@ function InitiativeGroup({
   focusTaskId,
   focusSubtaskId,
   onOpenSheet,
+  selectedIds,
+  onToggleSelect,
 }: {
   initiative: MyInitiative | null; // null = "Unlinked"
   tasks: Task[];
@@ -3951,6 +4045,8 @@ function InitiativeGroup({
   focusSubtaskId?: string | null;
   // P3: bubble up sheet-open requests so the page owns the open scope.
   onOpenSheet?: (scope: SheetScope) => void;
+  selectedIds?: Set<string>;
+  onToggleSelect?: (id: string) => void;
 }) {
   const groupRef = useRef<HTMLDivElement>(null);
   const containsFocus = !!focusTaskId && tasks.some((t) => t.id === focusTaskId);
@@ -4173,6 +4269,8 @@ function InitiativeGroup({
                 programColor={initiative?.programs?.color}
                 initiativeName={initiative?.name}
                 onOpenSheet={onOpenSheet}
+                selected={selectedIds?.has(task.id)}
+                onToggleSelect={onToggleSelect}
               />
             ))
           )}
@@ -4223,6 +4321,95 @@ function InitiativeGroup({
   );
 }
 
+// ── Board view (deck: "List / Board / Mine") ───────────────────────────────
+const BOARD_COLUMNS = ["backlog", "todo", "in_progress", "pending_decision", "blocked", "reopened", "done"] as const;
+
+function TaskBoard({
+  tasks,
+  onStatusChange,
+  onOpenSheet,
+}: {
+  tasks: Task[];
+  onStatusChange: (taskId: string, newStatus: string) => void;
+  onOpenSheet: (scope: SheetScope) => void;
+}) {
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overCol, setOverCol] = useState<string | null>(null);
+
+  const byStatus: Record<string, Task[]> = {};
+  for (const c of BOARD_COLUMNS) byStatus[c] = [];
+  for (const t of tasks) {
+    const col = (BOARD_COLUMNS as readonly string[]).includes(t.status) ? t.status : "backlog";
+    byStatus[col].push(t);
+  }
+
+  async function move(taskId: string, newStatus: string) {
+    const t = tasks.find((x) => x.id === taskId);
+    if (!t || t.status === newStatus) return;
+    try {
+      await apiFetch(`/api/v1/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify({ status: newStatus }) });
+      onStatusChange(taskId, newStatus);
+    } catch { /* silent — list reload corrects on next fetch */ }
+  }
+
+  return (
+    <div className="flex gap-3 overflow-x-auto pb-3">
+      {BOARD_COLUMNS.map((col) => (
+        <div
+          key={col}
+          onDragOver={(e) => { e.preventDefault(); setOverCol(col); }}
+          onDragLeave={() => setOverCol((c) => (c === col ? null : c))}
+          onDrop={(e) => { e.preventDefault(); if (dragId) move(dragId, col); setDragId(null); setOverCol(null); }}
+          className={cn(
+            "flex-shrink-0 w-[230px] rounded-xl border bg-mist/30 flex flex-col",
+            overCol === col ? "border-taskora-red/50 bg-taskora-red/[0.03]" : "border-pebble",
+          )}
+        >
+          <div className="flex items-center gap-2 px-3 py-2 border-b border-pebble/70">
+            <span className="text-[12px] font-semibold text-midnight">{STATUS_LABELS[col] ?? col}</span>
+            <span className="text-[11px] text-steel/70">{byStatus[col].length}</span>
+          </div>
+          <div className="p-2 space-y-2 min-h-[80px]">
+            {byStatus[col].map((t) => (
+              <div
+                key={t.id}
+                draggable
+                onDragStart={() => setDragId(t.id)}
+                onDragEnd={() => { setDragId(null); setOverCol(null); }}
+                onClick={() => onOpenSheet({ kind: "task", task: t })}
+                className={cn(
+                  "rounded-lg border border-pebble bg-white px-2.5 py-2 cursor-pointer hover:border-steel/40 hover:shadow-sm transition-all",
+                  dragId === t.id && "opacity-50",
+                )}
+              >
+                <p className="text-[12.5px] text-midnight leading-snug line-clamp-2">{t.title}</p>
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full font-medium", PRIORITY_BADGE[t.priority] ?? "bg-gray-100 text-gray-600")}>
+                    {t.priority}
+                  </span>
+                  {t.due_date && (
+                    <span className="text-[10.5px] text-steel">{new Date(t.due_date + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short" })}</span>
+                  )}
+                </div>
+              </div>
+            ))}
+            {byStatus[col].length === 0 && (
+              <p className="text-[11px] text-steel/50 text-center py-3">Drop here</p>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const PRIORITY_BADGE: Record<string, string> = {
+  low: "bg-slate-100 text-slate-600",
+  medium: "bg-sky-100 text-sky-700",
+  high: "bg-amber-100 text-amber-700",
+  urgent: "bg-red-100 text-red-700",
+};
+
 // ── Inner Page (needs useSearchParams) ────────────────────────────────────────
 
 function TasksPageInner() {
@@ -4247,6 +4434,10 @@ function TasksPageInner() {
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("All");
   const [showCreate, setShowCreate] = useState(false);
+  // ⌘K "New task" deep-link: /tasks?new=1 opens the create modal on arrival.
+  useEffect(() => {
+    if (searchParams.get("new")) setShowCreate(true);
+  }, [searchParams]);
   // B5: cursor pagination on /tasks/my/page
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -4274,6 +4465,12 @@ function TasksPageInner() {
   // P3: TaskDetailSheet — opens on title click, replaces inline-expand for
   // detail. Inline expand-children stays alongside this phase.
   const [sheetScope, setSheetScope] = useState<SheetScope | null>(null);
+  // Bulk-select on Work: pick multiple tasks, then set status/priority in one go.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  // List / Board view toggle (deck: "List / Board / Mine").
+  const [viewMode, setViewMode] = useState<"list" | "board">("list");
+  const { toast } = useToast();
 
   // Fetches a page of tasks. When `append` is true, results are appended to the
   // current list (used by Load More). Otherwise the list is replaced and the
@@ -4497,6 +4694,47 @@ function TasksPageInner() {
   }
 
   // Optimistic status update
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  async function applyBulk(field: "status" | "priority", value: string) {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0 || !value) return;
+    setBulkBusy(true);
+    try {
+      const res = await apiFetch("/api/v1/tasks/bulk-update", {
+        method: "POST",
+        body: JSON.stringify({ task_ids: ids, [field]: value }),
+      });
+      // Optimistic local apply (mirrors handleStatusChange).
+      setTasks((prev) =>
+        prev.map((t) =>
+          ids.includes(t.id)
+            ? {
+                ...t,
+                [field]: value,
+                ...(field === "status"
+                  ? { closed_at: value === "done" ? t.closed_at ?? new Date().toISOString() : null }
+                  : {}),
+              }
+            : t,
+        ),
+      );
+      const n = (res as { updated_count?: number })?.updated_count ?? ids.length;
+      setSelectedIds(new Set());
+      toast({ title: `Updated ${n} task${n === 1 ? "" : "s"}` });
+    } catch (e: any) {
+      toast({ title: "Bulk update failed", description: e?.message, variant: "error" });
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   function handleStatusChange(taskId: string, newStatus: string) {
     setTasks((prev) =>
       prev.map((t) =>
@@ -4527,6 +4765,19 @@ function TasksPageInner() {
   function handleTaskArchived(taskId: string) {
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
     loadArchivedTasks();
+    // Universal undo: archiving is reversible, so offer a one-tap restore.
+    toast({
+      title: "Task archived",
+      action: {
+        label: "Undo",
+        onClick: async () => {
+          try {
+            await apiFetch(`/api/v1/tasks/${taskId}/restore`, { method: "POST" });
+            handleTaskRestored(taskId);
+          } catch { /* ignore */ }
+        },
+      },
+    });
   }
 
   // Restored: drop from the archived set and refetch the active page so it
@@ -4798,8 +5049,9 @@ function TasksPageInner() {
         )}
       </div>
 
-      {/* Status filter tabs */}
-      <div role="tablist" aria-label="Status filter" className="flex gap-1.5 flex-wrap mb-6 p-0.5 bg-muted rounded-lg w-fit">
+      {/* Status filter tabs + List/Board toggle */}
+      <div className="flex items-center justify-between gap-3 mb-6 flex-wrap">
+      <div role="tablist" aria-label="Status filter" className="flex gap-1.5 flex-wrap p-0.5 bg-muted rounded-lg w-fit">
         {STATUSES.map((s) => {
           const active = filter === s;
           return (
@@ -4820,6 +5072,22 @@ function TasksPageInner() {
             </button>
           );
         })}
+      </div>
+        <div className="inline-flex p-0.5 bg-muted rounded-lg">
+          {(["list", "board"] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => setViewMode(v)}
+              className={cn(
+                "px-3 py-1.5 rounded-md text-[12px] font-semibold capitalize transition-all duration-fast",
+                viewMode === v ? "bg-surface text-fg shadow-xs" : "text-fg-muted hover:text-fg",
+              )}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Loading / error states */}
@@ -4897,11 +5165,63 @@ function TasksPageInner() {
           </div>
         )}
 
-        {/* Grouped tasks */}
+        {/* Board view */}
+        {!loading && !error && viewMode === "board" &&
+          (displayInitiativeIds.length > 0 || unlinkedTasks.length > 0) && (
+            <TaskBoard
+              tasks={[...Object.values(tasksByInitiative).flat(), ...unlinkedTasks]}
+              onStatusChange={handleStatusChange}
+              onOpenSheet={setSheetScope}
+            />
+          )}
+
+        {/* Grouped tasks (list view) */}
         {!loading &&
           !error &&
+          viewMode === "list" &&
           (displayInitiativeIds.length > 0 || unlinkedTasks.length > 0) && (
           <div className="space-y-3">
+            {/* Bulk action bar — appears once tasks are selected. */}
+            {selectedIds.size > 0 && (
+              <div className="sticky top-2 z-20 flex flex-wrap items-center gap-2 rounded-xl border border-pebble bg-white shadow-lg px-3 py-2">
+                <span className="text-[13px] font-semibold text-midnight">
+                  {selectedIds.size} selected
+                </span>
+                <span className="mx-1 h-4 w-px bg-pebble" />
+                <label className="text-[11px] text-steel">Set status</label>
+                <select
+                  defaultValue=""
+                  disabled={bulkBusy}
+                  onChange={(e) => { if (e.target.value) { applyBulk("status", e.target.value); e.target.value = ""; } }}
+                  className="border border-pebble rounded px-2 py-1 text-[12.5px] focus:outline-none focus:border-ocean"
+                >
+                  <option value="">—</option>
+                  {TASK_STATUS_ORDER.map((s) => (
+                    <option key={s} value={s}>{STATUS_LABELS[s] ?? s}</option>
+                  ))}
+                </select>
+                <label className="text-[11px] text-steel ml-1">Set priority</label>
+                <select
+                  defaultValue=""
+                  disabled={bulkBusy}
+                  onChange={(e) => { if (e.target.value) { applyBulk("priority", e.target.value); e.target.value = ""; } }}
+                  className="border border-pebble rounded px-2 py-1 text-[12.5px] focus:outline-none focus:border-ocean"
+                >
+                  <option value="">—</option>
+                  {PRIORITY_OPTIONS.map((p) => (
+                    <option key={p} value={p}>{p[0].toUpperCase() + p.slice(1)}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => setSelectedIds(new Set())}
+                  disabled={bulkBusy}
+                  className="ml-auto text-[12px] text-steel hover:text-midnight"
+                >
+                  Clear
+                </button>
+              </div>
+            )}
             {/* Initiative groups — includes empty initiatives that match
                 the program/owner filter, so e.g. "Owner: Hitesh" still
                 shows his initiatives even if no tasks have been created. */}
@@ -4934,6 +5254,8 @@ function TasksPageInner() {
                   focusTaskId={focusTaskId}
                   focusSubtaskId={focusSubtaskId}
                   onOpenSheet={setSheetScope}
+                  selectedIds={selectedIds}
+                  onToggleSelect={toggleSelect}
                 />
               );
             })}
@@ -4958,6 +5280,8 @@ function TasksPageInner() {
                 focusTaskId={focusTaskId}
                 focusSubtaskId={focusSubtaskId}
                 onOpenSheet={setSheetScope}
+                selectedIds={selectedIds}
+                onToggleSelect={toggleSelect}
               />
             )}
 
@@ -5054,6 +5378,203 @@ type SheetScope =
 
 const PRIORITY_OPTIONS = ["low", "medium", "high", "urgent"] as const;
 
+// ── Task dependencies / prerequisites ──────────────────────────────────────
+function TaskDependencies({ taskId, canEdit }: { taskId: string; canEdit: boolean }) {
+  const [deps, setDeps] = useState<{ id: string; title: string; status?: string }[]>([]);
+  const [blocks, setBlocks] = useState<{ id: string; title: string }[]>([]);
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<{ id: string; label: string }[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const d = await apiFetch(`/api/v1/tasks/${taskId}/dependencies`);
+      setDeps(d?.depends_on ?? []);
+      setBlocks(d?.depended_on_by ?? []);
+    } catch { /* leave as-is */ }
+  }, [taskId]);
+  useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!open) { setResults([]); return; }
+    const bid = typeof window !== "undefined" ? localStorage.getItem("business_id") ?? "" : "";
+    if (!bid || q.trim().length < 2) { setResults([]); return; }
+    const t = setTimeout(async () => {
+      try {
+        const d = await apiFetch(`/api/v1/mentions/search?business_id=${encodeURIComponent(bid)}&q=${encodeURIComponent(q)}`);
+        const tasks = (d?.results ?? [])
+          .filter((r: { type: string }) => r.type === "task")
+          .map((r: { id: string; label: string }) => ({ id: r.id.split(":")[1], label: r.label }))
+          .filter((r: { id: string }) => r.id !== taskId && !deps.some((dp) => dp.id === r.id));
+        setResults(tasks);
+      } catch { setResults([]); }
+    }, 180);
+    return () => clearTimeout(t);
+  }, [q, open, taskId, deps]);
+
+  async function save(next: string[]) {
+    setBusy(true);
+    try {
+      await apiFetch(`/api/v1/tasks/${taskId}/dependencies`, {
+        method: "PATCH", body: JSON.stringify({ depends_on: next }),
+      });
+      await load();
+    } catch { /* ignore */ } finally { setBusy(false); }
+  }
+
+  return (
+    <div>
+      <label className="block text-[11px] font-medium text-steel mb-1">Depends on (prerequisites)</label>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {deps.length === 0 && <span className="text-[12px] text-steel/60">No prerequisites.</span>}
+        {deps.map((d) => (
+          <span key={d.id} className="inline-flex items-center gap-1 text-[12px] bg-mist border border-pebble rounded-full px-2 py-0.5 text-midnight">
+            {d.title}
+            {canEdit && (
+              <button type="button" disabled={busy} onClick={() => save(deps.filter((x) => x.id !== d.id).map((x) => x.id))}
+                className="text-steel hover:text-red-600 leading-none">×</button>
+            )}
+          </span>
+        ))}
+        {canEdit && (
+          <button type="button" onClick={() => setOpen((v) => !v)} className="text-[12px] text-taskora-red font-semibold">+ Add</button>
+        )}
+      </div>
+      {open && canEdit && (
+        <div className="mt-1.5">
+          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search tasks to depend on…"
+            className="w-full border border-pebble rounded px-2 py-1.5 text-sm focus:outline-none focus:border-ocean" />
+          {results.length > 0 && (
+            <div className="mt-1 border border-pebble rounded-lg max-h-40 overflow-y-auto bg-white">
+              {results.map((r) => (
+                <button key={r.id} type="button" disabled={busy}
+                  onClick={() => { save([...deps.map((d) => d.id), r.id]); setQ(""); setOpen(false); }}
+                  className="w-full text-left px-2.5 py-1.5 text-[13px] text-midnight hover:bg-mist">{r.label}</button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {blocks.length > 0 && (
+        <p className="mt-1.5 text-[11px] text-steel/70">
+          Blocks: {blocks.map((b) => b.title).join(", ")}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Task file attachments ───────────────────────────────────────────────────
+function TaskAttachments({ taskId, canEdit }: { taskId: string; canEdit: boolean }) {
+  const [files, setFiles] = useState<{ id: string; file_name: string; file_size_bytes?: number | null }[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const d = await apiFetch(`/api/v1/tasks/${taskId}/attachments`);
+      setFiles(Array.isArray(d) ? d : []);
+    } catch { /* leave */ }
+  }, [taskId]);
+  useEffect(() => { load(); }, [load]);
+
+  async function upload(file: File) {
+    setBusy(true); setErr("");
+    try {
+      // 1) signed upload URL from the backend (tenant-prefixed path).
+      const sign = await apiFetch(`/api/v1/tasks/${taskId}/attachments/sign`, {
+        method: "POST",
+        body: JSON.stringify({ file_name: file.name, content_type: file.type || "application/octet-stream" }),
+      });
+      if (file.size > (sign.max_bytes ?? 26214400)) throw new Error("File is too large (max 25 MB).");
+      // 2) upload the bytes straight to Supabase Storage.
+      const { error: upErr } = await supabase.storage
+        .from(sign.bucket)
+        .uploadToSignedUrl(sign.path, sign.token, file, { contentType: file.type || undefined });
+      if (upErr) throw upErr;
+      // 3) record the attachment row.
+      await apiFetch(`/api/v1/tasks/${taskId}/attachments`, {
+        method: "POST",
+        body: JSON.stringify({ path: sign.path, file_name: file.name, file_size_bytes: file.size }),
+      });
+      await load();
+    } catch (e: any) {
+      setErr(e?.message || "Couldn’t upload that file.");
+    } finally { setBusy(false); }
+  }
+
+  async function remove(id: string) {
+    setFiles((prev) => prev.filter((f) => f.id !== id));
+    try { await apiFetch(`/api/v1/tasks/${taskId}/attachments/${id}`, { method: "DELETE" }); } catch { load(); }
+  }
+
+  async function openFile(id: string) {
+    try {
+      const d = await apiFetch(`/api/v1/tasks/${taskId}/attachments/${id}/url`);
+      if (d?.url) window.open(d.url, "_blank", "noopener");
+    } catch { /* ignore */ }
+  }
+
+  return (
+    <div>
+      <label className="block text-[11px] font-medium text-steel mb-1">Attachments</label>
+      <div className="space-y-1">
+        {files.length === 0 && <span className="text-[12px] text-steel/60">No files attached.</span>}
+        {files.map((f) => (
+          <div key={f.id} className="flex items-center gap-2 text-[12.5px]">
+            <button type="button" onClick={() => openFile(f.id)} className="text-ocean hover:underline truncate">{f.file_name}</button>
+            {canEdit && (
+              <button type="button" onClick={() => remove(f.id)} className="ml-auto text-steel hover:text-red-600">Remove</button>
+            )}
+          </div>
+        ))}
+      </div>
+      {canEdit && (
+        <label className="mt-1.5 inline-flex items-center gap-1.5 text-[12px] text-taskora-red font-semibold cursor-pointer">
+          {busy ? "Uploading…" : "+ Attach file"}
+          <input type="file" disabled={busy} className="hidden"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f); e.currentTarget.value = ""; }} />
+        </label>
+      )}
+      {err && <p className="text-[11px] text-red-600 mt-1">{err}</p>}
+    </div>
+  );
+}
+
+/**
+ * Task Workspace doc — the full plan/notes canvas on a task (deck's marquee
+ * "Task Workspace" screen). Reuses the initiative WorkDocPanel pointed at the
+ * task-scoped doc endpoints; backlinks/promote disabled (task scope).
+ */
+function TaskWorkspaceDoc({ taskId, taskTitle }: { taskId: string; taskTitle: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <label className="block text-[11px] font-medium text-steel mb-1">Workspace doc</label>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="inline-flex items-center gap-1.5 text-[12.5px] text-ocean hover:underline"
+      >
+        <FileText className="h-3.5 w-3.5" /> Open the plan, notes &amp; files
+      </button>
+      {open && (
+        <WorkDocPanel
+          initiativeId={taskId}
+          initiativeName={taskTitle}
+          onClose={() => setOpen(false)}
+          docsBasePath={`/api/v1/tasks/${taskId}/docs`}
+          headerName={taskTitle}
+          headerSub="Task workspace"
+          backlinksPath={null}
+          promotePath={null}
+        />
+      )}
+    </div>
+  );
+}
+
 function TaskDetailSheet({
   scope,
   members,
@@ -5076,6 +5597,8 @@ function TaskDetailSheet({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [statusVal, setStatusVal] = useState("");
+  const [blockerReason, setBlockerReason] = useState("");
+  const [blockedOnId, setBlockedOnId] = useState<string | null>(null);
   const [priority, setPriority] = useState("medium");
   const [startDate, setStartDate] = useState("");
   const [dueDate, setDueDate] = useState("");
@@ -5113,6 +5636,8 @@ function TaskDetailSheet({
     if (scope.kind === "task") {
       setTitle(scope.task.title);
       setStatusVal(scope.task.status);
+      setBlockerReason((scope.task as { blocker_reason?: string | null }).blocker_reason ?? "");
+      setBlockedOnId(scope.task.blocked_on_user_id ?? null);
       setPriority(scope.task.priority || "medium");
       setStartDate(scope.task.start_date ?? "");
       setDueDate(scope.task.due_date ?? "");
@@ -5122,6 +5647,8 @@ function TaskDetailSheet({
     } else {
       setTitle(scope.subtask.title);
       setStatusVal(scope.subtask.status);
+      setBlockerReason((scope.subtask as { blocker_reason?: string | null }).blocker_reason ?? "");
+      setBlockedOnId(null);
       setPriority((scope.subtask.priority ?? "medium") as string);
       setStartDate(scope.subtask.start_date ?? "");
       setDueDate(scope.subtask.due_date ?? "");
@@ -5230,11 +5757,7 @@ function TaskDetailSheet({
       setErr("Title required");
       return;
     }
-    // Task dates are mandatory (057); subtask dates are optional.
-    if (isTask && (!startDate || !dueDate)) {
-      setErr("Start date and end date are required.");
-      return;
-    }
+    // Dates are optional (068) — undated items land in the Roadmap tray.
     if (startDate && dueDate && dueDate < startDate) {
       setErr("End date can't be before the start date.");
       return;
@@ -5251,16 +5774,13 @@ function TaskDetailSheet({
         description: description || null,
         status: statusVal,
       };
-      if (isTask) {
-        // Mandatory + ordered — always send concrete values.
-        payload.start_date = startDate;
-        payload.due_date = dueDate;
-      } else {
-        // Optional — empty clears.
-        payload.start_date = startDate || null;
-        payload.due_date = dueDate || null;
-        payload.assignee_id = assigneeId;
-      }
+      // Capture why it's blocked (feeds Nudges + the blocked notification).
+      if (statusVal === "blocked") payload.blocker_reason = blockerReason.trim() || null;
+      if (isTask && statusVal === "blocked") payload.blocked_on_user_id = blockedOnId || null;
+      // Dates optional everywhere now (068) — empty clears to null.
+      payload.start_date = startDate || null;
+      payload.due_date = dueDate || null;
+      if (!isTask) payload.assignee_id = assigneeId;
       await apiFetch(apiPath, {
         method: "PATCH",
         body: JSON.stringify(payload),
@@ -5332,79 +5852,94 @@ function TaskDetailSheet({
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-[11px] font-medium text-steel mb-1">Status</label>
-              <select
+              <Select
                 value={statusVal}
-                onChange={(e) => setStatusVal(e.target.value)}
+                onChange={setStatusVal}
                 disabled={!canEdit || saving}
-                className="w-full border border-pebble rounded px-2 py-1.5 text-sm focus:outline-none focus:border-ocean disabled:bg-mist/40"
-              >
-                {(isTask ? TASK_STATUS_ORDER : SUBTASK_STATUS_ORDER).map((s) => (
-                  <option key={s} value={s}>
-                    {STATUS_LABELS[s] ?? s}
-                  </option>
-                ))}
-              </select>
+                className="w-full"
+                options={(isTask ? TASK_STATUS_ORDER : SUBTASK_STATUS_ORDER).map((s) => ({ value: s, label: STATUS_LABELS[s] ?? s }))}
+              />
             </div>
 
             <div>
               <label className="block text-[11px] font-medium text-steel mb-1">Priority</label>
-              <select
+              <Select
                 value={priority}
-                onChange={(e) => setPriority(e.target.value)}
+                onChange={setPriority}
                 disabled={!canEdit || saving}
-                className="w-full border border-pebble rounded px-2 py-1.5 text-sm focus:outline-none focus:border-ocean disabled:bg-mist/40"
-              >
-                {PRIORITY_OPTIONS.map((p) => (
-                  <option key={p} value={p}>
-                    {p[0].toUpperCase() + p.slice(1)}
-                  </option>
-                ))}
-              </select>
+                className="w-full"
+                options={PRIORITY_OPTIONS.map((p) => ({ value: p, label: p[0].toUpperCase() + p.slice(1) }))}
+              />
             </div>
+
+            {statusVal === "blocked" && (
+              <div className="col-span-2">
+                <label className="block text-[11px] font-medium text-steel mb-1">Why is this blocked?</label>
+                <input
+                  type="text"
+                  value={blockerReason}
+                  onChange={(e) => setBlockerReason(e.target.value)}
+                  disabled={!canEdit || saving}
+                  placeholder="e.g. waiting on vendor lead time (3 wks)"
+                  className="w-full border border-pebble rounded px-3 py-1.5 text-sm text-midnight focus:outline-none focus:border-ocean disabled:bg-mist/40"
+                />
+                {isTask && (
+                  <div className="mt-2">
+                    <label className="block text-[11px] font-medium text-steel mb-1">Blocked on (who can unblock)</label>
+                    <Select
+                      value={blockedOnId ?? ""}
+                      onChange={(v) => setBlockedOnId(v || null)}
+                      disabled={!canEdit || saving}
+                      className="w-full"
+                      options={[{ value: "", label: "— Nobody specific —" }, ...members.map((m) => ({ value: m.user_id, label: m.name || m.email || "Member" }))]}
+                    />
+                  </div>
+                )}
+                <p className="text-[10.5px] text-steel/60 mt-1">
+                  Shows in Nudges and notifies watchers, the initiative owner{isTask ? " and the person it's blocked on" : ""}.
+                </p>
+              </div>
+            )}
 
             <div>
               <label className="block text-[11px] font-medium text-steel mb-1">
-                Start date{isTask ? " *" : ""}
+                Start date
               </label>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
+              <DatePicker
+                value={startDate || null}
+                onChange={(v) => setStartDate(v ?? "")}
                 disabled={!canEdit || saving}
-                className="w-full border border-pebble rounded px-2 py-1.5 text-sm focus:outline-none focus:border-ocean disabled:bg-mist/40"
+                clearable
+                className="w-full"
+                placeholder="No date"
               />
             </div>
 
             <div>
               <label className="block text-[11px] font-medium text-steel mb-1">
-                End date{isTask ? " *" : ""}
+                End date
               </label>
-              <input
-                type="date"
-                value={dueDate}
-                min={startDate || undefined}
-                onChange={(e) => setDueDate(e.target.value)}
+              <DatePicker
+                value={dueDate || null}
+                onChange={(v) => setDueDate(v ?? "")}
+                min={startDate || null}
                 disabled={!canEdit || saving}
-                className="w-full border border-pebble rounded px-2 py-1.5 text-sm focus:outline-none focus:border-ocean disabled:bg-mist/40"
+                clearable
+                className="w-full"
+                placeholder="No date"
               />
             </div>
 
             {!isTask && (
               <div>
                 <label className="block text-[11px] font-medium text-steel mb-1">Assignee</label>
-                <select
+                <Select
                   value={assigneeId ?? ""}
-                  onChange={(e) => setAssigneeId(e.target.value || null)}
+                  onChange={(v) => setAssigneeId(v || null)}
                   disabled={!canEdit || saving}
-                  className="w-full border border-pebble rounded px-2 py-1.5 text-sm focus:outline-none focus:border-ocean disabled:bg-mist/40"
-                >
-                  <option value="">Unassigned</option>
-                  {members.map((m) => (
-                    <option key={m.user_id} value={m.user_id}>
-                      {m.name || m.email}
-                    </option>
-                  ))}
-                </select>
+                  className="w-full"
+                  options={[{ value: "", label: "Unassigned" }, ...members.map((m) => ({ value: m.user_id, label: m.name || m.email || "Member" }))]}
+                />
               </div>
             )}
           </div>
@@ -5420,6 +5955,10 @@ function TaskDetailSheet({
               className="w-full border border-pebble rounded px-3 py-2 text-sm text-midnight focus:outline-none focus:border-ocean disabled:bg-mist/40"
             />
           </div>
+
+          {isTask && <TaskDependencies taskId={scope.task.id} canEdit={canEdit} />}
+          {isTask && <TaskAttachments taskId={scope.task.id} canEdit={canEdit} />}
+          {isTask && <TaskWorkspaceDoc taskId={scope.task.id} taskTitle={scope.task.title} />}
 
           {/* ── Approval controls (only show when approval matters) ── */}
           {(() => {

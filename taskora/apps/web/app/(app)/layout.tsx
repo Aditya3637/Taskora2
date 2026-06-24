@@ -4,10 +4,8 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import {
   Sun,
-  Gauge,
-  Sunrise,
   Users,
-  FolderKanban,
+  Building2,
   CheckSquare,
   BarChart3,
   LineChart,
@@ -20,30 +18,36 @@ import {
   ChevronsUpDown,
   Menu,
   X as XIcon,
+  Search,
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { apiFetch } from "@/lib/api";
 import PersonaSwitcher from "@/components/testing/PersonaSwitcher";
-import { Avatar, Tooltip, Spinner, Badge, cn } from "@/components/ui";
+import NotificationBell from "@/components/NotificationBell";
+import FirstRunWelcome from "@/components/FirstRunWelcome";
+import QuickCapture from "@/components/QuickCapture";
+import CommandK from "@/components/CommandK";
+import PresenceStrip from "@/components/PresenceStrip";
+import { Avatar, Tooltip, Spinner, Badge, cn, ToastProvider } from "@/components/ui";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "";
 
 type NavItem = {
   href: string;
   label: string;
-  Icon: typeof Sunrise;
+  Icon: typeof Sun;
 };
 
+// The 7-surface IA (nav 10→7). Home/Roadmap/Insights are merged tab shells that
+// reuse the old pages; the legacy routes still resolve for deep links.
 const coreNavItems: NavItem[] = [
-  { href: "/my-day",      label: "My Day",      Icon: Sun },
-  { href: "/portfolio",   label: "Portfolio",   Icon: Gauge },
-  { href: "/daily-brief", label: "Daily Brief", Icon: Sunrise },
-  { href: "/notebook",    label: "Notebook",    Icon: Notebook },
-  { href: "/programs",    label: "Programs",    Icon: FolderKanban },
-  { href: "/tasks",       label: "Tasks",       Icon: CheckSquare },
-  { href: "/people",      label: "People",      Icon: Users },
-  { href: "/analytics",   label: "Analytics",   Icon: LineChart },
-  { href: "/gantt",       label: "Gantt",       Icon: BarChart3 },
+  { href: "/home",     label: "Home",     Icon: Sun },          // My Day · Daily Brief · Portfolio · Nudges
+  { href: "/roadmap",  label: "Roadmap",  Icon: BarChart3 },    // Timeline (Gantt) · Programmes
+  { href: "/tasks",    label: "Work",     Icon: CheckSquare },
+  { href: "/sites",    label: "Sites",    Icon: Building2 },
+  { href: "/people",   label: "People",   Icon: Users },
+  { href: "/insights", label: "Insights", Icon: LineChart },    // Analytics · War Room
+  { href: "/notebook", label: "Notebook", Icon: Notebook },
 ];
 
 const SIDEBAR_KEY = "taskora_sidebar_expanded";
@@ -66,7 +70,7 @@ function SidebarContent({
   const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
   const [trialDaysLeft, setTrialDaysLeft] = useState<number | null>(null);
   const [workspaceName, setWorkspaceName] = useState<string>("");
-  const [workspaces, setWorkspaces] = useState<{ id: string; name: string; role: string; is_owner: boolean }[]>([]);
+  const [workspaces, setWorkspaces] = useState<{ id: string; name: string; role: string; is_owner: boolean; company_id?: string | null; company_name?: string | null }[]>([]);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   // Create-workspace modal. The backend caps owned workspaces at one per
   // user (anti-abuse), so for someone who already owns one we surface that
@@ -89,7 +93,7 @@ function SidebarContent({
       if (typeof window !== "undefined" && biz?.id) {
         // Switch into the new workspace; the layout re-resolves on reload.
         localStorage.setItem("business_id", biz.id);
-        window.location.href = "/daily-brief";
+        window.location.href = "/home";
       }
     } catch (e: any) {
       // 409 surfaces the friendly cap message ("You already own a workspace…").
@@ -199,9 +203,9 @@ function SidebarContent({
       >
         {expanded && (
           <Link
-            href="/daily-brief"
+            href="/home"
             className="flex items-center gap-2 min-w-0"
-            aria-label="Taskora — go to Daily Brief"
+            aria-label="Taskora — go to Home"
           >
             <span
               aria-hidden="true"
@@ -221,6 +225,28 @@ function SidebarContent({
             className="h-8 w-8 inline-flex items-center justify-center text-chrome-fg-muted hover:text-chrome-fg hover:bg-white/5 rounded-md transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40"
           >
             {expanded ? <PanelLeftClose className="h-[18px] w-[18px]" /> : <PanelLeftOpen className="h-[18px] w-[18px]" />}
+          </button>
+        </Tooltip>
+      </div>
+
+      {/* ── Global search trigger (opens ⌘K palette) ───────────────── */}
+      <div className="px-2 pt-3">
+        <Tooltip label={expanded ? "" : "Search (⌘K)"} side="right">
+          <button
+            onClick={() => window.dispatchEvent(new Event("taskora:command-k"))}
+            aria-label="Search"
+            className={cn(
+              "w-full h-9 inline-flex items-center rounded-md border border-chrome-line text-chrome-fg-muted hover:text-chrome-fg hover:bg-white/5 transition-colors duration-fast focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40",
+              expanded ? "px-2.5 gap-2 justify-between" : "justify-center",
+            )}
+          >
+            <span className="inline-flex items-center gap-2 min-w-0">
+              <Search className="h-[15px] w-[15px] flex-shrink-0" />
+              {expanded && <span className="text-[13px] truncate">Search…</span>}
+            </span>
+            {expanded && (
+              <kbd className="text-[10px] border border-chrome-line rounded px-1 py-0.5 text-chrome-fg-muted">⌘K</kbd>
+            )}
           </button>
         </Tooltip>
       </div>
@@ -348,40 +374,60 @@ function SidebarContent({
               role="menu"
               className="absolute left-0 right-0 bottom-full mb-2 bg-chrome-2 border border-chrome-line rounded-lg shadow-xl z-30 py-1 max-h-72 overflow-y-auto chrome-scroll animate-scale-in origin-bottom"
             >
-              {workspaces.map((w) => {
-                const active =
-                  typeof window !== "undefined" &&
-                  localStorage.getItem("business_id") === w.id;
-                return (
-                  <button
-                    key={w.id}
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      if (typeof window === "undefined") return;
-                      localStorage.setItem("business_id", w.id);
-                      window.location.reload();
-                    }}
-                    className={cn(
-                      "w-full text-left px-3 py-2 flex items-center gap-2.5 transition-colors duration-fast",
-                      active
-                        ? "bg-white/[0.08] text-chrome-fg"
-                        : "text-chrome-fg-muted hover:bg-white/[0.04] hover:text-chrome-fg",
+              {(() => {
+                // Group workspaces by company so a multi-workspace company reads
+                // as one heading with its workspaces beneath it.
+                const order: string[] = [];
+                const byCompany: Record<string, typeof workspaces> = {};
+                for (const w of workspaces) {
+                  const key = w.company_name || "";
+                  if (!byCompany[key]) { byCompany[key] = []; order.push(key); }
+                  byCompany[key].push(w);
+                }
+                return order.map((company) => (
+                  <div key={company || "_none"}>
+                    {company && (
+                      <div className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wide text-chrome-fg-muted/70">
+                        {company}
+                      </div>
                     )}
-                  >
-                    <Avatar name={w.name || "?"} size="sm" square />
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[12.5px] font-medium truncate leading-tight">
-                        {w.name || "Workspace"}
-                      </span>
-                      <span className="block text-[10.5px] opacity-70 capitalize leading-tight mt-0.5">
-                        {w.role}{w.is_owner ? " · owner" : ""}
-                      </span>
-                    </span>
-                    {active && <Badge tone="brand" size="sm" dot>active</Badge>}
-                  </button>
-                );
-              })}
+                    {byCompany[company].map((w) => {
+                      const active =
+                        typeof window !== "undefined" &&
+                        localStorage.getItem("business_id") === w.id;
+                      return (
+                        <button
+                          key={w.id}
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            if (typeof window === "undefined") return;
+                            localStorage.setItem("business_id", w.id);
+                            window.location.reload();
+                          }}
+                          className={cn(
+                            "w-full text-left px-3 py-2 flex items-center gap-2.5 transition-colors duration-fast",
+                            active
+                              ? "bg-white/[0.08] text-chrome-fg"
+                              : "text-chrome-fg-muted hover:bg-white/[0.04] hover:text-chrome-fg",
+                          )}
+                        >
+                          <Avatar name={w.name || "?"} size="sm" square />
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-[12.5px] font-medium truncate leading-tight">
+                              {w.name || "Workspace"}
+                            </span>
+                            <span className="block text-[10.5px] opacity-70 capitalize leading-tight mt-0.5">
+                              {w.role}{w.is_owner ? " · owner" : ""}
+                            </span>
+                          </span>
+                          {active && <Badge tone="brand" size="sm" dot>active</Badge>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ));
+              })()}
 
               {/* Create a new workspace. Owned-workspace cap is enforced in
                   the modal (and re-checked server-side). */}
@@ -416,31 +462,7 @@ function SidebarContent({
               className="bg-white rounded-xl shadow-2xl w-full max-w-sm p-5"
               onClick={(e) => e.stopPropagation()}
             >
-              {workspaces.some((w) => w.is_owner) ? (
-                // Owned-workspace cap: surface it instead of a doomed form.
-                <>
-                  <h2 className="text-base font-bold text-midnight mb-1">One workspace per owner</h2>
-                  <p className="text-sm text-steel mb-4">
-                    You already own a workspace — you can own one at a time. Edit it
-                    in Workspace settings, or delete it first. You can still join
-                    other people’s workspaces by invite.
-                  </p>
-                  <div className="flex justify-end gap-2">
-                    <button
-                      onClick={() => setCreateOpen(false)}
-                      className="h-9 px-4 border border-pebble text-steel text-sm font-semibold rounded-lg hover:bg-mist"
-                    >
-                      Close
-                    </button>
-                    <button
-                      onClick={() => { setCreateOpen(false); window.location.href = "/workspace/settings/profile"; }}
-                      className="h-9 px-4 bg-midnight text-white text-sm font-semibold rounded-lg hover:opacity-90"
-                    >
-                      Workspace settings
-                    </button>
-                  </div>
-                </>
-              ) : (
+              {(
                 <>
                   <h2 className="text-base font-bold text-midnight mb-1">New workspace</h2>
                   <p className="text-sm text-steel mb-3">
@@ -657,7 +679,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <>
+    <ToastProvider>
       <div className="flex min-h-screen bg-bg">
         {/* Desktop sidebar */}
         <aside
@@ -679,7 +701,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           >
             {mobileOpen ? <XIcon className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </button>
-          <Link href="/daily-brief" className="flex items-center gap-2">
+          <Link href="/home" className="flex items-center gap-2">
             <span
               aria-hidden="true"
               className="h-7 w-7 rounded-md bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-sm"
@@ -690,6 +712,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               Taskora
             </span>
           </Link>
+          <button
+            onClick={() => window.dispatchEvent(new Event("taskora:command-k"))}
+            aria-label="Search"
+            className="ml-auto h-9 w-9 inline-flex items-center justify-center text-chrome-fg-muted hover:text-chrome-fg rounded-md hover:bg-white/[0.06] transition-colors flex-shrink-0"
+          >
+            <Search className="h-5 w-5" />
+          </button>
         </header>
 
         {mobileOpen && (
@@ -717,7 +746,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           {children}
         </main>
       </div>
+      <NotificationBell />
+      <FirstRunWelcome />
+      <QuickCapture />
+      <CommandK />
+      <PresenceStrip />
       <PersonaSwitcher />
-    </>
+    </ToastProvider>
   );
 }

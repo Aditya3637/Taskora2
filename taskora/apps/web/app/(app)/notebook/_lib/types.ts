@@ -156,6 +156,12 @@ export interface Page {
   follower_role?: "viewer" | "editor";
   /** Optional emoji icon shown next to the title in editor + sidebar. */
   icon?: string | null;
+  /** Pinned → surfaces in the sidebar's Pinned section. */
+  pinned?: boolean;
+  /** Favourited (star) — highlight only, does not move the page. */
+  favourite?: boolean;
+  /** Free-text tags; click one to filter the tree. */
+  tags?: string[];
   /** Set when the page is soft-archived (in trash); null/absent when live. */
   archived_at?: string | null;
 }

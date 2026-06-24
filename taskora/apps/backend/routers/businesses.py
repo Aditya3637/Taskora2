@@ -16,6 +16,9 @@ class BusinessCreate(BaseModel):
     name: str
     type: Literal["building", "client"]
     workspace_mode: Optional[Literal["personal", "organisation"]] = None
+    # Optional company name for the caller's FIRST workspace. Additional
+    # workspaces auto-join the owner's existing company, so this is ignored then.
+    company_name: Optional[str] = None
 
 
 class BusinessUpdate(BaseModel):
@@ -49,28 +52,34 @@ def create_business(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    """Create the caller's workspace. **Cap: one owned workspace per user.**
-    Users can still be members of unlimited workspaces via invite, but
-    creating multiple owned workspaces is disabled — that path multiplied
-    trial-abuse, edge cases, and isolation bugs (see audit tasksheet).
-    Returns 409 if the caller already owns one.
+    """Create a workspace owned by the caller.
+
+    A **company owns many workspaces**: the caller's first workspace creates a
+    company (named from company_name, else the workspace name); every later
+    workspace they create AUTO-JOINS that same company. So additional workspaces
+    are grouped under one company rather than spawning unrelated tenants.
+    Tenant isolation stays per-workspace; billing stays per-workspace.
     """
-    existing = (
+    # Resolve (or create) the caller's company so the new workspace joins it.
+    owned = (
         sb.table("businesses")
-        .select("id, name")
+        .select("company_id")
         .eq("owner_id", user["id"])
+        .not_.is_("company_id", "null")
         .order("created_at")
         .limit(1)
         .execute()
         .data
     )
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="You already own a workspace. Edit it from Workspace settings or delete it before creating a new one.",
-        )
+    company_id = owned[0]["company_id"] if owned else None
+    if not company_id:
+        co_name = (body.company_name or "").strip() or body.name.strip()
+        co = sb.table("companies").insert({"name": co_name, "created_by": user["id"]}).execute().data
+        company_id = co[0]["id"] if co else None
 
     insert_payload: dict = {"name": body.name.strip(), "type": body.type, "owner_id": user["id"]}
+    if company_id:
+        insert_payload["company_id"] = company_id
     if body.workspace_mode:
         insert_payload["workspace_mode"] = body.workspace_mode
     biz_result = sb.table("businesses").insert(insert_payload).execute()
@@ -222,11 +231,17 @@ def list_my_businesses(
     biz_ids = [m["business_id"] for m in memberships]
     biz_rows = (
         sb.table("businesses")
-        .select("id, name, owner_id")
+        .select("id, name, owner_id, company_id")
         .in_("id", biz_ids)
         .execute()
         .data
     )
+    # Resolve company names so the switcher can group workspaces by company.
+    company_ids = list({b["company_id"] for b in biz_rows if b.get("company_id")})
+    company_name: dict = {}
+    if company_ids:
+        for c in sb.table("companies").select("id, name").in_("id", company_ids).execute().data:
+            company_name[c["id"]] = c.get("name") or ""
     role_by_biz = {m["business_id"]: m["role"] for m in memberships}
     return [
         {
@@ -234,6 +249,8 @@ def list_my_businesses(
             "name": b.get("name") or "",
             "role": role_by_biz.get(b["id"], "member"),
             "is_owner": b.get("owner_id") == user["id"],
+            "company_id": b.get("company_id"),
+            "company_name": company_name.get(b.get("company_id")) if b.get("company_id") else None,
         }
         for b in biz_rows
     ]
@@ -510,13 +527,17 @@ def update_member_onboarded(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    """Mark a member as onboarded (or revert). Owner/admin only.
+    """Mark a member as onboarded (or revert).
 
-    Combined with auth.users.last_sign_in_at, this decides whether the
-    member stays in the always-visible "needs onboarding" group on the
-    Workspace > Team settings page.
+    A member may complete their OWN first-run (target == caller); marking
+    someone else requires owner/admin. Combined with auth.users.last_sign_in_at,
+    this decides whether the member stays in the always-visible "needs
+    onboarding" group on the Workspace > Team settings page.
     """
-    require_admin_or_owner(sb, business_id, user["id"])
+    if target_user_id == user["id"]:
+        require_member(sb, business_id, user["id"])
+    else:
+        require_admin_or_owner(sb, business_id, user["id"])
 
     target_rows = (
         sb.table("business_members")
@@ -543,10 +564,55 @@ def update_member_onboarded(
     return result.data[0] if result.data else {}
 
 
+def _member_work_summary(sb: Client, business_id: str, target_user_id: str) -> dict:
+    """Counts of work that would be reassigned/dropped if this member leaves."""
+    init_ids = [
+        r["id"]
+        for r in sb.table("initiatives").select("id").eq("business_id", business_id).execute().data
+    ]
+    task_ids = [
+        r["id"]
+        for r in sb.table("tasks").select("id").in_("initiative_id", init_ids).execute().data
+    ] if init_ids else []
+
+    initiatives_owned = sum(
+        1 for r in (sb.table("initiatives").select("owner_id").in_("id", init_ids).execute().data if init_ids else [])
+        if r.get("owner_id") == target_user_id
+    )
+    tasks_primary = sum(
+        1 for r in (sb.table("tasks").select("primary_stakeholder_id").in_("id", task_ids).execute().data if task_ids else [])
+        if r.get("primary_stakeholder_id") == target_user_id
+    )
+    as_stakeholder = len(
+        sb.table("task_stakeholders").select("task_id").in_("task_id", task_ids).eq("user_id", target_user_id).execute().data
+    ) if task_ids else 0
+    as_watcher = len(
+        sb.table("item_watchers").select("id").in_("task_id", task_ids).eq("user_id", target_user_id).execute().data
+    ) if task_ids else 0
+    return {
+        "initiatives_owned": initiatives_owned,
+        "tasks_primary": tasks_primary,
+        "as_secondary_or_watcher": as_stakeholder + as_watcher,
+    }
+
+
+@router.get("/{business_id}/members/{target_user_id}/work-summary")
+def member_work_summary(
+    business_id: str,
+    target_user_id: str,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """What a member owns — powers the Remove dialog's 'reassign N → who?' UI."""
+    require_admin_or_owner(sb, business_id, user["id"])
+    return _member_work_summary(sb, business_id, target_user_id)
+
+
 @router.delete("/{business_id}/members/{target_user_id}", status_code=204)
 def remove_member(
     business_id: str,
     target_user_id: str,
+    reassign_to: Optional[str] = None,
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
@@ -574,10 +640,24 @@ def remove_member(
     if caller_role == "admin" and target_role == "admin":
         raise HTTPException(status_code=403, detail="Admins cannot remove other admins")
 
+    # Who inherits the removed member's owned work. Default = the caller (legacy
+    # behaviour), but the admin can nominate anyone via ?reassign_to= so removal
+    # doesn't silently dump everything on whoever clicked Remove. The nominee
+    # must be a member of THIS workspace and not the person being removed.
+    new_owner = user["id"]
+    if reassign_to and reassign_to != target_user_id:
+        nominee = (
+            sb.table("business_members").select("user_id")
+            .eq("business_id", business_id).eq("user_id", reassign_to).execute().data
+        )
+        if not nominee:
+            raise HTTPException(status_code=400, detail="reassign_to must be a member of this workspace")
+        new_owner = reassign_to
+
     # Preserve their tasks but drop their assignments. primary_stakeholder_id
     # and initiatives.owner_id are NOT NULL with ON DELETE RESTRICT — reassign
-    # to the caller (the admin/owner clicking Remove). Scoped to *this*
-    # business only; the same user in another workspace is untouched.
+    # to new_owner. Scoped to *this* business only; the same user in another
+    # workspace is untouched.
     init_ids = [
         r["id"]
         for r in sb.table("initiatives").select("id").eq("business_id", business_id).execute().data
@@ -590,12 +670,12 @@ def remove_member(
         ]
 
     if init_ids:
-        sb.table("initiatives").update({"owner_id": user["id"]}).in_("id", init_ids).eq(
+        sb.table("initiatives").update({"owner_id": new_owner}).in_("id", init_ids).eq(
             "owner_id", target_user_id
         ).execute()
 
     if task_ids:
-        sb.table("tasks").update({"primary_stakeholder_id": user["id"]}).in_("id", task_ids).eq(
+        sb.table("tasks").update({"primary_stakeholder_id": new_owner}).in_("id", task_ids).eq(
             "primary_stakeholder_id", target_user_id
         ).execute()
         sb.table("task_stakeholders").delete().in_("task_id", task_ids).eq(
@@ -617,10 +697,10 @@ def get_my_role(
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    """Return the current user's role in this business."""
+    """Return the current user's role in this business + their first-run state."""
     rows = (
         sb.table("business_members")
-        .select("role")
+        .select("role, onboarded_at")
         .eq("business_id", business_id)
         .eq("user_id", user["id"])
         .execute()
@@ -628,7 +708,11 @@ def get_my_role(
     )
     if not rows:
         raise HTTPException(status_code=404, detail="Not a member of this business")
-    return {"role": rows[0]["role"]}
+    role = rows[0]["role"]
+    # Owners are always considered onboarded (they built the workspace);
+    # everyone else is onboarded once they've completed first-run.
+    onboarded = role == "owner" or bool(rows[0].get("onboarded_at"))
+    return {"role": role, "onboarded": onboarded}
 
 
 # ── Per-workspace AI settings (BYO key for the D4 program summary) ────────────

@@ -1,7 +1,7 @@
 from typing import Optional
 from datetime import date, datetime, timezone, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from rate_limit import limiter
 from supabase import Client
 from pydantic import BaseModel, field_validator, model_validator
@@ -572,7 +572,8 @@ def workspace_gantt(
         sb.table("initiatives")
         .select(
             "id, name, status, start_date, target_end_date, program_id, "
-            "primary_stakeholder_id, impact_category, depends_on"
+            "primary_stakeholder_id, impact_category, depends_on, "
+            "baseline_start_date, baseline_end_date"
         )
         .eq("business_id", business_id)
         .neq("status", "cancelled")
@@ -606,6 +607,8 @@ def workspace_gantt(
             "status": i.get("status"),
             "start_date": i.get("start_date"),
             "end_date": i.get("target_end_date"),
+            "baseline_start": i.get("baseline_start_date"),
+            "baseline_end": i.get("baseline_end_date"),
             "primary_stakeholder_id": i.get("primary_stakeholder_id"),
             "primary_stakeholder_name": name_map.get(i.get("primary_stakeholder_id") or "", ""),
             "impact_category": i.get("impact_category"),
@@ -662,6 +665,94 @@ def workspace_gantt(
     members.sort(key=lambda m: (m["name"] or "").lower())
 
     return {"programs": lanes, "members": members}
+
+
+@router.get("/sites-gantt")
+def sites_gantt(
+    business_id: str,
+    kind: str = Query(default="building"),
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Site-centric timeline: each building/client is a swimlane, and every task
+    performed there runs along the timeline (per-entity dates) so a site's
+    SEQUENCE of work — task 1 → task 2 → task 3 — is visible on one lane.
+    Dependency arrows connect sibling task-bars in the same lane."""
+    require_member(sb, business_id, user["id"])
+    if kind not in ("building", "client"):
+        raise HTTPException(status_code=422, detail="kind must be 'building' or 'client'")
+
+    tbl = "buildings" if kind == "building" else "clients"
+    ents = sb.table(tbl).select("id, name").eq("business_id", business_id).execute().data
+    if not ents:
+        return {"sites": []}
+    ent_name = {e["id"]: e.get("name") or "" for e in ents}
+
+    init_ids = [r["id"] for r in sb.table("initiatives").select("id").eq("business_id", business_id).execute().data]
+    tasks: dict = {}
+    if init_ids:
+        for t in (
+            sb.table("tasks")
+            .select("id, title, status, start_date, due_date, depends_on, initiative_id, entity_id, entity_type")
+            .in_("initiative_id", init_ids).execute().data
+        ):
+            tasks[t["id"]] = t
+    task_ids = list(tasks.keys())
+
+    links: list = []
+    if task_ids:
+        links = (
+            sb.table("task_entities")
+            .select("task_id, entity_id, per_entity_status, per_entity_start_date, per_entity_end_date")
+            .in_("task_id", task_ids).eq("entity_type", kind).execute().data
+        )
+
+    bar_id_for: dict = {}  # (task_id, entity_id) -> composite bar id
+    by_entity: dict = {}
+    for l in links:
+        eid = l["entity_id"]
+        if eid not in ent_name:
+            continue
+        t = tasks.get(l["task_id"]) or {}
+        cid = f"{l['task_id']}::{eid}"
+        bar_id_for[(l["task_id"], eid)] = cid
+        by_entity.setdefault(eid, []).append({
+            "id": cid,
+            "task_id": l["task_id"],
+            "title": t.get("title") or "",
+            "status": l.get("per_entity_status") or t.get("status"),
+            "start_date": l.get("per_entity_start_date") or t.get("start_date"),
+            "end_date": l.get("per_entity_end_date") or t.get("due_date"),
+            "_dep_tasks": t.get("depends_on") or [],
+        })
+
+    # Site-owned tasks (Playbooks: tasks.entity_id) → direct bars on their lane.
+    # Each is its own row (bar id = task id), so per-site dependencies map cleanly.
+    for t in tasks.values():
+        if t.get("entity_type") == kind and t.get("entity_id") in ent_name:
+            eid = t["entity_id"]
+            bar_id_for[(t["id"], eid)] = t["id"]
+            by_entity.setdefault(eid, []).append({
+                "id": t["id"],
+                "task_id": t["id"],
+                "title": t.get("title") or "",
+                "status": t.get("status"),
+                "start_date": t.get("start_date"),
+                "end_date": t.get("due_date"),
+                "_dep_tasks": t.get("depends_on") or [],
+            })
+
+    sites = []
+    for eid, bars in by_entity.items():
+        for b in bars:
+            # Map task-level dependencies to sibling bars in THIS lane.
+            b["depends_on"] = [
+                bar_id_for[(dep, eid)] for dep in b.pop("_dep_tasks") if (dep, eid) in bar_id_for
+            ]
+        bars.sort(key=lambda x: x["start_date"] or "9999-99-99")
+        sites.append({"id": eid, "name": ent_name[eid], "kind": kind, "tasks": bars})
+    sites.sort(key=lambda s: -len(s["tasks"]))
+    return {"sites": sites}
 
 
 @router.post("", status_code=201)

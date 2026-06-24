@@ -31,6 +31,7 @@ from deps import (
     get_supabase, require_member, is_admin_or_owner,
     visible_initiative_ids, writable_initiative_ids,
 )
+from automation.notify import notify
 
 router = APIRouter(prefix="/api/v1", tags=["workspace_docs"])
 
@@ -57,6 +58,8 @@ class DocCreate(BaseModel):
 class DocUpdate(BaseModel):
     title: Optional[str] = None
     body: Optional[dict] = None
+    # External link bookmarks: [{url, label}]. Empty list clears them.
+    bookmarks: Optional[list] = None
 
     @field_validator("title")
     @classmethod
@@ -128,6 +131,44 @@ def _gate(sb: Client, init: dict, user_id: str, *, write: bool) -> None:
     raise HTTPException(status_code=404, detail="Initiative not found")
 
 
+def _task_or_404(sb: Client, task_id: str) -> dict:
+    rows = sb.table("tasks").select("id, initiative_id").eq("id", task_id).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return rows[0]
+
+
+def _resolve_doc_initiative(sb: Client, doc: dict) -> Optional[dict]:
+    """The initiative governing a doc's visibility: itself for initiative docs,
+    the parent task's initiative for task docs, None for entity docs (those are
+    gated by plain workspace membership via doc.business_id)."""
+    pt = doc.get("parent_type")
+    if pt == "task":
+        trows = sb.table("tasks").select("initiative_id").eq("id", doc["parent_id"]).execute().data
+        if trows and trows[0].get("initiative_id"):
+            return _initiative_or_404(sb, trows[0]["initiative_id"])
+        return None
+    if pt == "entity":
+        return None
+    return _initiative_or_404(sb, doc["parent_id"])
+
+
+def _gate_doc(sb: Client, doc: dict, user_id: str, *, write: bool) -> None:
+    """Read/write gate for a doc of ANY parent_type (initiative/task/entity)."""
+    init = _resolve_doc_initiative(sb, doc)
+    if init is not None:
+        _gate(sb, init, user_id, write=write)
+    else:
+        require_member(sb, doc["business_id"], user_id)
+
+
+def _doc_can_write(sb: Client, doc: dict, user_id: str) -> bool:
+    init = _resolve_doc_initiative(sb, doc)
+    if init is not None:
+        return _writable(sb, init, user_id)
+    return True  # any workspace member may edit an entity-scoped doc
+
+
 def _doc_or_404(sb: Client, doc_id: str) -> dict:
     """Load a doc. Treats a missing workspace_docs table (047 not yet applied)
     as 'not found' rather than 500."""
@@ -146,6 +187,7 @@ def _shape(d: dict) -> dict:
         "id": d["id"], "business_id": d.get("business_id"),
         "parent_type": d.get("parent_type"), "parent_id": d.get("parent_id"),
         "title": d.get("title"), "body": d.get("body") or {},
+        "bookmarks": d.get("bookmarks") or [],
         "created_by": d.get("created_by"),
         "created_at": d.get("created_at"), "updated_at": d.get("updated_at"),
         "archived_at": d.get("archived_at"),
@@ -158,7 +200,7 @@ def _shape(d: dict) -> dict:
 # save, so backlinks are always exactly what the document currently mentions —
 # no fragile per-keystroke insert/delete tracking on the client.
 
-_MENTION_TYPES = {"initiative", "task", "user"}
+_MENTION_TYPES = {"initiative", "task", "user", "building", "client"}
 
 
 def _extract_mention_targets(body) -> set:
@@ -190,7 +232,15 @@ def _valid_targets(sb: Client, business_id: str, targets: set) -> set:
     inits = [i for (t, i) in targets if t == "initiative"]
     tasks = [i for (t, i) in targets if t == "task"]
     users = [i for (t, i) in targets if t == "user"]
+    buildings = [i for (t, i) in targets if t == "building"]
+    clients = [i for (t, i) in targets if t == "client"]
     valid: set = set()
+    if buildings:
+        rows = sb.table("buildings").select("id").eq("business_id", business_id).in_("id", buildings).execute().data
+        valid |= {("building", r["id"]) for r in rows}
+    if clients:
+        rows = sb.table("clients").select("id").eq("business_id", business_id).in_("id", clients).execute().data
+        valid |= {("client", r["id"]) for r in rows}
     if inits:
         rows = sb.table("initiatives").select("id").eq("business_id", business_id).in_("id", inits).execute().data
         valid |= {("initiative", r["id"]) for r in rows}
@@ -218,7 +268,8 @@ def _reconcile_doc_links(sb: Client, doc: dict, user_id: str) -> None:
             .eq("source_type", "doc").eq("source_id", doc["id"]).execute().data
         )
         have = {(l["target_type"], l["target_id"]): l["id"] for l in existing}
-        for tt, ti in want - set(have):
+        new_targets = want - set(have)
+        for tt, ti in new_targets:
             sb.table("entity_links").insert({
                 "business_id": doc["business_id"], "source_type": "doc",
                 "source_id": doc["id"], "target_type": tt, "target_id": ti,
@@ -226,6 +277,15 @@ def _reconcile_doc_links(sb: Client, doc: dict, user_id: str) -> None:
             }).execute()
         for key in set(have) - want:
             sb.table("entity_links").delete().eq("id", have[key]).execute()
+        # Notify users who were newly @-mentioned in this doc (best-effort).
+        new_user_ids = [ti for (tt, ti) in new_targets if tt == "user"]
+        if new_user_ids:
+            notify(
+                sb, type="mentioned", business_id=doc["business_id"], actor_id=user_id,
+                recipients=new_user_ids,
+                title=f"You were mentioned in “{doc.get('title') or 'a document'}”",
+                entity_type="initiative", entity_id=doc.get("parent_id"),
+            )
     except Exception:
         pass
 
@@ -286,17 +346,133 @@ def create_doc(
     return {**_shape(rows[0]), "can_write": True}  # the creator just passed the write gate
 
 
+@router.get("/tasks/{task_id}/docs")
+def list_task_docs(
+    task_id: str,
+    include_archived: bool = False,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Docs attached to a task. Gated via the task's initiative."""
+    t = _task_or_404(sb, task_id)
+    init = _initiative_or_404(sb, t["initiative_id"])
+    _gate(sb, init, user["id"], write=False)
+    try:
+        rows = (
+            sb.table("workspace_docs").select("*")
+            .eq("parent_type", "task").eq("parent_id", task_id)
+            .order("created_at", desc=True).execute().data
+        )
+    except Exception:
+        rows = []
+    if not include_archived:
+        rows = [r for r in rows if not r.get("archived_at")]
+    return [_shape(r) for r in rows]
+
+
+@router.post("/tasks/{task_id}/docs", status_code=201)
+def create_task_doc(
+    task_id: str,
+    body: DocCreate,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Create a work doc on a task. Write-gated via the task's initiative."""
+    t = _task_or_404(sb, task_id)
+    init = _initiative_or_404(sb, t["initiative_id"])
+    _gate(sb, init, user["id"], write=True)
+    payload = {
+        "business_id": init["business_id"],
+        "parent_type": "task",
+        "parent_id": task_id,
+        "title": body.title or "Work document",
+        "body": body.body or {},
+        "created_by": user["id"],
+        "updated_at": _now(),
+    }
+    rows = sb.table("workspace_docs").insert(payload).execute().data
+    if not rows:
+        raise HTTPException(status_code=500, detail="Failed to create document")
+    if payload["body"]:
+        _reconcile_doc_links(sb, rows[0], user["id"])
+    return {**_shape(rows[0]), "can_write": True}
+
+
+def _entity_in_business_or_404(sb: Client, entity_id: str, business_id: str) -> None:
+    """An entity is a building OR client. Confirm it belongs to this workspace."""
+    for tbl in ("buildings", "clients"):
+        rows = (
+            sb.table(tbl).select("id").eq("id", entity_id)
+            .eq("business_id", business_id).execute().data
+        )
+        if rows:
+            return
+    raise HTTPException(status_code=404, detail="Site not found in this workspace")
+
+
+@router.get("/entities/{entity_id}/docs")
+def list_entity_docs(
+    entity_id: str,
+    business_id: str = Query(...),
+    include_archived: bool = False,
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Docs attached to a building/client (per-site plan). Gated by workspace
+    membership — any member can read a site's docs."""
+    require_member(sb, business_id, user["id"])
+    _entity_in_business_or_404(sb, entity_id, business_id)
+    try:
+        rows = (
+            sb.table("workspace_docs").select("*")
+            .eq("parent_type", "entity").eq("parent_id", entity_id)
+            .order("created_at", desc=True).execute().data
+        )
+    except Exception:
+        rows = []
+    if not include_archived:
+        rows = [r for r in rows if not r.get("archived_at")]
+    return [_shape(r) for r in rows]
+
+
+@router.post("/entities/{entity_id}/docs", status_code=201)
+def create_entity_doc(
+    entity_id: str,
+    body: DocCreate,
+    business_id: str = Query(...),
+    user: dict = Depends(get_current_user),
+    sb: Client = Depends(get_supabase),
+):
+    """Create a per-site work doc. Any workspace member may create/edit one."""
+    require_member(sb, business_id, user["id"])
+    _entity_in_business_or_404(sb, entity_id, business_id)
+    payload = {
+        "business_id": business_id,
+        "parent_type": "entity",
+        "parent_id": entity_id,
+        "title": body.title or "Site plan",
+        "body": body.body or {},
+        "created_by": user["id"],
+        "updated_at": _now(),
+    }
+    rows = sb.table("workspace_docs").insert(payload).execute().data
+    if not rows:
+        raise HTTPException(status_code=500, detail="Failed to create document")
+    if payload["body"]:
+        _reconcile_doc_links(sb, rows[0], user["id"])
+    return {**_shape(rows[0]), "can_write": True}
+
+
 @router.get("/docs/{doc_id}")
 def get_doc(
     doc_id: str,
     user: dict = Depends(get_current_user),
     sb: Client = Depends(get_supabase),
 ):
-    """Read one doc. Gated by the doc's initiative visibility."""
+    """Read one doc. Gated by its parent (initiative/task/entity)."""
     doc = _doc_or_404(sb, doc_id)
-    init = _initiative_or_404(sb, doc["parent_id"])
-    _gate(sb, init, user["id"], write=False)
-    return {**_shape(doc), "can_write": _writable(sb, init, user["id"])}
+    _gate_doc(sb, doc, user["id"], write=False)
+    return {**_shape(doc), "can_write": _doc_can_write(sb, doc, user["id"])}
 
 
 @router.patch("/docs/{doc_id}")
@@ -308,8 +484,7 @@ def update_doc(
 ):
     """Autosave: update title and/or body. Write-gated."""
     doc = _doc_or_404(sb, doc_id)
-    init = _initiative_or_404(sb, doc["parent_id"])
-    _gate(sb, init, user["id"], write=True)
+    _gate_doc(sb, doc, user["id"], write=True)
 
     sent = body.model_dump(exclude_unset=True)
     updates = {k: v for k, v in sent.items() if v is not None}
@@ -336,8 +511,7 @@ def archive_doc(
 ):
     """Soft-delete (archived=true) or restore (archived=false). Write-gated."""
     doc = _doc_or_404(sb, doc_id)
-    init = _initiative_or_404(sb, doc["parent_id"])
-    _gate(sb, init, user["id"], write=True)
+    _gate_doc(sb, doc, user["id"], write=True)
     rows = (
         sb.table("workspace_docs")
         .update({"archived_at": _now() if body.archived else None, "updated_at": _now()})
@@ -424,11 +598,24 @@ def mentions_search(
         if ql:
             people = [u for u in people if ql in (u.get("name") or "").lower()]
 
+    # Buildings + clients — so a doc can @-mention the sites it references
+    # (the "initiative doc gathers every site reference" goal).
+    building_rows = sb.table("buildings").select("id, name").eq("business_id", business_id).execute().data
+    if ql:
+        building_rows = [b for b in building_rows if ql in (b.get("name") or "").lower()]
+    client_rows = sb.table("clients").select("id, name").eq("business_id", business_id).execute().data
+    if ql:
+        client_rows = [c for c in client_rows if ql in (c.get("name") or "").lower()]
+
     results: list = []
     for r in init_rows[:limit]:
         results.append({"type": "initiative", "id": f"initiative:{r['id']}", "label": r.get("name") or "", "sub": "Initiative"})
     for t in task_rows[:limit]:
         results.append({"type": "task", "id": f"task:{t['id']}", "label": t.get("title") or "", "sub": "Task"})
+    for b in building_rows[:limit]:
+        results.append({"type": "building", "id": f"building:{b['id']}", "label": b.get("name") or "", "sub": "Building"})
+    for c in client_rows[:limit]:
+        results.append({"type": "client", "id": f"client:{c['id']}", "label": c.get("name") or "", "sub": "Client"})
     for u in people[:limit]:
         results.append({"type": "user", "id": f"user:{u['id']}", "label": u.get("name") or "", "sub": "Person"})
     return {"results": results}
