@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { Search, ChevronRight, ChevronDown, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 
@@ -58,8 +58,22 @@ const PAGE = 50;
 // Per-user persisted layout (view/sort/group/density). Keyed by user id so a
 // shared browser never leaks one user's layout to another.
 const PREFS_KEY = "taskora_worktable_prefs_v1";
-const COLS =
-  "grid grid-cols-[20px_136px_minmax(0,1fr)_84px_128px_92px] gap-2 items-center";
+// Column model. `fixed` columns (the select checkbox + the Task title) always
+// render; the rest can be hidden via the Columns menu. The grid template is
+// built from whichever columns are visible, in this order.
+const COLUMNS: { key: string; w: string; fixed?: boolean; label?: string }[] = [
+  { key: "select", w: "20px", fixed: true },
+  { key: "status", w: "136px", label: "Status" },
+  { key: "task", w: "minmax(0,1fr)", fixed: true, label: "Task" },
+  { key: "priority", w: "84px", label: "Priority" },
+  { key: "owner", w: "128px", label: "Owner" },
+  { key: "due", w: "92px", label: "Due" },
+];
+const HIDEABLE = ["status", "priority", "owner", "due"];
+// Past this many loaded rows, mark rows content-visibility:auto so the browser
+// skips rendering/layout for off-screen rows (native windowing). Below it the
+// list is small enough that the attribute only risks scroll jank for no gain.
+const WINDOW_THRESHOLD = 200;
 
 function todayISO() { return new Date().toISOString().slice(0, 10); }
 function isOverdue(due?: string | null, status?: string) {
@@ -94,7 +108,15 @@ export function WorkTable({
   const [sortKey, setSortKey] = useState("recent");
   const [groupBy, setGroupBy] = useState("none");
   const [compact, setCompact] = useState(false);
+  const [hiddenCols, setHiddenCols] = useState<Set<string>>(new Set());
   const [prefsHydrated, setPrefsHydrated] = useState(false);
+
+  const visibleColumns = useMemo(
+    () => COLUMNS.filter((c) => c.fixed || !hiddenCols.has(c.key)), [hiddenCols]);
+  const gridTemplate = useMemo(
+    () => visibleColumns.map((c) => c.w).join(" "), [visibleColumns]);
+  const showCol = useCallback(
+    (k: string) => !hiddenCols.has(k), [hiddenCols]);
 
   const [items, setItems] = useState<WorkTask[]>([]);
   const [total, setTotal] = useState(0);
@@ -139,6 +161,8 @@ export function WorkTable({
         if (SORTS.some((s) => s.key === p.sortKey)) setSortKey(p.sortKey);
         if (GROUPS.some((g) => g.key === p.groupBy)) setGroupBy(p.groupBy);
         if (typeof p.compact === "boolean") setCompact(p.compact);
+        if (Array.isArray(p.hiddenCols))
+          setHiddenCols(new Set(p.hiddenCols.filter((k: unknown) => HIDEABLE.includes(k as string))));
       }
     } catch { /* corrupt storage — fall through with defaults */ }
     setPrefsHydrated(true);
@@ -149,10 +173,10 @@ export function WorkTable({
     try {
       localStorage.setItem(
         `${PREFS_KEY}:${currentUserId}`,
-        JSON.stringify({ viewKey, sortKey, groupBy, compact }),
+        JSON.stringify({ viewKey, sortKey, groupBy, compact, hiddenCols: Array.from(hiddenCols) }),
       );
     } catch { /* quota or storage disabled — ignore */ }
-  }, [prefsHydrated, currentUserId, viewKey, sortKey, groupBy, compact]);
+  }, [prefsHydrated, currentUserId, viewKey, sortKey, groupBy, compact, hiddenCols]);
 
   const buildBody = useCallback((offset: number) => {
     const view = VIEWS.find((v) => v.key === viewKey)!;
@@ -281,6 +305,14 @@ export function WorkTable({
   }
 
   const rowPad = compact ? "py-1" : "py-2";
+  // Native windowing for large lists: content-visibility lets the browser skip
+  // off-screen rows. contain-intrinsic-size reserves an estimated row height so
+  // the scrollbar stays stable. Only applied past the threshold (see const).
+  const big = items.length > WINDOW_THRESHOLD;
+  const rowStyle = {
+    gridTemplateColumns: gridTemplate,
+    ...(big ? { contentVisibility: "auto", containIntrinsicSize: "0 40px" } : {}),
+  } as CSSProperties;
   let lastGroup: string | null = null;
 
   return (
@@ -313,6 +345,24 @@ export function WorkTable({
           className="h-8 px-2.5 rounded-lg border border-pebble text-[12px] text-steel hover:text-midnight">
           {compact ? "Comfortable" : "Compact"}
         </button>
+        <details className="relative">
+          <summary className="list-none [&::-webkit-details-marker]:hidden h-8 px-2.5 rounded-lg border border-pebble text-[12px] text-steel hover:text-midnight cursor-pointer flex items-center select-none">
+            Columns
+          </summary>
+          <div className="absolute right-0 mt-1 z-20 w-40 rounded-lg border border-pebble bg-white shadow-lg p-1.5">
+            {HIDEABLE.map((k) => {
+              const col = COLUMNS.find((c) => c.key === k)!;
+              const on = showCol(k);
+              return (
+                <label key={k} className="flex items-center gap-2 px-2 py-1 text-[12.5px] text-midnight rounded hover:bg-mist cursor-pointer">
+                  <input type="checkbox" checked={on} className="accent-taskora-red"
+                    onChange={() => setHiddenCols((s) => { const n = new Set(s); on ? n.add(k) : n.delete(k); return n; })} />
+                  {col.label}
+                </label>
+              );
+            })}
+          </div>
+        </details>
         <span className="hidden lg:inline text-[11px] text-steel/45 ml-auto"
           title="Keyboard: j / k move · e or Enter open · x select · Esc clear">
           <kbd className="font-sans">j</kbd>/<kbd className="font-sans">k</kbd> move · <kbd className="font-sans">e</kbd> open · <kbd className="font-sans">x</kbd> select
@@ -323,9 +373,11 @@ export function WorkTable({
       </div>
 
       {/* Header */}
-      <div className={`${COLS} px-2.5 h-8 bg-mist/50 rounded-t-lg text-[10.5px] uppercase tracking-wide text-steel/70 font-semibold border border-pebble`}>
-        <span />
-        <span>Status</span><span>Task</span><span>Priority</span><span>Owner</span><span>Due</span>
+      <div style={{ gridTemplateColumns: gridTemplate }}
+        className="grid gap-2 items-center px-2.5 h-8 bg-mist/50 rounded-t-lg text-[10.5px] uppercase tracking-wide text-steel/70 font-semibold border border-pebble">
+        {visibleColumns.map((c) => c.key === "select"
+          ? <span key="select" />
+          : <span key={c.key}>{c.label}</span>)}
       </div>
 
       {/* Rows */}
@@ -363,16 +415,19 @@ export function WorkTable({
                   </div>
                 )}
                 <div data-active={i === activeIdx ? "true" : undefined}
-                  className={`${COLS} px-2.5 ${rowPad} border-t border-pebble/50 group cursor-pointer ${
+                  style={rowStyle}
+                  className={`grid gap-2 items-center px-2.5 ${rowPad} border-t border-pebble/50 group cursor-pointer ${
                     i === activeIdx ? "bg-ocean/10 ring-1 ring-inset ring-ocean/40" : "hover:bg-mist/30"}`}
                   onClick={() => { setActiveIdx(i); onOpenTask(t); }}>
                   <input type="checkbox" checked={selected.has(t.id)}
                     onClick={(e) => e.stopPropagation()}
                     onChange={() => setSelected((s) => { const n = new Set(s); n.has(t.id) ? n.delete(t.id) : n.add(t.id); return n; })}
                     className={`accent-taskora-red ${selected.has(t.id) ? "" : "opacity-0 group-hover:opacity-100"}`} />
-                  <div onClick={(e) => e.stopPropagation()}>
-                    <StatusPill value={t.status} onChange={(s) => patchTask(t.id, { status: s })} />
-                  </div>
+                  {showCol("status") && (
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <StatusPill value={t.status} onChange={(s) => patchTask(t.id, { status: s })} />
+                    </div>
+                  )}
                   <div className="min-w-0">
                     <div className="flex items-center gap-1.5 min-w-0">
                       <span className="text-[13px] text-midnight truncate">{t.title}</span>
@@ -387,19 +442,25 @@ export function WorkTable({
                       <div className="text-[11px] text-steel/60 truncate">{initName(t.initiative_id)}</div>
                     )}
                   </div>
-                  <div onClick={(e) => e.stopPropagation()}>
-                    <PriorityPill value={t.priority} onChange={(p) => patchTask(t.id, { priority: p })} />
-                  </div>
-                  <div onClick={(e) => e.stopPropagation()}>
-                    <OwnerSelect value={t.primary_stakeholder_id} members={members}
-                      onChange={(uid) => patchTask(t.id, { primary_stakeholder_id: uid })} />
-                  </div>
-                  <div onClick={(e) => e.stopPropagation()}>
-                    <input type="date" value={(t.due_date || "").slice(0, 10)}
-                      onChange={(e) => patchTask(t.id, { due_date: e.target.value || null })}
-                      className={`w-full bg-transparent text-[12px] tabular-nums rounded px-1 py-0.5 border border-transparent hover:border-pebble focus:border-ocean focus:outline-none cursor-pointer ${
-                        isOverdue(t.due_date, t.status) ? "text-red-600 font-medium" : "text-steel"}`} />
-                  </div>
+                  {showCol("priority") && (
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <PriorityPill value={t.priority} onChange={(p) => patchTask(t.id, { priority: p })} />
+                    </div>
+                  )}
+                  {showCol("owner") && (
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <OwnerSelect value={t.primary_stakeholder_id} members={members}
+                        onChange={(uid) => patchTask(t.id, { primary_stakeholder_id: uid })} />
+                    </div>
+                  )}
+                  {showCol("due") && (
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <input type="date" value={(t.due_date || "").slice(0, 10)}
+                        onChange={(e) => patchTask(t.id, { due_date: e.target.value || null })}
+                        className={`w-full bg-transparent text-[12px] tabular-nums rounded px-1 py-0.5 border border-transparent hover:border-pebble focus:border-ocean focus:outline-none cursor-pointer ${
+                          isOverdue(t.due_date, t.status) ? "text-red-600 font-medium" : "text-steel"}`} />
+                    </div>
+                  )}
                 </div>
               </div>
             );
