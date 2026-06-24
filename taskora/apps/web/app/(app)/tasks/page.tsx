@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ChevronDown, ChevronRight, Plus, X, User, MessageSquare, Eye, ShieldCheck, GanttChartSquare, MoreHorizontal, Search, Trash2, Inbox, Filter, ChevronsUpDown, Archive, ArchiveRestore, FileText } from "lucide-react";
 import { WorkDocPanel } from "../programs/_components/WorkDocPanel";
+import { WorkTable } from "./_components/WorkTable";
 import { supabase } from "@/lib/supabase";
 import { GanttModal } from "../gantt/GanttChart";
 import { Button, Badge, Skeleton, EmptyState, PageHeader, cn, useToast, Select, DatePicker } from "@/components/ui";
@@ -4469,7 +4470,7 @@ function TasksPageInner() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   // List / Board view toggle (deck: "List / Board / Mine").
-  const [viewMode, setViewMode] = useState<"list" | "board">("list");
+  const [viewMode, setViewMode] = useState<"list" | "board" | "table">("table");
   const { toast } = useToast();
 
   // Fetches a page of tasks. When `append` is true, results are appended to the
@@ -4990,7 +4991,8 @@ function TasksPageInner() {
         }
       />
 
-      {/* Filter toolbar: search + program + owner + clear. */}
+      {/* Filter toolbar: search + program + owner + clear. (legacy list/board only) */}
+      {viewMode !== "table" && (
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <div className="relative flex-1 min-w-[200px]">
           <Search aria-hidden="true" className="h-4 w-4 text-fg-subtle absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" strokeWidth={1.8} />
@@ -5048,9 +5050,11 @@ function TasksPageInner() {
           </Button>
         )}
       </div>
+      )}
 
       {/* Status filter tabs + List/Board toggle */}
       <div className="flex items-center justify-between gap-3 mb-6 flex-wrap">
+      {viewMode !== "table" ? (
       <div role="tablist" aria-label="Status filter" className="flex gap-1.5 flex-wrap p-0.5 bg-muted rounded-lg w-fit">
         {STATUSES.map((s) => {
           const active = filter === s;
@@ -5073,8 +5077,9 @@ function TasksPageInner() {
           );
         })}
       </div>
+      ) : <span />}
         <div className="inline-flex p-0.5 bg-muted rounded-lg">
-          {(["list", "board"] as const).map((v) => (
+          {(["table", "list", "board"] as const).map((v) => (
             <button
               key={v}
               type="button"
@@ -5161,6 +5166,19 @@ function TasksPageInner() {
                   </Button>
                 )
               }
+            />
+          </div>
+        )}
+
+        {/* Table view (redesigned Work surface — server-driven, scales to 200-300) */}
+        {!loading && !error && viewMode === "table" && (
+          <div className="h-[calc(100vh-220px)]">
+            <WorkTable
+              businessId={businessId}
+              currentUserId={currentUserId}
+              members={members}
+              initiatives={initiatives}
+              onOpenTask={(t) => setSheetScope({ kind: "task", task: t as Task })}
             />
           </div>
         )}
